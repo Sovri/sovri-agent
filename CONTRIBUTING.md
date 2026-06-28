@@ -21,7 +21,7 @@ lefthook install
 ## Gates
 
 Every pull request must pass the CI gates in `.github/workflows/`: format,
-lint, test, build, `cargo-deny`, secrets scan, license headers, action-pin
+lint, test, build, `cargo-deny`, secrets scan, license headers, docs, action-pin
 check, and dependency review. Do not bypass hooks (`--no-verify` is forbidden).
 
 ## Branch protection

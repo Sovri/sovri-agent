@@ -21,6 +21,21 @@ fn selftest_exits_zero_and_reports_version() {
 }
 
 #[test]
+fn version_flag_reports_version() {
+    let output = Command::new(env!("CARGO_BIN_EXE_sovri-agent"))
+        .arg("--version")
+        .output()
+        .expect("running sovri-agent --version");
+
+    assert!(output.status.success(), "--version must exit 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(env!("CARGO_PKG_VERSION")),
+        "--version must print the agent version, got: {stdout}"
+    );
+}
+
+#[test]
 fn unknown_command_exits_non_zero() {
     let output = Command::new(env!("CARGO_BIN_EXE_sovri-agent"))
         .arg("definitely-not-a-command")
