@@ -1,0 +1,25 @@
+# Local Git hooks mirroring the CI gates (ADR-012). Install with `lefthook install`.
+pre-commit:
+  parallel: true
+  commands:
+    format:
+      glob: "*.rs"
+      run: cargo fmt --check
+    secrets:
+      run: ./scripts/no-secrets.sh
+    headers:
+      glob: "*.rs"
+      run: ./scripts/check-headers.sh
+    docs:
+      glob: "{README.md}"
+      run: ./scripts/check-docs.sh
+
+pre-push:
+  parallel: true
+  commands:
+    clippy:
+      run: cargo clippy --all-targets -- -D warnings
+    test:
+      run: cargo test
+    action-pins:
+      run: ./scripts/check-action-pins.sh
