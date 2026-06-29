@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+*.pdb
+# Never commit secrets or local credentials.
+.env
+.env.*
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+!.env.example
