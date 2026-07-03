@@ -1,0 +1,10 @@
+# Local development override: build against a sibling `sovri-sdk-rust` checkout
+# instead of fetching the pinned git tag. Copy this file to `.cargo/config.toml`
+# (git-ignored) when co-developing the SDK and the agent:
+#
+#   cp .cargo/config.toml.example .cargo/config.toml
+#
+# The committed Cargo.toml pins `sovri-sdk` by tag (v0.1.0), so CI builds it from
+# GitHub. This override transparently redirects that same package to a local path
+# without editing Cargo.toml or Cargo.lock.
+paths = ["../sovri-sdk-rust"]

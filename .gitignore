@@ -1,6 +1,9 @@
 /target
 **/*.rs.bk
 *.pdb
+# Local dev override redirecting sovri-sdk to a sibling checkout
+# (see .cargo/config.toml.example).
+/.cargo/config.toml
 # Never commit secrets or local credentials.
 .env
 .env.*
