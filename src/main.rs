@@ -20,7 +20,11 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("--version" | "-V") => {
-            println!("sovri-agent {VERSION}");
+            // Relay the linked SDK contract version so every run reports it.
+            println!(
+                "sovri-agent {VERSION} (sovri-sdk {})",
+                sovri_agent::sdk_version()
+            );
             ExitCode::SUCCESS
         }
         None | Some("--help" | "-h") => {
