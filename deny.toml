@@ -27,3 +27,5 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# The agent pins the first-party SDK by git tag (path in dev, tag in CI).
+allow-git = ["https://github.com/Sovri/sovri-sdk-rust"]

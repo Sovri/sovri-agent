@@ -4,17 +4,25 @@ version = "0.0.0"
 edition = "2021"
 rust-version = "1.80"
 license = "Apache-2.0"
-description = "Sovri compliance agent — air-gapped rule execution (placeholder)."
+description = "Sovri compliance agent — air-gapped rule execution on the sovri-sdk engine."
 repository = "https://github.com/Sovri/sovri-agent"
 readme = "README.md"
 publish = false
+
+[lib]
+name = "sovri_agent"
+path = "src/lib.rs"
 
 [[bin]]
 name = "sovri-agent"
 path = "src/main.rs"
 
+[dependencies]
+sovri-sdk = { git = "https://github.com/Sovri/sovri-sdk-rust", tag = "v0.1.0", version = "0.1.0" }
+
 [lints.rust]
 unsafe_code = "forbid"
+missing_docs = "warn"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
