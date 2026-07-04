@@ -10,6 +10,7 @@ use std::fmt;
 
 use sovri_sdk::{Evaluation, ExecutionFailure, RuleContext, RuleEvaluator};
 
+pub mod docker;
 pub mod selftest;
 pub mod ssh;
 pub mod system;
