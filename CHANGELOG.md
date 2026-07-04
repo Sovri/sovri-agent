@@ -6,6 +6,23 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- SSH scanner (MAT-90): the agent's third scanner. `SshScanner` reads the host's
+  effective `sshd` configuration — the resolved `sshd -T` dump with includes and
+  defaults folded in, falling back to parsing `sshd_config` and its `sshd_config.d`
+  drop-ins when `sshd -T` is unavailable — into an `SshSnapshot`, then evaluates it
+  through the engine as a `RuleEvaluator`. `PermitRootLogin yes` FAILs while the
+  non-password paths (`prohibit-password`, `forced-commands-only`, the
+  `without-password` alias) WARN under the default catalogue and FAIL under a
+  hardened one; `PasswordAuthentication yes` FAILs, catching an unconfigured host at
+  the effective default; a legacy cipher, MAC, or key-exchange algorithm WARNs
+  naming each, and an explicit `Protocol 1` FAILs as a guard-rail; a host with no
+  SSH server is SKIPPED rather than a false PASS, while a present-but-unreadable
+  server ERRORs. On the fallback path an unresolved `Include` carries a WARNING
+  caveat — a directive still readable is graded, one that could hide inside the
+  unreadable include ERRORs rather than pass. Every non-PASS result carries a
+  Command evidence quoting the effective directive, anchored on the config file;
+  evaluation is a pure, deterministic function of the captured dump and asserts no
+  legal conclusion.
 - User scanner (MAT-89): the agent's second scanner. `UserScanner` captures the
   host's account state — the `passwd` base, the `shadow` lock / password / expiry
   state, and `group` / `sudoers` privilege grants — into a `UserSnapshot`, then
