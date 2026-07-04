@@ -137,6 +137,23 @@ fn a_malformed_os_release_with_no_version_is_an_error() {
     assert!(!asserts_legal_conclusion(reason), "no conclusion is drawn");
 }
 
+/// Scenario: An os-release with no distro ID is malformed and cannot be evaluated.
+#[test]
+fn an_os_release_with_no_id_is_an_error() {
+    let scanner = os_scanner("VERSION_ID=\"24.04\"\nPRETTY_NAME=\"Unknown 24.04\"\n");
+    let results = run_os(&scanner);
+
+    assert_eq!(status_of(&results, OS_EOL_RULE), Status::Error);
+    let reason = result_for(&results, OS_EOL_RULE)
+        .reason()
+        .expect("an ERROR carries a reason");
+    assert!(
+        reason.to_lowercase().contains("id"),
+        "the reason names the missing distro ID: {reason}"
+    );
+    assert!(!asserts_legal_conclusion(reason), "no conclusion is drawn");
+}
+
 /// Scenario: An unreadable os-release yields an execution error.
 #[test]
 fn an_unreadable_os_release_yields_an_error() {

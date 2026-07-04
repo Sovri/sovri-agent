@@ -162,11 +162,14 @@ impl ServicePolicy {
     }
 
     /// Whether `service` is interdicted, comparing on the base name (a trailing
-    /// `.service` unit suffix is ignored).
+    /// `.service` unit suffix is ignored on both the observed service and the
+    /// policy entries, so `telnet` and `telnet.service` are equivalent).
     #[must_use]
     pub fn interdicts(&self, service: &str) -> bool {
         let base = service_base_name(service);
-        self.interdicted.iter().any(|name| name == base)
+        self.interdicted
+            .iter()
+            .any(|name| service_base_name(name) == base)
     }
 }
 
@@ -506,6 +509,9 @@ impl SystemScanner {
         match &self.snapshot.os_release {
             OsRelease::Unreadable => Err(ExecutionFailure::new(
                 "the os-release file could not be read",
+            )),
+            OsRelease::Readable { id, .. } if id.trim().is_empty() => Err(ExecutionFailure::new(
+                "the os-release file carries no ID, so the OS distro could not be determined",
             )),
             OsRelease::Readable {
                 version_id: None, ..

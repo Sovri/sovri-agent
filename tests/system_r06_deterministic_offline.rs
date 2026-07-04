@@ -40,17 +40,14 @@ fn the_same_snapshot_yields_identical_results_and_evidence() {
         "both runs produce the same results in the same order"
     );
 
-    let hashes = |s: &SystemScanner| -> Vec<String> {
-        s.evidence_log()
-            .records()
-            .iter()
-            .map(|record| record.content_hash().to_string())
-            .collect()
-    };
+    // Compare the full evidence records — excerpt, size, locator, and hash — not
+    // just the placeholder content hash, so the check is sensitive to the payload.
+    let first_log = first_scan.evidence_log();
+    let second_log = second_scan.evidence_log();
     assert_eq!(
-        hashes(&first_scan),
-        hashes(&second_scan),
-        "the evidence content hashes are identical across the two runs"
+        first_log.records(),
+        second_log.records(),
+        "the evidence records are byte-for-byte identical across the two runs"
     );
 }
 
