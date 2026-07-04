@@ -465,17 +465,31 @@ impl SshScanner {
     }
 
     /// Evaluate [`WEAK_CRYPTO_RULE`]: any catalogue-listed legacy cipher, MAC, or
-    /// key-exchange algorithm is a finding naming each; a clean set passes. It never
-    /// fails to execute, so it returns an [`Evaluation`] directly.
-    fn evaluate_weak_crypto(&self) -> Evaluation {
+    /// key-exchange algorithm is a finding naming each. `Ciphers` / `MACs` /
+    /// `KexAlgorithms` may carry a leading modifier that adjusts the built-in
+    /// defaults rather than replacing them — `+` appends, `^` prepends, `-` removes.
+    /// `sshd -T` resolves these to a concrete list, but the fallback parse sees them
+    /// raw, so an appended or prepended algorithm is still assessed while a removal
+    /// enables nothing weak. A clean set passes, unless an unresolved `Include` could
+    /// be hiding a weak algorithm, in which case it errors rather than pass.
+    fn evaluate_weak_crypto(&self) -> Result<Evaluation, ExecutionFailure> {
         let mut weak = Vec::new();
         for (directive, kind) in [
             (CIPHERS, "cipher"),
             (MACS, "MAC"),
             (KEX_ALGORITHMS, "key exchange"),
         ] {
-            let Some(list) = self.snapshot.directive(directive) else {
+            let Some(raw) = self.snapshot.directive(directive) else {
                 continue;
+            };
+            let raw = raw.trim();
+            let list = match raw.as_bytes().first() {
+                // A '-' list only removes algorithms from the modern defaults, so it
+                // can enable nothing weak.
+                Some(b'-') => continue,
+                // '+' / '^' extend the defaults; assess the added algorithms.
+                Some(b'+' | b'^') => &raw[1..],
+                _ => raw,
             };
             for algorithm in list.split(',').map(str::trim).filter(|a| !a.is_empty()) {
                 if self.policy.is_weak(directive, algorithm) {
@@ -483,32 +497,45 @@ impl SshScanner {
                 }
             }
         }
-        if weak.is_empty() {
-            self.anchored(Evaluation::satisfied())
-        } else {
-            self.anchored(Evaluation::finding().with_detail(format!(
+        if !weak.is_empty() {
+            return Ok(self.anchored(Evaluation::finding().with_detail(format!(
                 "weak SSH cryptography is enabled: {}. Remove these legacy algorithms in favour of modern ciphers, MACs, and key-exchange methods.",
                 weak.join(", ")
-            )))
+            ))));
         }
+        // Nothing weak is visible, but on the fallback path an unresolved `Include`
+        // could hide a `Ciphers` / `MACs` / `KexAlgorithms` line, so a clean PASS
+        // cannot be asserted.
+        if self.snapshot.unresolved_include {
+            return Err(ExecutionFailure::new(
+                "the SSH cryptography configuration could not be confirmed: an Include was unresolved, so a weak cipher, MAC, or key-exchange algorithm may be set inside the unreadable include",
+            ));
+        }
+        Ok(self.anchored(Evaluation::satisfied()))
     }
 
     /// Evaluate [`PROTOCOL_V1_RULE`]: an explicit `Protocol 1` (obsolete `SSHv1`) is a
-    /// finding; its absence passes. It never fails to execute, so it returns an
-    /// [`Evaluation`] directly.
-    fn evaluate_protocol_v1(&self) -> Evaluation {
+    /// finding; its absence passes, unless an unresolved `Include` could be hiding a
+    /// `Protocol 1` directive, in which case it errors rather than pass.
+    fn evaluate_protocol_v1(&self) -> Result<Evaluation, ExecutionFailure> {
         let enables_v1 = self
             .snapshot
             .directive(PROTOCOL)
             .is_some_and(|value| value.split(',').map(str::trim).any(|token| token == "1"));
         if enables_v1 {
-            self.anchored(Evaluation::finding().with_detail(
+            return Ok(self.anchored(Evaluation::finding().with_detail(
                 "SSH protocol 1 (SSHv1) is explicitly enabled via 'Protocol 1'; it is obsolete and disallowed. Remove the 'Protocol 1' directive so only SSHv2 is used."
                     .to_string(),
-            ))
-        } else {
-            self.anchored(Evaluation::satisfied())
+            )));
         }
+        // `Protocol` is not visible, but on the fallback path an unresolved `Include`
+        // could set `Protocol 1`, so a clean PASS cannot be asserted.
+        if self.snapshot.unresolved_include {
+            return Err(ExecutionFailure::new(
+                "SSH protocol 1 (SSHv1) could not be ruled out: an Include was unresolved, so a 'Protocol 1' directive may be set inside the unreadable include",
+            ));
+        }
+        Ok(self.anchored(Evaluation::satisfied()))
     }
 }
 
@@ -533,8 +560,8 @@ impl RuleEvaluator for SshScanner {
             PERMIT_ROOT_LOGIN_RULE => self.evaluate_permit_root_login(),
             ROOT_LOGIN_KEY_ONLY_RULE => self.evaluate_root_login_key_only(),
             PASSWORD_AUTH_RULE => self.evaluate_password_auth(),
-            WEAK_CRYPTO_RULE => Ok(self.evaluate_weak_crypto()),
-            PROTOCOL_V1_RULE => Ok(self.evaluate_protocol_v1()),
+            WEAK_CRYPTO_RULE => self.evaluate_weak_crypto(),
+            PROTOCOL_V1_RULE => self.evaluate_protocol_v1(),
             other => Err(ExecutionFailure::new(format!(
                 "no ssh-scanner rule is registered for '{other}'"
             ))),
@@ -591,7 +618,10 @@ fn run_sshd_effective() -> Option<String> {
 fn read_config_with_drop_ins() -> Option<(String, bool)> {
     let base = std::fs::read_to_string(SSHD_CONFIG_LOCATOR).ok()?;
     let mut merged = base.clone();
-    let mut unresolved_include = false;
+    // Any `Include` other than the standard `sshd_config.d` drop-in directory is not
+    // merged by this fallback, so a directive could hide inside it; flag it unresolved
+    // up front so the graded rules never treat that gap as a clean PASS.
+    let mut unresolved_include = has_unmerged_include(&base);
     if references_drop_in_dir(&base) {
         match std::fs::read_dir("/etc/ssh/sshd_config.d") {
             Ok(entries) => {
@@ -626,6 +656,19 @@ fn references_drop_in_dir(base: &str) -> bool {
             let lower = line.to_ascii_lowercase();
             lower.starts_with("include") && lower.contains("sshd_config.d")
         })
+}
+
+/// Whether the base config has an `Include` this fallback does not merge — anything
+/// other than the standard `sshd_config.d` drop-in directory. Such an include may
+/// carry directives the fallback never sees, so its presence marks the parse as
+/// incomplete. The primary `sshd -T` path resolves every include natively and never
+/// reaches this code.
+fn has_unmerged_include(base: &str) -> bool {
+    base.lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .filter(|line| line.to_ascii_lowercase().starts_with("include"))
+        .any(|line| !line.to_ascii_lowercase().contains("sshd_config.d"))
 }
 
 /// Whether an SSH server is present on the host: an `sshd` binary on `PATH` or a

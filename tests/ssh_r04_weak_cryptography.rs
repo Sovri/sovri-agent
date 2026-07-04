@@ -10,7 +10,10 @@
 
 mod ssh_support;
 
-use ssh_support::{crypto_catalog, effective, result_for, run, status_of, CRYPTO_CONTROL};
+use ssh_support::{
+    crypto_catalog, effective, parsed_fallback, parsed_fallback_unresolved, result_for, run,
+    status_of, CRYPTO_CONTROL,
+};
 
 use sovri_agent::scanners::ssh::{PROTOCOL_V1_RULE, WEAK_CRYPTO_RULE};
 use sovri_sdk::Status;
@@ -104,4 +107,107 @@ fn protocol_1_alongside_legacy_ciphers_still_fails() {
     // control still fails rather than merely warning.
     assert_eq!(status_of(&results, PROTOCOL_V1_RULE), Status::Fail);
     assert_eq!(status_of(&results, WEAK_CRYPTO_RULE), Status::Warning);
+}
+
+/// Regression: OpenSSH `+`/`^`/`-` list modifiers are normalised on the fallback
+/// path. `sshd -T` resolves them to a concrete list, but a raw config parse sees
+/// them prefixed — an appended or prepended algorithm is still assessed, while a
+/// removal enables nothing weak.
+#[test]
+fn cipher_list_modifiers_are_normalised_on_the_fallback_path() {
+    // '+' appends to the modern defaults: the added legacy cipher is still weak.
+    let added = parsed_fallback("ciphers +3des-cbc\n");
+    let added_results = run(&added, &crypto_catalog(), &[CRYPTO_CONTROL]);
+    let result = result_for(&added_results, WEAK_CRYPTO_RULE);
+    assert_eq!(
+        result.status(),
+        Status::Warning,
+        "'+3des-cbc' adds a weak cipher"
+    );
+    assert!(
+        result
+            .reason()
+            .is_some_and(|reason| reason.contains("3des-cbc")),
+        "the reason still names the appended weak cipher"
+    );
+
+    // '^' prepends: the algorithm is assessed just the same.
+    let prepended = parsed_fallback("kexalgorithms ^diffie-hellman-group1-sha1\n");
+    assert_eq!(
+        status_of(
+            &run(&prepended, &crypto_catalog(), &[CRYPTO_CONTROL]),
+            WEAK_CRYPTO_RULE
+        ),
+        Status::Warning,
+        "'^diffie-hellman-group1-sha1' prepends a weak key exchange"
+    );
+
+    // '-' only removes from the defaults, so it can enable nothing weak.
+    let removed = parsed_fallback("ciphers -3des-cbc\n");
+    assert_eq!(
+        status_of(
+            &run(&removed, &crypto_catalog(), &[CRYPTO_CONTROL]),
+            WEAK_CRYPTO_RULE
+        ),
+        Status::Pass,
+        "'-3des-cbc' removes a cipher and enables nothing weak"
+    );
+}
+
+/// Regression: an empty or malformed algorithm list grades clean rather than
+/// panicking — empty tokens are filtered out.
+#[test]
+fn empty_or_malformed_algorithm_lists_pass_without_panicking() {
+    for raw in [
+        "ciphers \n",
+        "macs ,,\n",
+        "kexalgorithms   \n",
+        "ciphers ,\n",
+    ] {
+        let scanner = parsed_fallback(raw);
+        assert_eq!(
+            status_of(
+                &run(&scanner, &crypto_catalog(), &[CRYPTO_CONTROL]),
+                WEAK_CRYPTO_RULE
+            ),
+            Status::Pass,
+            "a malformed list ({raw:?}) grades clean without panicking"
+        );
+    }
+}
+
+/// Regression: on the fallback path an unresolved `Include` could hide a weak
+/// `Ciphers`/`MACs`/`KexAlgorithms` line or a `Protocol 1` directive, so a config
+/// with nothing weak visible ERRORs rather than asserting a clean PASS.
+#[test]
+fn an_unresolved_include_blocks_a_clean_crypto_pass() {
+    let scanner = parsed_fallback_unresolved(
+        "ciphers chacha20-poly1305@openssh.com\nkexalgorithms curve25519-sha256\n",
+    );
+    let results = run(&scanner, &crypto_catalog(), &[CRYPTO_CONTROL]);
+
+    assert_eq!(
+        status_of(&results, WEAK_CRYPTO_RULE),
+        Status::Error,
+        "an unresolved Include could hide a weak algorithm, so no clean PASS"
+    );
+    assert_eq!(
+        status_of(&results, PROTOCOL_V1_RULE),
+        Status::Error,
+        "an unresolved Include could set 'Protocol 1', so no clean PASS"
+    );
+}
+
+/// Regression: a weak algorithm that IS visible still WARNs even with an unresolved
+/// `Include` — the finding stands regardless of the unreadable file.
+#[test]
+fn a_visible_weak_algorithm_warns_despite_an_unresolved_include() {
+    let scanner = parsed_fallback_unresolved("ciphers 3des-cbc\n");
+    let results = run(&scanner, &crypto_catalog(), &[CRYPTO_CONTROL]);
+    let result = result_for(&results, WEAK_CRYPTO_RULE);
+
+    assert_eq!(result.status(), Status::Warning);
+    assert!(result
+        .reason()
+        .is_some_and(|reason| reason.contains("3des-cbc")));
 }

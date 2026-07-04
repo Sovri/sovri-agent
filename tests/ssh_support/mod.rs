@@ -203,6 +203,27 @@ pub fn effective_directive(line: &str) -> SshScanner {
     effective(&format!("{line}\n"))
 }
 
+/// A scanner over a parsed `sshd_config` fallback (no effective dump), with the
+/// shared catalogue policy. This is the path on which raw list modifiers and
+/// unmerged `Include`s are observed; `sshd -T` resolves both away.
+#[must_use]
+pub fn parsed_fallback(raw: &str) -> SshScanner {
+    SshScanner::new(SshSnapshot::builder().parsed_config(raw).build(), policy())
+}
+
+/// A parsed-fallback scanner whose configuration carries an unresolved `Include`, so
+/// a directive could be hiding in a file the fallback never read.
+#[must_use]
+pub fn parsed_fallback_unresolved(raw: &str) -> SshScanner {
+    SshScanner::new(
+        SshSnapshot::builder()
+            .parsed_config(raw)
+            .unresolved_include()
+            .build(),
+        policy(),
+    )
+}
+
 /// Execute `control_ids` against `scanner` with the shared engine, returning the
 /// per-rule results.
 ///
