@@ -18,7 +18,7 @@ name = "sovri-agent"
 path = "src/main.rs"
 
 [dependencies]
-sovri-sdk = { git = "https://github.com/Sovri/sovri-sdk-rust", tag = "v0.1.0", version = "0.1.0" }
+sovri-sdk = { git = "https://github.com/Sovri/sovri-sdk-rust", rev = "2e1e1ec86a5b03a6535d101ff090bf9d085e5a81", version = "0.1.0" }
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -11,6 +11,7 @@ use std::fmt;
 use sovri_sdk::{Evaluation, ExecutionFailure, RuleContext, RuleEvaluator};
 
 pub mod selftest;
+pub mod system;
 
 /// The verdict a scanner reaches from a captured snapshot, in the agent's own
 /// vocabulary. It is mapped to a [`sovri_sdk::Evaluation`] at the registry
