@@ -12,4 +12,4 @@ dependencies = [
 [[package]]
 name = "sovri-sdk"
 version = "0.1.0"
-source = "git+https://github.com/Sovri/sovri-sdk-rust?tag=v0.1.0#ba49c61bea658594eea3c8a0aa1fe84cc172158e"
+source = "git+https://github.com/Sovri/sovri-sdk-rust?rev=2e1e1ec86a5b03a6535d101ff090bf9d085e5a81#2e1e1ec86a5b03a6535d101ff090bf9d085e5a81"
