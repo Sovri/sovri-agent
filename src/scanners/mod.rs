@@ -11,6 +11,7 @@ use std::fmt;
 use sovri_sdk::{Evaluation, ExecutionFailure, RuleContext, RuleEvaluator};
 
 pub mod selftest;
+pub mod ssh;
 pub mod system;
 pub mod user;
 
