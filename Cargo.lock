@@ -4,12 +4,12 @@ version = 3
 
 [[package]]
 name = "sovri-agent"
-version = "0.0.0"
+version = "0.4.0"
 dependencies = [
  "sovri-sdk",
 ]
 
 [[package]]
 name = "sovri-sdk"
-version = "0.1.0"
-source = "git+https://github.com/Sovri/sovri-sdk-rust?rev=2e1e1ec86a5b03a6535d101ff090bf9d085e5a81#2e1e1ec86a5b03a6535d101ff090bf9d085e5a81"
+version = "0.2.0"
+source = "git+https://github.com/Sovri/sovri-sdk-rust?rev=fe49d255b62890e2f4a92d7fc21bb0d9ab117a69#fe49d255b62890e2f4a92d7fc21bb0d9ab117a69"

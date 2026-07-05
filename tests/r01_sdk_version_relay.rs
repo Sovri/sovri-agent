@@ -10,10 +10,10 @@ use sovri_agent::sdk_version;
 /// Scenario: The agent reports the linked SDK contract version.
 #[test]
 fn reports_the_linked_sdk_contract_version() {
-    // Given the agent links the sovri-sdk contract at version "0.1.0"
+    // Given the agent links the sovri-sdk contract at version "0.2.0"
     // When the agent reports its SDK contract version
-    // Then the reported version is "0.1.0"
-    assert_eq!(sdk_version(), "0.1.0");
+    // Then the reported version is "0.2.0"
+    assert_eq!(sdk_version(), "0.2.0");
 }
 
 /// Scenario: The reported version tracks the linked SDK, not a private copy.

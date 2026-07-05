@@ -5,6 +5,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-05
+
 ### Added
 - `scan` command (MAT-125): `sovri-agent scan` turns the four V0.4 scanners into a
   runnable command. It loads a `--catalog <dir>`, validates it, resolves a
@@ -20,6 +22,21 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so a fixed host state renders byte-identically across runs, and the command reads
   only the catalog directory and its flags — no network, no environment. Sourcing
   the real CIS baseline policies is deferred to MAT-124.
+- Docker scanner (MAT-91): the agent's fourth and final V0.4 scanner.
+  `DockerScanner` reads the host's effective Docker daemon posture offline —
+  `docker version` / `docker info` for the engine version and effective flags, and
+  `/etc/docker/daemon.json` for the persisted configuration — into a
+  `DockerSnapshot`, then evaluates it through the SDK engine as a `RuleEvaluator`.
+  The daemon version splits across two rules — an end-of-life release FAILs and a
+  merely-obsolete one WARNs — alongside insecure-registry, TLS-less TCP socket, and
+  daemon-hardening checks. A host with no daemon (absent, unreachable, or a
+  permission-denied probe) is `not_applicable` → SKIPPED for every rule, never PASS
+  and, by decision, never ERROR; it is the card that most visibly exercises the
+  MAT-123 extension. A small hand-rolled JSON-subset reader parses `daemon.json`
+  with no dependency, and a present-but-invalid file never panics. A secret on the
+  daemon surface (a `log-opts` credential) is redacted and the config summary emits
+  keys, not values, so a fixed host state renders byte-identically across runs.
+  Standard-library only.
 - SSH scanner (MAT-90): the agent's third scanner. `SshScanner` reads the host's
   effective `sshd` configuration — the resolved `sshd -T` dump with includes and
   defaults folded in, falling back to parsing `sshd_config` and its `sshd_config.d`

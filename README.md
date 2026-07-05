@@ -6,15 +6,18 @@ secrets.
 
 ## Status
 
-Bootstrapped on the `sovri-sdk` engine (`bin + lib`). The library exposes the
-seam the V0.4 Linux scanners plug into; the binary keeps the offline `selftest`
-command. Real host scanners land in MAT-88…91.
+v0.4.0 — the V0.4 Linux scanner track on the `sovri-sdk` engine (`bin + lib`).
+Four host scanners — system, user, SSH, and Docker — capture the host's effective
+posture offline and grade it through the SDK engine, reporting an absent subsystem
+as `SKIPPED` rather than a false pass. The `scan` command runs a selected catalogue
+over them and prints the results and compliance gaps; the binary keeps the offline
+`selftest` command.
 
 ```sh
 cargo run -- selftest
-# sovri-agent 0.0.0: selftest ok (offline, no external services)
+# sovri-agent 0.4.0: selftest ok (offline, no external services)
 cargo run -- --version
-# sovri-agent 0.0.0 (sovri-sdk 0.1.0)
+# sovri-agent 0.4.0 (sovri-sdk 0.2.0)
 ```
 
 ## Library
