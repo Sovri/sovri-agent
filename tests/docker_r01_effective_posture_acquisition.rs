@@ -126,3 +126,29 @@ fn a_signal_only_in_the_unparsable_file_errors_never_passes() {
     assert_eq!(result.status(), Status::Error);
     assert_ne!(result.status(), Status::Pass);
 }
+
+/// Scenario: A daemon.json carrying a malformed JSON number is rejected as unparsable,
+/// not accepted as valid. A lax number scanner that swallowed `1e` would mark the file
+/// present and skip the R-01 caveat, so the tightened parser is what keeps a malformed
+/// file on the caveat path.
+#[test]
+fn a_daemon_json_with_a_malformed_number_is_treated_as_malformed() {
+    let scanner = scanner(
+        DockerSnapshot::builder()
+            .reachable()
+            .daemon_json(r#"{"max-concurrent-downloads": 1e}"#)
+            .build(),
+    );
+
+    assert!(
+        scanner.acquisition_caveat().is_some(),
+        "an invalid JSON number makes daemon.json malformed and carries the caveat"
+    );
+    assert!(
+        scanner
+            .evidence_log()
+            .resolve(DAEMON_JSON_EVIDENCE_ID)
+            .is_none(),
+        "a malformed daemon.json yields no Config evidence"
+    );
+}

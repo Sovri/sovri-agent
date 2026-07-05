@@ -341,7 +341,14 @@ impl DockerSnapshot {
         let mut builder = DockerSnapshot::builder();
         match probe_daemon() {
             DaemonProbe::Reachable(version) => {
-                builder = builder.reachable();
+                // `probe_daemon` captures only the engine version, not the effective
+                // registry/socket flags, so the effective configuration is confirmable
+                // only from a parseable daemon.json. Marking it unconfirmable keeps the
+                // config-dependent rules (R-03/R-04/R-05) from passing on a synthetic
+                // empty config when daemon.json is absent or malformed — they error
+                // instead of falsely passing (R-01). Capturing the real effective flags
+                // from `docker info` is deferred host-acquisition work.
+                builder = builder.reachable().config_unconfirmable();
                 if let Some(version) = version {
                     builder = builder.server_version(version);
                 }
@@ -970,22 +977,49 @@ impl JsonParser {
         if self.peek() == Some('-') {
             self.pos += 1;
         }
-        let mut saw_digit = false;
-        while let Some(c) = self.peek() {
-            if c.is_ascii_digit() {
-                saw_digit = true;
+
+        // Integer part: a lone `0` or a non-zero digit run, per the JSON grammar. A
+        // lax scanner that accepted `1e`, `1+`, `1.`, or `007` would let a malformed
+        // daemon.json parse and be treated as present, bypassing the R-01 caveat.
+        match self.peek() {
+            Some('0') => {
                 self.pos += 1;
-            } else if matches!(c, '.' | 'e' | 'E' | '+' | '-') {
+                if matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                    return Err(JsonError);
+                }
+            }
+            Some(c) if c.is_ascii_digit() => {
+                while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                    self.pos += 1;
+                }
+            }
+            _ => return Err(JsonError),
+        }
+
+        if self.peek() == Some('.') {
+            self.pos += 1;
+            if !matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                return Err(JsonError);
+            }
+            while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
                 self.pos += 1;
-            } else {
-                break;
             }
         }
-        if saw_digit {
-            Ok(JsonValue::Num)
-        } else {
-            Err(JsonError)
+
+        if matches!(self.peek(), Some('e' | 'E')) {
+            self.pos += 1;
+            if matches!(self.peek(), Some('+' | '-')) {
+                self.pos += 1;
+            }
+            if !matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                return Err(JsonError);
+            }
+            while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                self.pos += 1;
+            }
         }
+
+        Ok(JsonValue::Num)
     }
 
     fn parse_string(&mut self) -> Result<String, JsonError> {
@@ -998,6 +1032,7 @@ impl JsonParser {
                 None => return Err(JsonError),
                 Some('"') => return Ok(text),
                 Some('\\') => text.push(self.parse_escape()?),
+                Some(c) if c <= '\u{001F}' => return Err(JsonError),
                 Some(c) => text.push(c),
             }
         }
