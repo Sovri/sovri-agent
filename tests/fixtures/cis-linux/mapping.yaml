@@ -1,0 +1,15 @@
+- control: container.docker.daemon
+  framework: cis-linux
+  reference: 5.1
+- control: host.accounts.root
+  framework: cis-linux
+  reference: 5.2
+- control: host.os.lifecycle
+  framework: cis-linux
+  reference: 5.3
+- control: host.ssh.password
+  framework: cis-linux
+  reference: 5.4
+- control: host.ssh.root-access
+  framework: cis-linux
+  reference: 5.5

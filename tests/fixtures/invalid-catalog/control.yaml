@@ -1,0 +1,4 @@
+- id: host.orphan
+  severity: major
+  weight: 5
+  remediation: This control is mapped to no framework, so the catalog fails validation.

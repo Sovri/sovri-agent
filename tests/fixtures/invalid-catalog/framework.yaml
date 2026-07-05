@@ -1,0 +1,5 @@
+id: cis-linux
+version: 1.0
+name: CIS Linux Benchmark
+source_url: https://www.cisecurity.org/benchmark/linux
+source_description: Center for Internet Security Linux Benchmark

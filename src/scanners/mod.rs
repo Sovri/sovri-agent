@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 use sovri_sdk::{Evaluation, ExecutionFailure, RuleContext, RuleEvaluator};
 
@@ -83,10 +84,14 @@ pub trait Scanner {
     fn evaluate(&self, snapshot: &Self::Snapshot) -> Verdict;
 }
 
-/// One registered scan: run it to produce an evaluation for the engine.
+/// One registered scan: run it against a [`RuleContext`] to produce an evaluation
+/// for the engine.
 ///
-/// `Send + Sync` so the registry the V0.4 scanners plug into can cross threads.
-type ScanRun = Box<dyn Fn() -> Result<Evaluation, ExecutionFailure> + Send + Sync>;
+/// The context is threaded through so a scanner that dispatches on the rule id —
+/// as every V0.4 scanner does — sees which of its rules is running. Scanners
+/// registered through the [`Scanner`] trait ignore it. `Send + Sync` so the
+/// registry the V0.4 scanners plug into can cross threads.
+type ScanRun = Box<dyn Fn(&RuleContext<'_>) -> Result<Evaluation, ExecutionFailure> + Send + Sync>;
 
 /// Maps rule ids to their scanners and dispatches each [`RuleContext`] to the
 /// scanner registered for its rule id.
@@ -113,7 +118,7 @@ impl Registry {
     where
         S: Scanner + Send + Sync + 'static,
     {
-        let run: ScanRun = Box::new(move || {
+        let run: ScanRun = Box::new(move |_context| {
             let snapshot = scanner
                 .acquire()
                 .map_err(|error| ExecutionFailure::new(format!("acquisition failed: {error}")))?;
@@ -134,7 +139,24 @@ impl Registry {
         S: Scanner + Send + Sync + 'static,
         S::Snapshot: Send + Sync + 'static,
     {
-        let run: ScanRun = Box::new(move || Ok(scanner.evaluate(&snapshot).into_evaluation()));
+        let run: ScanRun =
+            Box::new(move |_context| Ok(scanner.evaluate(&snapshot).into_evaluation()));
+        self.runs.insert(rule_id.into(), run);
+    }
+
+    /// Registers a [`RuleEvaluator`] directly for a rule id. When the rule runs,
+    /// the registry forwards the [`RuleContext`] to `evaluator`.
+    ///
+    /// This is how the V0.4 scanners plug in: each acquires or is handed its own
+    /// snapshot up front, then dispatches on the rule id in its own `evaluate`. A
+    /// single scanner backing several rules is shared through one `Arc` and
+    /// registered under each of its rule ids.
+    pub fn register_rule_evaluator(
+        &mut self,
+        rule_id: impl Into<String>,
+        evaluator: Arc<dyn RuleEvaluator + Send + Sync>,
+    ) {
+        let run: ScanRun = Box::new(move |context| evaluator.evaluate(context));
         self.runs.insert(rule_id.into(), run);
     }
 }
@@ -143,7 +165,7 @@ impl RuleEvaluator for Registry {
     fn evaluate(&self, context: &RuleContext<'_>) -> Result<Evaluation, ExecutionFailure> {
         let rule_id = context.rule().id();
         match self.runs.get(rule_id) {
-            Some(run) => run(),
+            Some(run) => run(context),
             None => Err(ExecutionFailure::new(format!(
                 "no scanner registered for rule '{rule_id}'"
             ))),
