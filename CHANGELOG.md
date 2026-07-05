@@ -6,6 +6,20 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `scan` command (MAT-125): `sovri-agent scan` turns the four V0.4 scanners into a
+  runnable command. It loads a `--catalog <dir>`, validates it, resolves a
+  `--framework <id>` or `--control <id,...>` selection (exactly one; unknown ids
+  and empty entries are usage errors, duplicates run once), builds the host
+  registry from the docker, ssh, system, and user scanners under baseline policies,
+  runs the selected controls on the SDK engine, and prints a listing — one line per
+  result with its control id, rule id, status, reason, and evidence references —
+  followed by the compliance gaps projected from the FAIL and WARNING results. The
+  exit code reflects the posture: `0` when clean, `2` on a FAIL or execution error,
+  `64` on a usage, catalog-load, or validation error, with `--fail-on
+  fail|warning|never` tuning the threshold. The report carries no wall-clock value,
+  so a fixed host state renders byte-identically across runs, and the command reads
+  only the catalog directory and its flags — no network, no environment. Sourcing
+  the real CIS baseline policies is deferred to MAT-124.
 - SSH scanner (MAT-90): the agent's third scanner. `SshScanner` reads the host's
   effective `sshd` configuration — the resolved `sshd -T` dump with includes and
   defaults folded in, falling back to parsing `sshd_config` and its `sshd_config.d`

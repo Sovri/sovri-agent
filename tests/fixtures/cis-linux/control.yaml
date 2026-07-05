@@ -1,0 +1,20 @@
+- id: container.docker.daemon
+  severity: major
+  weight: 5
+  remediation: Upgrade the Docker daemon to a vendor-supported release.
+- id: host.accounts.root
+  severity: major
+  weight: 5
+  remediation: Keep root the only uid-0 account.
+- id: host.os.lifecycle
+  severity: major
+  weight: 5
+  remediation: Run a vendor-supported operating system release.
+- id: host.ssh.password
+  severity: minor
+  weight: 3
+  remediation: Disable SSH password authentication.
+- id: host.ssh.root-access
+  severity: major
+  weight: 5
+  remediation: Disable direct SSH root login.
