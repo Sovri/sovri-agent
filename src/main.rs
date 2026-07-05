@@ -4,16 +4,23 @@
 //! sovri-agent — placeholder CLI for the Sovri compliance agent.
 //!
 //! Scaffolded by MAT-81. Runs fully offline: no network, no environment
-//! configuration, no secrets. Real rule execution lands in later tickets
-//! (MAT-85). The `selftest` subcommand proves air-gapped operation from day one.
+//! configuration, no secrets. The `scan` subcommand (MAT-125) runs a catalog's
+//! controls against the host scanners; the `selftest` subcommand proves
+//! air-gapped operation from day one.
 
 use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const USAGE: &str = "usage: sovri-agent <selftest|--version|--help>";
+const USAGE: &str = "usage: sovri-agent <scan|selftest|--version|--help>";
 
 fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
+        Some("scan") => {
+            // The arguments after the subcommand drive the scan; it reads only
+            // the catalog directory and the flags, never the environment.
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            sovri_agent::scan::run(&args)
+        }
         Some("selftest") => {
             // No I/O beyond stdout; no network; no environment lookups.
             println!("sovri-agent {VERSION}: selftest ok (offline, no external services)");
