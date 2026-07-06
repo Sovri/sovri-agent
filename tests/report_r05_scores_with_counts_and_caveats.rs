@@ -133,7 +133,7 @@ fn scores_carry_a_posture_caveat() {
     // Then the score section states that scores summarize observed compliance posture
     assert_pdf_text_line(&text, "Scores summarize observed compliance posture.");
     // And it states that scores are not a legal risk rating
-    assert_pdf_text_line(&text, "Scores are not a legal risk rating.");
+    assert_pdf_text_line(&text, "Scores do not provide legal-risk ratings.");
 }
 
 #[test]

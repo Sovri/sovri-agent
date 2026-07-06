@@ -79,7 +79,7 @@ const CONSENT_CORPUS_FRAMEWORK_SCORE: &str = "0.0%";
 /// Compliance-posture caveat shown with MAT-87 scores.
 const SCORE_POSTURE_CAVEAT: &str = "Scores summarize observed compliance posture.";
 /// Legal-risk caveat shown with MAT-87 scores.
-const SCORE_LEGAL_RISK_CAVEAT: &str = "Scores are not a legal risk rating.";
+const SCORE_LEGAL_RISK_CAVEAT: &str = "Scores do not provide legal-risk ratings.";
 /// Control represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_CONTROL_ID: &str = "consent.tracker.prior-consent";
 /// Tracker evidence rule represented by the canonical MAT-95 consent corpus.
