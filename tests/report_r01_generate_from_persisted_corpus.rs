@@ -144,20 +144,30 @@ fn report_generation_reads_the_corpus_and_runs_no_scanner() {
     // And the report content is derived only from the persisted store.
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(
-        text.contains(CONSENT_CONTROL),
-        "the persisted control id is rendered"
+        text.contains("Evidence records: 1"),
+        "the persisted evidence record count is rendered"
     );
+    let evidence_index = text
+        .find("Evidence: ev-0001")
+        .expect("the persisted evidence id is rendered");
+    let control_index = text
+        .find(CONSENT_CONTROL)
+        .expect("the persisted control id is rendered");
+    let locator_index = text
+        .find("dist/main.js")
+        .expect("the persisted evidence locator is rendered");
+    let signal_index = text
+        .find("www.google-analytics.com")
+        .expect("the persisted evidence signal is rendered");
+    let hash_index = text
+        .find(HASH)
+        .expect("the persisted evidence integrity hash is rendered");
     assert!(
-        text.contains("dist/main.js"),
-        "the persisted evidence locator is rendered"
-    );
-    assert!(
-        text.contains("www.google-analytics.com"),
-        "the persisted evidence signal is rendered"
-    );
-    assert!(
-        text.contains(HASH),
-        "the persisted evidence integrity hash is rendered"
+        evidence_index < control_index
+            && control_index < locator_index
+            && locator_index < signal_index
+            && signal_index < hash_index,
+        "the evidence record is rendered before its indented fields"
     );
 }
 
