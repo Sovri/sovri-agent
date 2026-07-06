@@ -76,6 +76,8 @@ const CONSENT_CORPUS_RESULT_COUNTS: &str = "1 FAIL, 1 PASS";
 const CONSENT_CORPUS_SCORE_RESULT_COUNTS: &str = "1 FAIL, 1 PASS, 0 WARNING, 0 SKIPPED, 0 ERROR";
 /// Framework score represented by the canonical MAT-95 MAT-87 score output.
 const CONSENT_CORPUS_FRAMEWORK_SCORE: &str = "0.0%";
+/// Usage hint for report framework score input.
+const FRAMEWORK_SCORE_USAGE: &str = "use 0.0% through 100.0%";
 /// Compliance-posture caveat shown with MAT-87 scores.
 const SCORE_POSTURE_CAVEAT: &str = "Scores summarize observed compliance posture.";
 /// Legal-risk caveat shown with MAT-87 scores.
@@ -180,10 +182,12 @@ fn score_percentage_tenths(value: &str) -> Option<u16> {
         return None;
     }
 
-    let whole = whole.parse::<u16>().ok()?;
-    let fractional = fractional.parse::<u16>().ok()?;
+    let whole = whole.parse::<u32>().ok()?;
+    let fractional = fractional.parse::<u32>().ok()?;
     let tenths = whole.checked_mul(10)?.checked_add(fractional)?;
-    (tenths <= 1000).then_some(tenths)
+    (tenths <= 1000)
+        .then_some(tenths)
+        .and_then(|tenths| u16::try_from(tenths).ok())
 }
 
 /// The `report` command help text.
@@ -367,7 +371,7 @@ mod tests {
 
     #[test]
     fn score_percentage_validation_rejects_malformed_values() {
-        for percentage in ["-0.1%", "100.1%", "101.0%", "42%", "abc"] {
+        for percentage in ["-0.1%", "100.1%", "101.0%", "42%", "50.12%", "50.x%", "abc"] {
             assert!(
                 !is_valid_score_percentage(percentage),
                 "{percentage} is not a valid one-decimal percentage"
@@ -394,7 +398,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "invalid --framework-score '101.0%' (use 0.0% through 100.0%)"
+            format!("invalid --framework-score '101.0%' ({FRAMEWORK_SCORE_USAGE})")
         );
     }
 }
@@ -733,7 +737,7 @@ impl fmt::Display for Error {
             Error::InvalidFrameworkScore(value) => {
                 write!(
                     f,
-                    "invalid --framework-score '{value}' (use 0.0% through 100.0%)"
+                    "invalid --framework-score '{value}' ({FRAMEWORK_SCORE_USAGE})"
                 )
             }
             Error::MissingValue(flag) => write!(f, "missing value for {flag}"),
