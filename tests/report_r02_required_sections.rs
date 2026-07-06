@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! R-02 - the PDF report contains every required section.
-//! Covers issues #101, #102, #103, and #104.
+//! Covers issues #101, #102, #103, #104, and #105.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,6 +22,7 @@ const CONSENT_CONTROL: &str = "consent.tracker.prior-consent";
 const TRACKER_RULE: &str = "consent.detect-trackers-without-consent-evidence";
 const CMP_RULE: &str = "consent.detect-cmp-misconfiguration";
 const WARNING_REASON: &str = "consent signal was inconclusive";
+const CONSENT_REMEDIATION: &str = "Block non-essential trackers until the visitor records consent.";
 const HASH: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const REQUIRED_SECTIONS: [&str; 6] = [
     "Executive summary",
@@ -199,4 +200,24 @@ fn control_matrix_renders_a_warning_result_visibly() {
     assert_pdf_text_line(&text, &format!("Rule {CMP_RULE}: WARNING"));
     // And that row shows the explanation "consent signal was inconclusive"
     assert_pdf_text_line(&text, &format!("Explanation: {WARNING_REASON}"));
+}
+
+#[test]
+fn gap_section_carries_remediation_guidance() {
+    // Given a compliance report generated from the "shopfront-2026-06-24" consent corpus
+    let store = persisted_consent_store();
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+
+    assert!(
+        output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Then the "Gaps" section for control "consent.tracker.prior-consent" includes remediation "Block non-essential trackers until the visitor records consent."
+    assert_pdf_text_line(&text, "Gaps");
+    assert_pdf_text_line(
+        &text,
+        &format!("Remediation for {CONSENT_CONTROL}: {CONSENT_REMEDIATION}"),
+    );
 }
