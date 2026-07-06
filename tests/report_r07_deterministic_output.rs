@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! R-07 - Report output is deterministic.
-//! Covers issues #117, #118, and #119.
+//! Covers issues #117, #118, #119, and #120.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,6 +26,7 @@ const SSH_ERROR_REASON: &str = "sshd configuration could not be read";
 const HASH: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const DOCKER_HASH: &str = "sha256:cb8379ac2098aa165029e3938a51da0bcecfc008fd6795f401178647f96c5b34";
 const SSH_HASH: &str = "sha256:50ae61e841fac4e8f9e40baf2f53d2128d2c015999fc8d870d1296c0e0e8a9f4";
+const LARGE_CORPUS_RESULTS: usize = 120;
 
 struct TempStore {
     root: PathBuf,
@@ -128,6 +129,30 @@ fn persisted_status_store(label: &str, records: &[Evidence]) -> TempStore {
     store
 }
 
+fn large_control_evidence(index: usize) -> Evidence {
+    Evidence::builder()
+        .id(format!("ev-large-{index:03}"))
+        .kind(EvidenceKind::RouteBuild)
+        .locator(format!("large-corpus/control-{index:03}.json"))
+        .content(format!("large corpus control result {index:03}").into_bytes())
+        .signal(format!("large corpus signal {index:03}"))
+        .build()
+        .expect("large corpus evidence builds")
+        .link_to_control(format!("large.control.{index:03}"))
+        .expect("large corpus evidence links")
+}
+
+fn persisted_large_corpus_store() -> TempStore {
+    let store = TempStore::new("large-corpus");
+    let records: Vec<Evidence> = (0..LARGE_CORPUS_RESULTS)
+        .rev()
+        .map(large_control_evidence)
+        .collect();
+    let mut evidence_store = EvidenceStore::open(store.path()).expect("open evidence store");
+    evidence_store.write_all(&records).expect("write evidence");
+    store
+}
+
 fn run_report(run_id: &str, store: &Path, executed_at: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_sovri-agent"))
         .arg("report")
@@ -177,6 +202,14 @@ fn assert_pdf_lines_ordered(text: &str, expected: &[String]) {
         });
         cursor += offset + marker.len();
     }
+}
+
+fn page_start_offsets(pdf: &[u8]) -> Vec<usize> {
+    let marker = b"<< /Type /Page /Parent 2 0 R";
+    pdf.windows(marker.len())
+        .enumerate()
+        .filter_map(|(index, window)| (window == marker).then_some(index))
+        .collect()
 }
 
 #[test]
@@ -258,4 +291,31 @@ fn controls_and_rules_render_in_stable_order_regardless_of_input_order() {
     let canonical = run_report(RUN_ID, canonical_store.path(), EXECUTED_AT);
     assert_pdf_output(&canonical, "canonical");
     assert_eq!(canonical.stdout, shuffled.stdout);
+}
+
+#[test]
+fn multi_page_report_stays_deterministic_across_regenerations() {
+    // Given a large compliance corpus of 120 control results that spans several PDF pages
+    let store = persisted_large_corpus_store();
+
+    // And its fixed executed-at is "2026-06-24T13:16:28Z"
+    // When the PDF report is generated from the large corpus
+    let first = run_report(RUN_ID, store.path(), EXECUTED_AT);
+    assert_pdf_output(&first, "first");
+
+    // And the PDF report is generated from the large corpus a second time
+    let second = run_report(RUN_ID, store.path(), EXECUTED_AT);
+    assert_pdf_output(&second, "second");
+
+    // Then the two PDFs are byte-identical
+    assert_eq!(second.stdout, first.stdout);
+
+    // And every page break falls at the same byte offset in both PDFs
+    let first_page_offsets = page_start_offsets(&first.stdout);
+    let second_page_offsets = page_start_offsets(&second.stdout);
+    assert!(
+        first_page_offsets.len() > 1,
+        "large corpus spans several PDF pages; page starts: {first_page_offsets:?}"
+    );
+    assert_eq!(second_page_offsets, first_page_offsets);
 }
