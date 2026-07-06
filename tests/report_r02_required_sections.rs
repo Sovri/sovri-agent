@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! R-02 - the PDF report contains every required section.
-//! Covers issues #101 and #102.
+//! Covers issues #101, #102, and #103.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,6 +18,8 @@ const FRAMEWORK_ID: &str = "gdpr-eprivacy";
 const CATALOG_VERSION: &str = "2016-679";
 const RESULT_COUNTS: &str = "1 FAIL, 1 PASS";
 const CONSENT_CONTROL: &str = "consent.tracker.prior-consent";
+const TRACKER_RULE: &str = "consent.detect-trackers-without-consent-evidence";
+const CMP_RULE: &str = "consent.detect-cmp-misconfiguration";
 const HASH: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const REQUIRED_SECTIONS: [&str; 6] = [
     "Executive summary",
@@ -135,4 +137,25 @@ fn executive_summary_carries_the_runs_headline_facts() {
     assert_pdf_text_line(&text, &format!("Catalog version: {CATALOG_VERSION}"));
     // And it shows the result counts "1 FAIL, 1 PASS"
     assert_pdf_text_line(&text, &format!("Result counts: {RESULT_COUNTS}"));
+}
+
+#[test]
+fn control_matrix_lists_the_control_with_a_status_per_rule() {
+    // Given a compliance report generated from the "shopfront-2026-06-24" consent corpus
+    let store = persisted_consent_store();
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+
+    assert!(
+        output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Then the "Control matrix" section has a row for control "consent.tracker.prior-consent"
+    assert_pdf_text_line(&text, "Control matrix");
+    assert_pdf_text_line(&text, &format!("Control: {CONSENT_CONTROL}"));
+    // And that control shows status "FAIL" for rule "consent.detect-trackers-without-consent-evidence"
+    assert_pdf_text_line(&text, &format!("Rule {TRACKER_RULE}: FAIL"));
+    // And that control shows status "PASS" for rule "consent.detect-cmp-misconfiguration"
+    assert_pdf_text_line(&text, &format!("Rule {CMP_RULE}: PASS"));
 }

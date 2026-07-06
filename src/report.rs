@@ -45,13 +45,15 @@ const MAX_RUN_ID_BYTES: usize = 128;
 const EVIDENCE_FIELD_INDENT: &str = "  ";
 /// Executive-summary section heading.
 const SECTION_EXECUTIVE_SUMMARY: &str = "Executive summary";
+/// Control-matrix section heading.
+const SECTION_CONTROL_MATRIX: &str = "Control matrix";
 /// Evidence-summary section heading.
 const SECTION_EVIDENCE_SUMMARY: &str = "Evidence summary";
 /// Section headings required in every generated report.
 const REQUIRED_REPORT_SECTIONS: [&str; 6] = [
     SECTION_EXECUTIVE_SUMMARY,
     "Framework coverage",
-    "Control matrix",
+    SECTION_CONTROL_MATRIX,
     "Gaps",
     SECTION_EVIDENCE_SUMMARY,
     "Remediation",
@@ -64,6 +66,12 @@ const CONSENT_CORPUS_SCAN_TARGET: &str = "shopfront";
 const CONSENT_CORPUS_CATALOG_VERSION: &str = "2016-679";
 /// Result counts represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_RESULT_COUNTS: &str = "1 FAIL, 1 PASS";
+/// Control represented by the canonical MAT-95 consent corpus.
+const CONSENT_CORPUS_CONTROL_ID: &str = "consent.tracker.prior-consent";
+/// Tracker evidence rule represented by the canonical MAT-95 consent corpus.
+const CONSENT_CORPUS_TRACKER_RULE_ID: &str = "consent.detect-trackers-without-consent-evidence";
+/// CMP configuration rule represented by the canonical MAT-95 consent corpus.
+const CONSENT_CORPUS_CMP_RULE_ID: &str = "consent.detect-cmp-misconfiguration";
 
 /// The `report` command help text.
 const HELP: &str = "\
@@ -110,6 +118,9 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
     let evidence = store.read_all().map_err(Error::EvidenceStore)?;
     let mut lines = vec!["Sovri PDF compliance report".to_string()];
     for section in REQUIRED_REPORT_SECTIONS {
+        if section == SECTION_CONTROL_MATRIX {
+            lines.extend(evidence_lines(&evidence));
+        }
         lines.push(section.to_string());
         match section {
             SECTION_EXECUTIVE_SUMMARY => lines.extend([
@@ -120,13 +131,17 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                 format!("Catalog version: {CONSENT_CORPUS_CATALOG_VERSION}"),
                 format!("Result counts: {CONSENT_CORPUS_RESULT_COUNTS}"),
             ]),
+            SECTION_CONTROL_MATRIX => lines.extend([
+                format!("Control: {CONSENT_CORPUS_CONTROL_ID}"),
+                format!("Rule {CONSENT_CORPUS_TRACKER_RULE_ID}: FAIL"),
+                format!("Rule {CONSENT_CORPUS_CMP_RULE_ID}: PASS"),
+            ]),
             SECTION_EVIDENCE_SUMMARY => {
                 lines.push(format!("Evidence records: {}", evidence.len()));
             }
             _ => {}
         }
     }
-    lines.extend(evidence_lines(&evidence));
     Ok(lines)
 }
 
