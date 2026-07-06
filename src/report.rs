@@ -123,6 +123,10 @@ fn non_conclusive_status(control_id: &str, reason: &str) -> Option<&'static str>
     }
 }
 
+fn control_row(control_id: &str, status: &str) -> String {
+    format!("Control row: {control_id}: {status}")
+}
+
 /// The `report` command help text.
 const HELP: &str = "\
 usage: sovri-agent report --run <id> --evidence-store <dir> --executed-at <timestamp>
@@ -186,9 +190,11 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                 format!("Result counts: {CONSENT_CORPUS_RESULT_COUNTS}"),
             ]),
             SECTION_CONTROL_MATRIX => {
+                // Keep legacy rule lines for R-02; R-04 rows provide one countable row per status.
                 lines.extend([
                     format!("Control: {CONSENT_CORPUS_CONTROL_ID}"),
                     format!("Rule {CONSENT_CORPUS_TRACKER_RULE_ID}: FAIL"),
+                    control_row(CONSENT_CORPUS_CONTROL_ID, "FAIL"),
                 ]);
                 if let Some(reason) = cmp_warning_reason {
                     lines.push(format!("Rule {CONSENT_CORPUS_CMP_RULE_ID}: WARNING"));
@@ -204,7 +210,7 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                     let Some(status) = non_conclusive_status(control_id, reason) else {
                         continue;
                     };
-                    lines.push(format!("Control row: {control_id}: {status}"));
+                    lines.push(control_row(control_id, status));
                     lines.push(format!("Explanation: {reason}"));
                 }
             }
