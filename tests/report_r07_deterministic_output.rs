@@ -23,11 +23,16 @@ struct TempStore {
 impl TempStore {
     fn new(label: &str) -> Self {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
-        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "sovri-agent-mat95-r07-{label}-{}-{unique}",
-            std::process::id()
-        ));
+        let root = loop {
+            let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let candidate = std::env::temp_dir().join(format!(
+                "sovri-agent-mat95-r07-{label}-{}-{unique}",
+                std::process::id()
+            ));
+            if !candidate.exists() {
+                break candidate;
+            }
+        };
         TempStore { root }
     }
 
@@ -74,6 +79,22 @@ fn run_report(run_id: &str, store: &Path, executed_at: &str) -> Output {
         .expect("running sovri-agent report")
 }
 
+fn assert_pdf_output(output: &Output, label: &str) {
+    assert!(
+        output.status.success(),
+        "{label} report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.starts_with(b"%PDF-"),
+        "{label} has a PDF header"
+    );
+    assert!(
+        output.stdout.ends_with(b"%%EOF\n"),
+        "{label} has a PDF EOF marker"
+    );
+}
+
 #[test]
 fn generating_the_report_twice_yields_byte_identical_pdfs() {
     // Given the "shopfront-2026-06-24" consent corpus with fixed executed-at "2026-06-24T13:16:28Z"
@@ -81,19 +102,11 @@ fn generating_the_report_twice_yields_byte_identical_pdfs() {
 
     // When the PDF report is generated from the corpus
     let first = run_report(RUN_ID, store.path(), EXECUTED_AT);
-    assert!(
-        first.status.success(),
-        "first report command exits successfully, stderr: {}",
-        String::from_utf8_lossy(&first.stderr)
-    );
+    assert_pdf_output(&first, "first");
 
     // And the PDF report is generated from the same corpus a second time
     let second = run_report(RUN_ID, store.path(), EXECUTED_AT);
-    assert!(
-        second.status.success(),
-        "second report command exits successfully, stderr: {}",
-        String::from_utf8_lossy(&second.stderr)
-    );
+    assert_pdf_output(&second, "second");
 
     // Then the two PDFs are byte-identical
     assert_eq!(second.stdout, first.stdout);
