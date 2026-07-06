@@ -41,6 +41,8 @@ const DEFAULT_LINE_HEIGHT_POINTS: u8 = 14;
 const PDF_OBJECT_COUNT: usize = 5;
 /// Maximum accepted run identifier length.
 const MAX_RUN_ID_BYTES: usize = 128;
+/// Prefix for fields nested under a rendered evidence record.
+const EVIDENCE_FIELD_INDENT: &str = "  ";
 
 /// The `report` command help text.
 const HELP: &str = "\
@@ -100,13 +102,19 @@ fn evidence_lines(evidence: &EvidenceLog) -> Vec<String> {
     for record in evidence.records() {
         lines.push(format!("Evidence: {}", record.id()));
         if let Some(control_id) = record.control_id() {
-            lines.push(format!("  Control: {control_id}"));
+            lines.push(format!("{EVIDENCE_FIELD_INDENT}Control: {control_id}"));
         }
-        lines.push(format!("  Locator: {}", record.locator()));
+        lines.push(format!(
+            "{EVIDENCE_FIELD_INDENT}Locator: {}",
+            record.locator()
+        ));
         if let Some(signal) = record.signal() {
-            lines.push(format!("  Signal: {signal}"));
+            lines.push(format!("{EVIDENCE_FIELD_INDENT}Signal: {signal}"));
         }
-        lines.push(format!("  Integrity: {}", record.content_hash()));
+        lines.push(format!(
+            "{EVIDENCE_FIELD_INDENT}Integrity: {}",
+            record.content_hash()
+        ));
     }
     lines
 }
