@@ -122,6 +122,8 @@ const UNCONFIGURED_GAP_SOURCE_URL: &str = "unconfigured";
 const UNCONFIGURED_GAP_SEVERITY: &str = "unknown";
 /// Signal marker used by report fixtures for controls that passed.
 const PASS_SIGNAL: &str = "PASS";
+/// Integrity digest prefixes rendered as report algorithm labels.
+const INTEGRITY_ALGORITHMS: [(&str, &str); 1] = [("sha256:", "SHA-256")];
 /// Executive-summary explanation when no controls were evaluated.
 const NO_CONTROLS_EVALUATED: &str = "No controls were evaluated";
 /// Placeholder when no potential gap rows are rendered.
@@ -492,7 +494,9 @@ fn append_evidence_appendix_lines(lines: &mut Vec<String>, evidence: &EvidenceLo
 }
 
 fn integrity_algorithm(integrity: &str) -> Option<&'static str> {
-    integrity.strip_prefix("sha256:").map(|_| "SHA-256")
+    INTEGRITY_ALGORITHMS
+        .iter()
+        .find_map(|(prefix, algorithm)| integrity.starts_with(prefix).then_some(*algorithm))
 }
 
 struct EvidenceSummaryMetadata {
