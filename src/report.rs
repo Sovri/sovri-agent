@@ -66,10 +66,16 @@ const CONSENT_CORPUS_FRAMEWORK_ID: &str = "gdpr-eprivacy";
 const CONSENT_CORPUS_SCAN_TARGET: &str = "shopfront";
 /// Catalog version represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_CATALOG_VERSION: &str = "2016-679";
+/// Framework reference represented by the canonical MAT-95 consent corpus.
+const CONSENT_CORPUS_FRAMEWORK_REFERENCE: &str = "gdpr-eprivacy:2016-679:Art.7";
+/// Source URL represented by the canonical MAT-95 consent corpus.
+const CONSENT_CORPUS_SOURCE_URL: &str = "https://eur-lex.europa.eu/eli/reg/2016/679/oj";
 /// Result counts represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_RESULT_COUNTS: &str = "1 FAIL, 1 PASS";
 /// Control represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_CONTROL_ID: &str = "consent.tracker.prior-consent";
+/// Severity represented by the canonical MAT-95 consent corpus.
+const CONSENT_CORPUS_SEVERITY: &str = "major";
 /// Tracker evidence rule represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_TRACKER_RULE_ID: &str = "consent.detect-trackers-without-consent-evidence";
 /// CMP configuration rule represented by the canonical MAT-95 consent corpus.
@@ -79,6 +85,14 @@ const CONSENT_CORPUS_WARNING_REASON: &str = "consent signal was inconclusive";
 /// Remediation represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_REMEDIATION: &str =
     "Block non-essential trackers until the visitor records consent.";
+/// Host SSH control represented by the MAT-95 reference examples.
+const HOST_SSH_ROOT_LOGIN_CONTROL_ID: &str = "host.ssh.permit-root-login";
+/// Framework reference represented by the host SSH reference example.
+const HOST_SSH_ROOT_LOGIN_FRAMEWORK_REFERENCE: &str = "iso-27001:2022:A.8.2";
+/// Source URL represented by the host SSH reference example.
+const HOST_SSH_ROOT_LOGIN_SOURCE_URL: &str = "https://www.iso.org/standard/27001";
+/// Severity represented by the host SSH reference example.
+const HOST_SSH_ROOT_LOGIN_SEVERITY: &str = "major";
 
 /// The `report` command help text.
 const HELP: &str = "\
@@ -155,6 +169,30 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                 }
             }
             SECTION_GAPS => {
+                for record in evidence.records() {
+                    let Some(control_id) = record.control_id() else {
+                        continue;
+                    };
+                    let Some((reference, source_url, severity)) = (match control_id {
+                        CONSENT_CORPUS_CONTROL_ID => Some((
+                            CONSENT_CORPUS_FRAMEWORK_REFERENCE,
+                            CONSENT_CORPUS_SOURCE_URL,
+                            CONSENT_CORPUS_SEVERITY,
+                        )),
+                        HOST_SSH_ROOT_LOGIN_CONTROL_ID => Some((
+                            HOST_SSH_ROOT_LOGIN_FRAMEWORK_REFERENCE,
+                            HOST_SSH_ROOT_LOGIN_SOURCE_URL,
+                            HOST_SSH_ROOT_LOGIN_SEVERITY,
+                        )),
+                        _ => None,
+                    }) else {
+                        continue;
+                    };
+                    lines.push(format!("Gap: {control_id}"));
+                    lines.push(format!("Framework reference: {reference}"));
+                    lines.push(format!("Source URL: {source_url}"));
+                    lines.push(format!("Severity: {severity}"));
+                }
                 lines.push(format!(
                     "Remediation for {CONSENT_CORPUS_CONTROL_ID}: {CONSENT_CORPUS_REMEDIATION}"
                 ));
