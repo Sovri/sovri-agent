@@ -30,6 +30,8 @@ const DEFAULT_PAGE_HEIGHT_POINTS: u16 = 792;
 const DEFAULT_LEFT_MARGIN_POINTS: u16 = 72;
 /// Top text baseline in PDF points.
 const DEFAULT_TOP_BASELINE_POINTS: u16 = 760;
+/// Bottom margin in PDF points.
+const DEFAULT_BOTTOM_MARGIN_POINTS: u16 = 72;
 /// Built-in PDF font resource name.
 const DEFAULT_FONT_RESOURCE: &str = "F1";
 /// Built-in PDF base font name.
@@ -38,8 +40,6 @@ const DEFAULT_BASE_FONT: &str = "Helvetica";
 const DEFAULT_FONT_SIZE_POINTS: u8 = 10;
 /// Distance between text baselines in PDF points.
 const DEFAULT_LINE_HEIGHT_POINTS: u8 = 14;
-/// Number of PDF indirect objects written by the minimal renderer.
-const PDF_OBJECT_COUNT: usize = 5;
 /// Maximum accepted run identifier length.
 const MAX_RUN_ID_BYTES: usize = 128;
 /// Prefix for fields nested under a rendered evidence record.
@@ -545,36 +545,60 @@ fn write_pdf_with_settings<W: IoWrite>(
     lines: &[String],
     settings: &PdfSettings,
 ) -> io::Result<()> {
+    let pages = paginate_lines(lines, settings);
+    let object_count = 3 + pages.len() * 2;
     let mut writer = CountingWriter::new(sink);
     writer.write_bytes(b"%PDF-1.4\n")?;
-    let mut offsets = Vec::with_capacity(PDF_OBJECT_COUNT + 1);
+    let mut offsets = Vec::with_capacity(object_count + 1);
     offsets.push(0);
     write_object(&mut writer, &mut offsets, 1, |writer| {
         writer.write_bytes(b"<< /Type /Catalog /Pages 2 0 R >>\n")
     })?;
     write_object(&mut writer, &mut offsets, 2, |writer| {
-        writer.write_bytes(b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>\n")
+        writer.write_bytes(b"<< /Type /Pages /Kids [")?;
+        for index in 0..pages.len() {
+            if index > 0 {
+                writer.write_bytes(b" ")?;
+            }
+            writer.write_str(&format!("{} 0 R", page_object_number(index)))?;
+        }
+        writer.write_str(&format!("] /Count {} >>\n", pages.len()))
     })?;
     write_object(&mut writer, &mut offsets, 3, |writer| {
-        writer.write_str(&format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /{} 4 0 R >> >> /Contents 5 0 R >>\n",
-            settings.page_width_points, settings.page_height_points, settings.font_resource
-        ))
-    })?;
-    write_object(&mut writer, &mut offsets, 4, |writer| {
         writer.write_str(&format!(
             "<< /Type /Font /Subtype /Type1 /BaseFont /{} >>\n",
             settings.base_font
         ))
     })?;
-    write_object(&mut writer, &mut offsets, 5, |writer| {
-        writer.write_str(&format!(
-            "<< /Length {} >>\nstream\n",
-            page_content_len(lines, settings)
-        ))?;
-        write_page_content(writer, lines, settings)?;
-        writer.write_bytes(b"endstream\n")
-    })?;
+    for (index, page_lines) in pages.iter().enumerate() {
+        write_object(
+            &mut writer,
+            &mut offsets,
+            page_object_number(index),
+            |writer| {
+                writer.write_str(&format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /{} 3 0 R >> >> /Contents {} 0 R >>\n",
+                    settings.page_width_points,
+                    settings.page_height_points,
+                    settings.font_resource,
+                    content_object_number(index)
+                ))
+            },
+        )?;
+        write_object(
+            &mut writer,
+            &mut offsets,
+            content_object_number(index),
+            |writer| {
+                writer.write_str(&format!(
+                    "<< /Length {} >>\nstream\n",
+                    page_content_len(page_lines, settings)
+                ))?;
+                write_page_content(writer, page_lines, settings)?;
+                writer.write_bytes(b"endstream\n")
+            },
+        )?;
+    }
 
     let xref_offset = writer.offset();
     writer.write_str(&format!("xref\n0 {}\n", offsets.len()))?;
@@ -586,6 +610,30 @@ fn write_pdf_with_settings<W: IoWrite>(
         "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n",
         offsets.len()
     ))
+}
+
+fn paginate_lines<'a>(lines: &'a [String], settings: &PdfSettings) -> Vec<&'a [String]> {
+    let lines_per_page = lines_per_page(settings).max(1);
+    if lines.is_empty() {
+        vec![lines]
+    } else {
+        lines.chunks(lines_per_page).collect()
+    }
+}
+
+fn lines_per_page(settings: &PdfSettings) -> usize {
+    let usable_height = settings
+        .top_baseline_points
+        .saturating_sub(settings.bottom_margin_points);
+    usize::from(usable_height / u16::from(settings.line_height_points)) + 1
+}
+
+fn page_object_number(index: usize) -> usize {
+    4 + index * 2
+}
+
+fn content_object_number(index: usize) -> usize {
+    page_object_number(index) + 1
 }
 
 fn write_object<W: IoWrite>(
@@ -746,6 +794,7 @@ struct PdfSettings {
     page_height_points: u16,
     left_margin_points: u16,
     top_baseline_points: u16,
+    bottom_margin_points: u16,
     font_resource: &'static str,
     base_font: &'static str,
     font_size_points: u8,
@@ -759,6 +808,7 @@ impl Default for PdfSettings {
             page_height_points: DEFAULT_PAGE_HEIGHT_POINTS,
             left_margin_points: DEFAULT_LEFT_MARGIN_POINTS,
             top_baseline_points: DEFAULT_TOP_BASELINE_POINTS,
+            bottom_margin_points: DEFAULT_BOTTOM_MARGIN_POINTS,
             font_resource: DEFAULT_FONT_RESOURCE,
             base_font: DEFAULT_BASE_FONT,
             font_size_points: DEFAULT_FONT_SIZE_POINTS,
