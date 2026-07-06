@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! R-05 - Scores render with counts and caveats, not as legal risk ratings.
-//! Covers issues #111 and #112.
+//! Covers issues #111, #112, and #113.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -82,6 +82,23 @@ fn assert_pdf_text_line(text: &str, expected: &str) {
     );
 }
 
+fn pdf_text_lines(text: &str) -> impl Iterator<Item = &str> {
+    text.lines()
+        .filter_map(|line| line.strip_prefix('(')?.strip_suffix(") Tj"))
+}
+
+fn assert_no_score_label(text: &str, forbidden_label: &str) {
+    let forbidden_label = forbidden_label.to_ascii_lowercase();
+    let offending_line = pdf_text_lines(text).find(|line| {
+        let line = line.to_ascii_lowercase();
+        line.contains("score") && line.contains(&forbidden_label)
+    });
+    assert!(
+        offending_line.is_none(),
+        "no score in the report is labelled {forbidden_label:?}; offending line: {offending_line:?}; actual PDF text:\n{text}"
+    );
+}
+
 #[test]
 fn scores_render_with_their_scope_value_and_result_counts() {
     let store = persisted_consent_store();
@@ -116,5 +133,22 @@ fn scores_carry_a_posture_caveat() {
     // Then the score section states that scores summarize observed compliance posture
     assert_pdf_text_line(&text, "Scores summarize observed compliance posture.");
     // And it states that scores are not a legal risk rating
-    assert_pdf_text_line(&text, "Scores are not a legal risk rating.");
+    assert_pdf_text_line(&text, "Scores do not provide legal-risk ratings.");
+}
+
+#[test]
+fn scores_are_never_labelled_as_a_legal_or_risk_rating() {
+    let store = persisted_consent_store();
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+
+    assert!(
+        output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Then no score in the report is labelled "legal risk rating"
+    assert_no_score_label(&text, "legal risk rating");
+    // And no score in the report is labelled "risk score"
+    assert_no_score_label(&text, "risk score");
 }
