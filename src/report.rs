@@ -14,7 +14,7 @@ use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::evidence::{EvidenceStore, StoreError};
+use crate::evidence::{EvidenceLog, EvidenceStore, StoreError};
 use sovri_sdk::is_valid_execution_timestamp;
 
 /// Exit code when the report was produced successfully.
@@ -91,6 +91,12 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
         format!("Generated date: {}", config.executed_at),
         format!("Evidence records: {}", evidence.len()),
     ];
+    lines.extend(evidence_lines(&evidence));
+    Ok(lines)
+}
+
+fn evidence_lines(evidence: &EvidenceLog) -> Vec<String> {
+    let mut lines = Vec::new();
     for record in evidence.records() {
         lines.push(format!("Evidence: {}", record.id()));
         if let Some(control_id) = record.control_id() {
@@ -102,7 +108,7 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
         }
         lines.push(format!("  Integrity: {}", record.content_hash()));
     }
-    Ok(lines)
+    lines
 }
 
 fn write_pdf<W: IoWrite>(sink: &mut W, lines: &[String]) -> io::Result<()> {
