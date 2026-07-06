@@ -189,6 +189,7 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                 lines.extend([
                     format!("Control: {CONSENT_CORPUS_CONTROL_ID}"),
                     format!("Rule {CONSENT_CORPUS_TRACKER_RULE_ID}: FAIL"),
+                    format!("Control row: {CONSENT_CORPUS_CONTROL_ID}: FAIL"),
                 ]);
                 if let Some(reason) = cmp_warning_reason {
                     lines.push(format!("Rule {CONSENT_CORPUS_CMP_RULE_ID}: WARNING"));
