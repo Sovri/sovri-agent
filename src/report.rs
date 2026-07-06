@@ -8,16 +8,33 @@
 //! uncompressed content stream, so the output stays deterministic and the agent
 //! keeps its zero third-party runtime dependency posture.
 
-use std::fmt;
-use std::io::{self, Write};
+use std::fmt::{self, Write as _};
+use std::io::{self, Write as IoWrite};
 use std::process::ExitCode;
 
 use crate::evidence::{EvidenceStore, StoreError};
+use sovri_sdk::is_valid_execution_timestamp;
 
 /// Exit code when the report was produced successfully.
 const EXIT_OK: u8 = 0;
 /// Exit code for usage or input errors.
 const EXIT_USAGE: u8 = 64;
+/// US Letter page width in PDF points.
+const PAGE_WIDTH_POINTS: u16 = 612;
+/// US Letter page height in PDF points.
+const PAGE_HEIGHT_POINTS: u16 = 792;
+/// Left margin in PDF points.
+const LEFT_MARGIN_POINTS: u16 = 72;
+/// Top text baseline in PDF points.
+const TOP_BASELINE_POINTS: u16 = 760;
+/// Built-in PDF font resource name.
+const FONT_RESOURCE: &str = "F1";
+/// Built-in PDF base font name.
+const BASE_FONT: &str = "Helvetica";
+/// Text font size in PDF points.
+const FONT_SIZE_POINTS: u8 = 10;
+/// Distance between text baselines in PDF points.
+const LINE_HEIGHT_POINTS: u8 = 14;
 
 /// The `report` command help text.
 const HELP: &str = "\
@@ -41,8 +58,8 @@ pub fn run(args: &[String]) -> ExitCode {
         Err(error) => return fail(&error),
     };
     match execute(&config) {
-        Ok(pdf) => {
-            if let Err(error) = io::stdout().lock().write_all(&pdf) {
+        Ok(lines) => {
+            if let Err(error) = write_pdf(&mut io::stdout().lock(), &lines) {
                 eprintln!("sovri-agent report: write stdout: {error}");
                 return ExitCode::FAILURE;
             }
@@ -57,25 +74,26 @@ fn fail(error: &Error) -> ExitCode {
     ExitCode::from(EXIT_USAGE)
 }
 
-fn execute(config: &Config) -> Result<Vec<u8>, Error> {
+fn execute(config: &Config) -> Result<Vec<String>, Error> {
     let store = EvidenceStore::open(&config.evidence_store).map_err(Error::EvidenceStore)?;
     let evidence = store.read_all().map_err(Error::EvidenceStore)?;
-    let lines = vec![
+    Ok(vec![
         "Sovri PDF compliance report".to_string(),
         format!("Run: {}", config.run_id),
         format!("Generated date: {}", config.executed_at),
         format!("Evidence records: {}", evidence.len()),
-    ];
-    Ok(render_pdf(&lines))
+    ])
 }
 
-fn render_pdf(lines: &[String]) -> Vec<u8> {
+fn write_pdf<W: IoWrite>(sink: &mut W, lines: &[String]) -> io::Result<()> {
     let content = page_content(lines);
     let objects = [
         "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".to_string(),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {PAGE_WIDTH_POINTS} {PAGE_HEIGHT_POINTS}] /Resources << /Font << /{FONT_RESOURCE} 4 0 R >> >> /Contents 5 0 R >>"
+        ),
+        format!("<< /Type /Font /Subtype /Type1 /BaseFont /{BASE_FONT} >>"),
         format!(
             "<< /Length {} >>\nstream\n{}endstream",
             content.len(),
@@ -83,36 +101,35 @@ fn render_pdf(lines: &[String]) -> Vec<u8> {
         ),
     ];
 
-    let mut output = b"%PDF-1.4\n".to_vec();
+    let mut writer = CountingWriter::new(sink);
+    writer.write_bytes(b"%PDF-1.4\n")?;
     let mut offsets = Vec::with_capacity(objects.len() + 1);
     offsets.push(0);
     for (index, object) in objects.iter().enumerate() {
-        offsets.push(output.len());
-        output.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", index + 1, object).as_bytes());
+        offsets.push(writer.offset());
+        writer.write_str(&format!("{} 0 obj\n{}\nendobj\n", index + 1, object))?;
     }
 
-    let xref_offset = output.len();
-    output.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
-    output.extend_from_slice(b"0000000000 65535 f \n");
+    let xref_offset = writer.offset();
+    writer.write_str(&format!("xref\n0 {}\n", offsets.len()))?;
+    writer.write_bytes(b"0000000000 65535 f \n")?;
     for offset in offsets.iter().skip(1) {
-        output.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        writer.write_str(&format!("{offset:010} 00000 n \n"))?;
     }
-    output.extend_from_slice(
-        format!(
-            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n",
-            offsets.len()
-        )
-        .as_bytes(),
-    );
-    output
+    writer.write_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n",
+        offsets.len()
+    ))
 }
 
 fn page_content(lines: &[String]) -> String {
-    let mut content = String::from("BT\n/F1 10 Tf\n72 760 Td\n");
+    let mut content = format!(
+        "BT\n/{FONT_RESOURCE} {FONT_SIZE_POINTS} Tf\n{LEFT_MARGIN_POINTS} {TOP_BASELINE_POINTS} Td\n"
+    );
     for line in lines {
         content.push('(');
         content.push_str(&escape_pdf_text(line));
-        content.push_str(") Tj\n0 -14 Td\n");
+        let _ = write!(content, ") Tj\n0 -{LINE_HEIGHT_POINTS} Td\n");
     }
     content.push_str("ET\n");
     content
@@ -126,10 +143,41 @@ fn escape_pdf_text(raw: &str) -> String {
                 escaped.push('\\');
                 escaped.push(character);
             }
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '\u{08}' => escaped.push_str("\\b"),
+            '\u{0c}' => escaped.push_str("\\f"),
+            other if other.is_control() => escaped.push(' '),
             _ => escaped.push(character),
         }
     }
     escaped
+}
+
+struct CountingWriter<'a, W: IoWrite> {
+    sink: &'a mut W,
+    offset: usize,
+}
+
+impl<'a, W: IoWrite> CountingWriter<'a, W> {
+    fn new(sink: &'a mut W) -> Self {
+        Self { sink, offset: 0 }
+    }
+
+    fn offset(&self) -> usize {
+        self.offset
+    }
+
+    fn write_str(&mut self, value: &str) -> io::Result<()> {
+        self.write_bytes(value.as_bytes())
+    }
+
+    fn write_bytes(&mut self, value: &[u8]) -> io::Result<()> {
+        self.sink.write_all(value)?;
+        self.offset += value.len();
+        Ok(())
+    }
 }
 
 struct Config {
@@ -169,10 +217,15 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, Error> {
         }
     }
 
+    let executed_at = executed_at.ok_or(Error::MissingExecutedAt)?;
+    if !is_valid_execution_timestamp(&executed_at) {
+        return Err(Error::InvalidExecutedAt(executed_at));
+    }
+
     Ok(ParsedArgs::Report(Config {
         run_id: run_id.ok_or(Error::MissingRun)?,
         evidence_store: evidence_store.ok_or(Error::MissingEvidenceStore)?,
-        executed_at: executed_at.ok_or(Error::MissingExecutedAt)?,
+        executed_at,
     }))
 }
 
@@ -187,6 +240,7 @@ enum Error {
     MissingRun,
     MissingEvidenceStore,
     MissingExecutedAt,
+    InvalidExecutedAt(String),
     MissingValue(String),
     UnknownArgument(String),
     EvidenceStore(StoreError),
@@ -198,6 +252,9 @@ impl fmt::Display for Error {
             Error::MissingRun => f.write_str("missing --run <id>"),
             Error::MissingEvidenceStore => f.write_str("missing --evidence-store <dir>"),
             Error::MissingExecutedAt => f.write_str("missing --executed-at <timestamp>"),
+            Error::InvalidExecutedAt(value) => {
+                write!(f, "invalid --executed-at timestamp '{value}'")
+            }
             Error::MissingValue(flag) => write!(f, "missing value for {flag}"),
             Error::UnknownArgument(arg) => write!(f, "unknown argument '{arg}'"),
             Error::EvidenceStore(error) => write!(f, "evidence store error: {error}"),
