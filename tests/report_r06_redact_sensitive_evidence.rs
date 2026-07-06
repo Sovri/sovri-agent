@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! R-06 - Sensitive evidence is redacted or summarized, never leaked.
-//! Covers issue #115.
+//! Covers issues #115 and #116.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -119,7 +119,7 @@ fn pdf_text_lines(text: &str) -> Vec<&str> {
         .collect()
 }
 
-fn assert_record_metadata(text: &str, kind: &str, locator: &str, integrity: &str) {
+fn evidence_record_lines<'a>(text: &'a str, locator: &str) -> (String, Vec<&'a str>) {
     let lines = pdf_text_lines(text);
     let section_index = lines
         .iter()
@@ -141,7 +141,11 @@ fn assert_record_metadata(text: &str, kind: &str, locator: &str, integrity: &str
         .iter()
         .position(|line| line.starts_with("Evidence: "))
         .map_or(lines.len(), |offset| locator_index + offset);
-    let record_lines = &lines[record_start..record_end];
+    (locator_line, lines[record_start..record_end].to_vec())
+}
+
+fn assert_record_metadata(text: &str, kind: &str, locator: &str, integrity: &str) {
+    let (locator_line, record_lines) = evidence_record_lines(text, locator);
 
     for expected in [
         format!("  Kind: {kind}"),
@@ -154,6 +158,15 @@ fn assert_record_metadata(text: &str, kind: &str, locator: &str, integrity: &str
             "record {locator:?} contains {expected:?}; actual record lines: {record_lines:?}"
         );
     }
+}
+
+fn assert_no_raw_excerpt_for_record(text: &str, locator: &str, raw_value: &str) {
+    let (_, record_lines) = evidence_record_lines(text, locator);
+
+    assert!(
+        !record_lines.iter().any(|line| line.contains(raw_value)),
+        "record {locator:?} must not contain raw value {raw_value:?}; actual record lines: {record_lines:?}"
+    );
 }
 
 #[test]
@@ -183,5 +196,33 @@ fn a_classified_record_is_summarized_to_its_metadata() {
             example.locator,
             example.integrity,
         );
+    }
+}
+
+#[test]
+fn the_raw_classified_value_never_appears_anywhere_in_the_pdf() {
+    // Given a persisted evidence store holds these classified evidence records:
+    //   | kind    | locator              | classification | raw_value                          | integrity                                                               |
+    //   | config  | .env.example:3       | Secret         | sk_live_EXAMPLEonly_NOT_A_REAL_KEY | sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad |
+    //   | account | config/users.yaml:12 | Sensitive      | admin@shopfront.example            | sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 |
+    // And a compliance report generated from that store
+    let store = classified_evidence_store();
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+
+    assert!(
+        output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Then the PDF does not contain the text "<raw_value>"
+    // And the PDF contains no raw excerpt of the "<locator>" record
+    for example in CLASSIFIED_EVIDENCE {
+        assert!(
+            !text.contains(example.raw_value),
+            "PDF must not contain raw classified value {:?}; actual PDF text:\n{text}",
+            example.raw_value
+        );
+        assert_no_raw_excerpt_for_record(&text, example.locator, example.raw_value);
     }
 }
