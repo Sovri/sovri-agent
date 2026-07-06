@@ -15,6 +15,9 @@ use sovri_agent::scanners::ssh;
 const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
 const SHOPFRONT_RUN_ID: &str = "shopfront-2026-06-24";
 const HASH: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+const SHOPFRONT_EVIDENCE_ID: &str = "ev-0001";
+const SHOPFRONT_LOCATOR: &str = "dist/main.js";
+const SHOPFRONT_TRACKER_SIGNAL: &str = "www.google-analytics.com";
 const CONSENT_CORPUS_CONTROL_ID: &str = "consent.tracker.prior-consent";
 const CONSENT_CORPUS_REFERENCE: &str = "gdpr-eprivacy:2016-679:Art.7";
 const UNKNOWN_CONTROL_ID: &str = "custom.framework.control-without-reference";
@@ -89,11 +92,11 @@ fn persisted_gap_store(control_id: &str) -> TempStore {
 fn persisted_shopfront_consent_corpus() -> TempStore {
     let store = TempStore::new("shopfront-consent-corpus");
     let evidence = Evidence::builder()
-        .id("ev-0001")
+        .id(SHOPFRONT_EVIDENCE_ID)
         .kind(EvidenceKind::RouteBuild)
-        .locator("dist/main.js")
+        .locator(SHOPFRONT_LOCATOR)
         .content_hash(HASH)
-        .signal("www.google-analytics.com")
+        .signal(SHOPFRONT_TRACKER_SIGNAL)
         .build()
         .expect("tracker evidence builds")
         .link_to_control(CONSENT_CORPUS_CONTROL_ID)
