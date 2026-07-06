@@ -8,8 +8,10 @@
 //! uncompressed content stream, so the output stays deterministic and the agent
 //! keeps its zero third-party runtime dependency posture.
 
-use std::fmt::{self, Write as _};
+use std::fmt;
+use std::fs;
 use std::io::{self, Write as IoWrite};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::evidence::{EvidenceStore, StoreError};
@@ -35,12 +37,17 @@ const BASE_FONT: &str = "Helvetica";
 const FONT_SIZE_POINTS: u8 = 10;
 /// Distance between text baselines in PDF points.
 const LINE_HEIGHT_POINTS: u8 = 14;
+/// Number of PDF indirect objects written by the minimal renderer.
+const PDF_OBJECT_COUNT: usize = 5;
+/// Maximum accepted run identifier length.
+const MAX_RUN_ID_BYTES: usize = 128;
 
 /// The `report` command help text.
 const HELP: &str = "\
 usage: sovri-agent report --run <id> --evidence-store <dir> --executed-at <timestamp>
 
 Generate a deterministic PDF compliance report from a persisted evidence store.
+Run identifiers accept ASCII letters, numbers, hyphens, and underscores.
 ";
 
 /// Runs `sovri-agent report` from the arguments after the `report` subcommand.
@@ -75,7 +82,8 @@ fn fail(error: &Error) -> ExitCode {
 }
 
 fn execute(config: &Config) -> Result<Vec<String>, Error> {
-    let store = EvidenceStore::open(&config.evidence_store).map_err(Error::EvidenceStore)?;
+    let evidence_store = canonical_evidence_store(&config.evidence_store)?;
+    let store = EvidenceStore::open(&evidence_store).map_err(Error::EvidenceStore)?;
     let evidence = store.read_all().map_err(Error::EvidenceStore)?;
     Ok(vec![
         "Sovri PDF compliance report".to_string(),
@@ -86,29 +94,34 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
 }
 
 fn write_pdf<W: IoWrite>(sink: &mut W, lines: &[String]) -> io::Result<()> {
-    let content = page_content(lines);
-    let objects = [
-        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
-        format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {PAGE_WIDTH_POINTS} {PAGE_HEIGHT_POINTS}] /Resources << /Font << /{FONT_RESOURCE} 4 0 R >> >> /Contents 5 0 R >>"
-        ),
-        format!("<< /Type /Font /Subtype /Type1 /BaseFont /{BASE_FONT} >>"),
-        format!(
-            "<< /Length {} >>\nstream\n{}endstream",
-            content.len(),
-            content
-        ),
-    ];
-
     let mut writer = CountingWriter::new(sink);
     writer.write_bytes(b"%PDF-1.4\n")?;
-    let mut offsets = Vec::with_capacity(objects.len() + 1);
+    let mut offsets = Vec::with_capacity(PDF_OBJECT_COUNT + 1);
     offsets.push(0);
-    for (index, object) in objects.iter().enumerate() {
-        offsets.push(writer.offset());
-        writer.write_str(&format!("{} 0 obj\n{}\nendobj\n", index + 1, object))?;
-    }
+    write_object(&mut writer, &mut offsets, 1, |writer| {
+        writer.write_bytes(b"<< /Type /Catalog /Pages 2 0 R >>\n")
+    })?;
+    write_object(&mut writer, &mut offsets, 2, |writer| {
+        writer.write_bytes(b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>\n")
+    })?;
+    write_object(&mut writer, &mut offsets, 3, |writer| {
+        writer.write_str(&format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {PAGE_WIDTH_POINTS} {PAGE_HEIGHT_POINTS}] /Resources << /Font << /{FONT_RESOURCE} 4 0 R >> >> /Contents 5 0 R >>\n"
+        ))
+    })?;
+    write_object(&mut writer, &mut offsets, 4, |writer| {
+        writer.write_str(&format!(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /{BASE_FONT} >>\n"
+        ))
+    })?;
+    write_object(&mut writer, &mut offsets, 5, |writer| {
+        writer.write_str(&format!(
+            "<< /Length {} >>\nstream\n",
+            page_content_len(lines)
+        ))?;
+        write_page_content(writer, lines)?;
+        writer.write_bytes(b"endstream\n")
+    })?;
 
     let xref_offset = writer.offset();
     writer.write_str(&format!("xref\n0 {}\n", offsets.len()))?;
@@ -122,37 +135,99 @@ fn write_pdf<W: IoWrite>(sink: &mut W, lines: &[String]) -> io::Result<()> {
     ))
 }
 
-fn page_content(lines: &[String]) -> String {
-    let mut content = format!(
-        "BT\n/{FONT_RESOURCE} {FONT_SIZE_POINTS} Tf\n{LEFT_MARGIN_POINTS} {TOP_BASELINE_POINTS} Td\n"
-    );
-    for line in lines {
-        content.push('(');
-        content.push_str(&escape_pdf_text(line));
-        let _ = write!(content, ") Tj\n0 -{LINE_HEIGHT_POINTS} Td\n");
-    }
-    content.push_str("ET\n");
-    content
+fn write_object<W: IoWrite>(
+    writer: &mut CountingWriter<'_, W>,
+    offsets: &mut Vec<usize>,
+    object_number: usize,
+    write_body: impl FnOnce(&mut CountingWriter<'_, W>) -> io::Result<()>,
+) -> io::Result<()> {
+    offsets.push(writer.offset());
+    writer.write_str(&format!("{object_number} 0 obj\n"))?;
+    write_body(writer)?;
+    writer.write_bytes(b"endobj\n")
 }
 
-fn escape_pdf_text(raw: &str) -> String {
-    let mut escaped = String::with_capacity(raw.len());
+fn page_content_len(lines: &[String]) -> usize {
+    let mut length =
+        format!("BT\n/{FONT_RESOURCE} {FONT_SIZE_POINTS} Tf\n{LEFT_MARGIN_POINTS} {TOP_BASELINE_POINTS} Td\n")
+            .len();
+    for line in lines {
+        length += 1;
+        length += escaped_pdf_text_len(line);
+        length += format!(") Tj\n0 -{LINE_HEIGHT_POINTS} Td\n").len();
+    }
+    length + b"ET\n".len()
+}
+
+fn write_page_content<W: IoWrite>(
+    writer: &mut CountingWriter<'_, W>,
+    lines: &[String],
+) -> io::Result<()> {
+    writer.write_str(&format!(
+        "BT\n/{FONT_RESOURCE} {FONT_SIZE_POINTS} Tf\n{LEFT_MARGIN_POINTS} {TOP_BASELINE_POINTS} Td\n"
+    ))?;
+    for line in lines {
+        writer.write_bytes(b"(")?;
+        write_escaped_pdf_text(writer, line)?;
+        writer.write_str(&format!(") Tj\n0 -{LINE_HEIGHT_POINTS} Td\n"))?;
+    }
+    writer.write_bytes(b"ET\n")
+}
+
+fn escaped_pdf_text_len(raw: &str) -> usize {
+    raw.chars().map(escaped_char_len).sum()
+}
+
+fn escaped_char_len(character: char) -> usize {
+    match character {
+        '(' | ')' | '\\' | '\n' | '\r' | '\t' | '\u{08}' | '\u{0c}' => 2,
+        other if other.is_control() => 1,
+        _ => character.len_utf8(),
+    }
+}
+
+fn write_escaped_pdf_text<W: IoWrite>(
+    writer: &mut CountingWriter<'_, W>,
+    raw: &str,
+) -> io::Result<()> {
     for character in raw.chars() {
         match character {
             '(' | ')' | '\\' => {
-                escaped.push('\\');
-                escaped.push(character);
+                writer.write_bytes(b"\\")?;
+                writer.write_char(character)?;
             }
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            '\u{08}' => escaped.push_str("\\b"),
-            '\u{0c}' => escaped.push_str("\\f"),
-            other if other.is_control() => escaped.push(' '),
-            _ => escaped.push(character),
+            '\n' => writer.write_bytes(b"\\n")?,
+            '\r' => writer.write_bytes(b"\\r")?,
+            '\t' => writer.write_bytes(b"\\t")?,
+            '\u{08}' => writer.write_bytes(b"\\b")?,
+            '\u{0c}' => writer.write_bytes(b"\\f")?,
+            other if other.is_control() => writer.write_bytes(b" ")?,
+            _ => writer.write_char(character)?,
         }
     }
-    escaped
+    Ok(())
+}
+
+fn canonical_evidence_store(path: &Path) -> Result<PathBuf, Error> {
+    let canonical = fs::canonicalize(path).map_err(|reason| Error::InvalidEvidenceStorePath {
+        path: path.display().to_string(),
+        reason,
+    })?;
+    if !canonical.is_dir() {
+        return Err(Error::InvalidEvidenceStorePath {
+            path: path.display().to_string(),
+            reason: io::Error::new(io::ErrorKind::InvalidInput, "not a directory"),
+        });
+    }
+    Ok(canonical)
+}
+
+fn is_valid_run_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_RUN_ID_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
 struct CountingWriter<'a, W: IoWrite> {
@@ -178,11 +253,16 @@ impl<'a, W: IoWrite> CountingWriter<'a, W> {
         self.offset += value.len();
         Ok(())
     }
+
+    fn write_char(&mut self, character: char) -> io::Result<()> {
+        let mut buffer = [0; 4];
+        self.write_str(character.encode_utf8(&mut buffer))
+    }
 }
 
 struct Config {
     run_id: String,
-    evidence_store: String,
+    evidence_store: PathBuf,
     executed_at: String,
 }
 
@@ -217,14 +297,19 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, Error> {
         }
     }
 
+    let run_id = run_id.ok_or(Error::MissingRun)?;
+    if !is_valid_run_id(&run_id) {
+        return Err(Error::InvalidRun(run_id));
+    }
+
     let executed_at = executed_at.ok_or(Error::MissingExecutedAt)?;
     if !is_valid_execution_timestamp(&executed_at) {
         return Err(Error::InvalidExecutedAt(executed_at));
     }
 
     Ok(ParsedArgs::Report(Config {
-        run_id: run_id.ok_or(Error::MissingRun)?,
-        evidence_store: evidence_store.ok_or(Error::MissingEvidenceStore)?,
+        run_id,
+        evidence_store: PathBuf::from(evidence_store.ok_or(Error::MissingEvidenceStore)?),
         executed_at,
     }))
 }
@@ -240,9 +325,11 @@ enum Error {
     MissingRun,
     MissingEvidenceStore,
     MissingExecutedAt,
+    InvalidRun(String),
     InvalidExecutedAt(String),
     MissingValue(String),
     UnknownArgument(String),
+    InvalidEvidenceStorePath { path: String, reason: io::Error },
     EvidenceStore(StoreError),
 }
 
@@ -252,11 +339,18 @@ impl fmt::Display for Error {
             Error::MissingRun => f.write_str("missing --run <id>"),
             Error::MissingEvidenceStore => f.write_str("missing --evidence-store <dir>"),
             Error::MissingExecutedAt => f.write_str("missing --executed-at <timestamp>"),
+            Error::InvalidRun(value) => write!(
+                f,
+                "invalid --run id '{value}' (use ASCII letters, numbers, hyphens, or underscores)"
+            ),
             Error::InvalidExecutedAt(value) => {
                 write!(f, "invalid --executed-at timestamp '{value}'")
             }
             Error::MissingValue(flag) => write!(f, "missing value for {flag}"),
             Error::UnknownArgument(arg) => write!(f, "unknown argument '{arg}'"),
+            Error::InvalidEvidenceStorePath { path, reason } => {
+                write!(f, "invalid --evidence-store path '{path}': {reason}")
+            }
             Error::EvidenceStore(error) => write!(f, "evidence store error: {error}"),
         }
     }
