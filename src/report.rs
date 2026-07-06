@@ -76,6 +76,10 @@ const CONSENT_CORPUS_RESULT_COUNTS: &str = "1 FAIL, 1 PASS";
 const CONSENT_CORPUS_SCORE_RESULT_COUNTS: &str = "1 FAIL, 1 PASS, 0 WARNING, 0 SKIPPED, 0 ERROR";
 /// Framework score represented by the canonical MAT-95 MAT-87 score output.
 const CONSENT_CORPUS_FRAMEWORK_SCORE: &str = "0.0%";
+/// Compliance-posture caveat shown with MAT-87 scores.
+const SCORE_POSTURE_CAVEAT: &str = "Scores summarize observed compliance posture.";
+/// Legal-risk caveat shown with MAT-87 scores.
+const SCORE_LEGAL_RISK_CAVEAT: &str = "Scores are not a legal risk rating.";
 /// Control represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_CONTROL_ID: &str = "consent.tracker.prior-consent";
 /// Tracker evidence rule represented by the canonical MAT-95 consent corpus.
@@ -234,6 +238,8 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                     "Framework score {CONSENT_CORPUS_FRAMEWORK_ID}: {CONSENT_CORPUS_FRAMEWORK_SCORE}"
                 ),
                 format!("Result counts: {CONSENT_CORPUS_SCORE_RESULT_COUNTS}"),
+                SCORE_POSTURE_CAVEAT.to_string(),
+                SCORE_LEGAL_RISK_CAVEAT.to_string(),
             ]),
             SECTION_CONTROL_MATRIX => {
                 // Keep legacy rule lines for R-02; R-04 rows provide one countable row per status.
