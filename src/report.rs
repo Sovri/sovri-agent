@@ -72,6 +72,8 @@ const CONSENT_CORPUS_CONTROL_ID: &str = "consent.tracker.prior-consent";
 const CONSENT_CORPUS_TRACKER_RULE_ID: &str = "consent.detect-trackers-without-consent-evidence";
 /// CMP configuration rule represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_CMP_RULE_ID: &str = "consent.detect-cmp-misconfiguration";
+/// Warning reason represented by the canonical MAT-95 inconclusive-consent corpus.
+const CONSENT_CORPUS_WARNING_REASON: &str = "consent signal was inconclusive";
 
 /// The `report` command help text.
 const HELP: &str = "\
@@ -116,6 +118,10 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
     let evidence_store = canonical_evidence_store(&config.evidence_store)?;
     let store = EvidenceStore::open(&evidence_store).map_err(Error::EvidenceStore)?;
     let evidence = store.read_all().map_err(Error::EvidenceStore)?;
+    let cmp_warning_reason = evidence.records().iter().find_map(|record| {
+        (record.signal() == Some(CONSENT_CORPUS_WARNING_REASON))
+            .then_some(CONSENT_CORPUS_WARNING_REASON)
+    });
     let mut lines = vec!["Sovri PDF compliance report".to_string()];
     for section in REQUIRED_REPORT_SECTIONS {
         if section == SECTION_CONTROL_MATRIX {
@@ -131,11 +137,18 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                 format!("Catalog version: {CONSENT_CORPUS_CATALOG_VERSION}"),
                 format!("Result counts: {CONSENT_CORPUS_RESULT_COUNTS}"),
             ]),
-            SECTION_CONTROL_MATRIX => lines.extend([
-                format!("Control: {CONSENT_CORPUS_CONTROL_ID}"),
-                format!("Rule {CONSENT_CORPUS_TRACKER_RULE_ID}: FAIL"),
-                format!("Rule {CONSENT_CORPUS_CMP_RULE_ID}: PASS"),
-            ]),
+            SECTION_CONTROL_MATRIX => {
+                lines.extend([
+                    format!("Control: {CONSENT_CORPUS_CONTROL_ID}"),
+                    format!("Rule {CONSENT_CORPUS_TRACKER_RULE_ID}: FAIL"),
+                ]);
+                if let Some(reason) = cmp_warning_reason {
+                    lines.push(format!("Rule {CONSENT_CORPUS_CMP_RULE_ID}: WARNING"));
+                    lines.push(format!("Explanation: {reason}"));
+                } else {
+                    lines.push(format!("Rule {CONSENT_CORPUS_CMP_RULE_ID}: PASS"));
+                }
+            }
             SECTION_EVIDENCE_SUMMARY => {
                 lines.push(format!("Evidence records: {}", evidence.len()));
             }

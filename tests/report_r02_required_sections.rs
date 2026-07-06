@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! R-02 - the PDF report contains every required section.
-//! Covers issues #101, #102, and #103.
+//! Covers issues #101, #102, #103, and #104.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use sovri_agent::evidence::{Evidence, EvidenceKind, EvidenceStore};
 
 const RUN_ID: &str = "shopfront-2026-06-24";
+const WARNING_RUN_ID: &str = "shopfront-warning-2026-06-24";
 const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
 const SCAN_TARGET: &str = "shopfront";
 const FRAMEWORK_ID: &str = "gdpr-eprivacy";
@@ -20,6 +21,7 @@ const RESULT_COUNTS: &str = "1 FAIL, 1 PASS";
 const CONSENT_CONTROL: &str = "consent.tracker.prior-consent";
 const TRACKER_RULE: &str = "consent.detect-trackers-without-consent-evidence";
 const CMP_RULE: &str = "consent.detect-cmp-misconfiguration";
+const WARNING_REASON: &str = "consent signal was inconclusive";
 const HASH: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const REQUIRED_SECTIONS: [&str; 6] = [
     "Executive summary",
@@ -72,6 +74,25 @@ fn persisted_consent_store() -> TempStore {
     evidence_store
         .write_all(&[tracker_evidence])
         .expect("write evidence");
+    store
+}
+
+fn warning_consent_store() -> TempStore {
+    let store = TempStore::new("warning-corpus");
+    let warning_evidence = Evidence::builder()
+        .id("ev-warning-0001")
+        .kind(EvidenceKind::RouteBuild)
+        .locator("dist/main.js")
+        .content_hash(HASH)
+        .signal(WARNING_REASON)
+        .build()
+        .expect("warning evidence builds")
+        .link_to_control(CONSENT_CONTROL)
+        .expect("warning evidence links");
+    let mut evidence_store = EvidenceStore::open(store.path()).expect("open evidence store");
+    evidence_store
+        .write_all(&[warning_evidence])
+        .expect("write warning evidence");
     store
 }
 
@@ -158,4 +179,24 @@ fn control_matrix_lists_the_control_with_a_status_per_rule() {
     assert_pdf_text_line(&text, &format!("Rule {TRACKER_RULE}: FAIL"));
     // And that control shows status "PASS" for rule "consent.detect-cmp-misconfiguration"
     assert_pdf_text_line(&text, &format!("Rule {CMP_RULE}: PASS"));
+}
+
+#[test]
+fn control_matrix_renders_a_warning_result_visibly() {
+    // Given a compliance report generated from a run whose control "consent.tracker.prior-consent" has a WARNING result from rule "consent.detect-cmp-misconfiguration" with reason "consent signal was inconclusive"
+    let store = warning_consent_store();
+    let output = run_report(WARNING_RUN_ID, store.path(), EXECUTED_AT);
+
+    assert!(
+        output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Then the "Control matrix" section has a row for control "consent.tracker.prior-consent" with status "WARNING" for rule "consent.detect-cmp-misconfiguration"
+    assert_pdf_text_line(&text, "Control matrix");
+    assert_pdf_text_line(&text, &format!("Control: {CONSENT_CONTROL}"));
+    assert_pdf_text_line(&text, &format!("Rule {CMP_RULE}: WARNING"));
+    // And that row shows the explanation "consent signal was inconclusive"
+    assert_pdf_text_line(&text, &format!("Explanation: {WARNING_REASON}"));
 }
