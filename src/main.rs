@@ -5,13 +5,14 @@
 //!
 //! Scaffolded by MAT-81. Runs fully offline: no network, no environment
 //! configuration, no secrets. The `scan` subcommand (MAT-125) runs a catalog's
-//! controls against the host scanners; the `selftest` subcommand proves
+//! controls against the host scanners; the `report` subcommand renders a
+//! persisted compliance corpus as a PDF; the `selftest` subcommand proves
 //! air-gapped operation from day one.
 
 use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const USAGE: &str = "usage: sovri-agent <scan|selftest|--version|--help>";
+const USAGE: &str = "usage: sovri-agent <report|scan|selftest|--version|--help>";
 
 fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
@@ -20,6 +21,11 @@ fn main() -> ExitCode {
             // the catalog directory and the flags, never the environment.
             let args: Vec<String> = std::env::args().skip(2).collect();
             sovri_agent::scan::run(&args)
+        }
+        Some("report") => {
+            // The report command reads a persisted corpus and writes PDF bytes.
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            sovri_agent::report::run(&args)
         }
         Some("selftest") => {
             // No I/O beyond stdout; no network; no environment lookups.
