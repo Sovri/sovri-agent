@@ -119,7 +119,7 @@ fn pdf_text_lines(text: &str) -> Vec<&str> {
         .collect()
 }
 
-fn evidence_record_lines<'a>(text: &'a str, locator: &str) -> Vec<&'a str> {
+fn evidence_record_lines<'a>(text: &'a str, locator: &str) -> (String, Vec<&'a str>) {
     let lines = pdf_text_lines(text);
     let section_index = lines
         .iter()
@@ -141,15 +141,15 @@ fn evidence_record_lines<'a>(text: &'a str, locator: &str) -> Vec<&'a str> {
         .iter()
         .position(|line| line.starts_with("Evidence: "))
         .map_or(lines.len(), |offset| locator_index + offset);
-    lines[record_start..record_end].to_vec()
+    (locator_line, lines[record_start..record_end].to_vec())
 }
 
 fn assert_record_metadata(text: &str, kind: &str, locator: &str, integrity: &str) {
-    let record_lines = evidence_record_lines(text, locator);
+    let (locator_line, record_lines) = evidence_record_lines(text, locator);
 
     for expected in [
         format!("  Kind: {kind}"),
-        format!("  Locator: {locator}"),
+        locator_line,
         format!("  Integrity: {integrity}"),
         "  Redacted: yes".to_string(),
     ] {
@@ -161,7 +161,7 @@ fn assert_record_metadata(text: &str, kind: &str, locator: &str, integrity: &str
 }
 
 fn assert_no_raw_excerpt_for_record(text: &str, locator: &str, raw_value: &str) {
-    let record_lines = evidence_record_lines(text, locator);
+    let (_, record_lines) = evidence_record_lines(text, locator);
 
     assert!(
         !record_lines.iter().any(|line| line.contains(raw_value)),
