@@ -115,6 +115,14 @@ const UNCONFIGURED_GAP_REFERENCE: &str = "unconfigured";
 const UNCONFIGURED_GAP_SOURCE_URL: &str = "unconfigured";
 /// Severity marker for controls missing report metadata.
 const UNCONFIGURED_GAP_SEVERITY: &str = "unknown";
+/// Signal marker used by report fixtures for controls that passed.
+const PASS_SIGNAL: &str = "PASS";
+/// Placeholder when no potential gap rows are rendered.
+const NO_GAPS_PLACEHOLDER: &str = "No potential gaps observed";
+/// Placeholder when no evidence rows are available.
+const NO_EVIDENCE_PLACEHOLDER: &str = "No evidence records were collected";
+/// Placeholder when no score inputs are available.
+const NO_SCORES_PLACEHOLDER: &str = "Scores are not available for this run";
 
 struct GapReference {
     control_id: &'static str,
@@ -272,15 +280,7 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                     lines.push(incomplete_results_line(error_count));
                 }
             }
-            SECTION_SCORES => lines.extend([
-                format!(
-                    "Framework score {CONSENT_CORPUS_FRAMEWORK_ID}: {}",
-                    config.framework_score
-                ),
-                format!("Result counts: {CONSENT_CORPUS_SCORE_RESULT_COUNTS}"),
-                SCORE_POSTURE_CAVEAT.to_string(),
-                SCORE_LEGAL_RISK_CAVEAT.to_string(),
-            ]),
+            SECTION_SCORES => append_score_lines(&mut lines, &evidence, &config.framework_score),
             SECTION_CONTROL_MATRIX => {
                 // Keep legacy rule lines for R-02; R-04 rows provide one countable row per status.
                 lines.push(format!("Control: {CONSENT_CORPUS_CONTROL_ID}"));
@@ -301,45 +301,73 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                     lines.push(format!("Explanation: {reason}"));
                 }
             }
-            SECTION_GAPS => {
-                for record in records_ordered_by_control(&evidence) {
-                    let Some(control_id) = record.control_id() else {
-                        continue;
-                    };
-                    let reference = GAP_REFERENCES
-                        .iter()
-                        .find(|reference| reference.control_id == control_id);
-                    lines.push(format!("Gap: {control_id}"));
-                    let (framework_reference, source_url, severity) = reference.map_or(
-                        (
-                            UNCONFIGURED_GAP_REFERENCE,
-                            UNCONFIGURED_GAP_SOURCE_URL,
-                            UNCONFIGURED_GAP_SEVERITY,
-                        ),
-                        |reference| {
-                            (
-                                reference.framework_reference,
-                                reference.source_url,
-                                reference.severity,
-                            )
-                        },
-                    );
-                    lines.push(format!("Framework reference: {framework_reference}"));
-                    lines.push(format!("Source URL: {source_url}"));
-                    lines.push(format!("Severity: {severity}"));
-                }
-                lines.push(format!(
-                    "Remediation for {CONSENT_CORPUS_CONTROL_ID}: {CONSENT_CORPUS_REMEDIATION}"
-                ));
-            }
-            SECTION_EVIDENCE_SUMMARY => {
-                lines.push(format!("Evidence records: {}", evidence.len()));
-                lines.extend(evidence_summary_lines(&evidence));
-            }
+            SECTION_GAPS => append_gap_lines(&mut lines, &evidence),
+            SECTION_EVIDENCE_SUMMARY => append_evidence_summary_lines(&mut lines, &evidence),
             _ => {}
         }
     }
     Ok(lines)
+}
+
+fn append_score_lines(lines: &mut Vec<String>, evidence: &EvidenceLog, framework_score: &str) {
+    if evidence.is_empty() {
+        lines.push(NO_SCORES_PLACEHOLDER.to_string());
+    } else {
+        lines.extend([
+            format!("Framework score {CONSENT_CORPUS_FRAMEWORK_ID}: {framework_score}"),
+            format!("Result counts: {CONSENT_CORPUS_SCORE_RESULT_COUNTS}"),
+            SCORE_POSTURE_CAVEAT.to_string(),
+            SCORE_LEGAL_RISK_CAVEAT.to_string(),
+        ]);
+    }
+}
+
+fn append_gap_lines(lines: &mut Vec<String>, evidence: &EvidenceLog) {
+    let gap_records: Vec<&Evidence> = records_ordered_by_control(evidence)
+        .into_iter()
+        .filter(|record| record_is_potential_gap(record))
+        .collect();
+    if gap_records.is_empty() {
+        lines.push(NO_GAPS_PLACEHOLDER.to_string());
+    }
+    for record in gap_records {
+        let Some(control_id) = record.control_id() else {
+            continue;
+        };
+        let reference = GAP_REFERENCES
+            .iter()
+            .find(|reference| reference.control_id == control_id);
+        lines.push(format!("Gap: {control_id}"));
+        let (framework_reference, source_url, severity) = reference.map_or(
+            (
+                UNCONFIGURED_GAP_REFERENCE,
+                UNCONFIGURED_GAP_SOURCE_URL,
+                UNCONFIGURED_GAP_SEVERITY,
+            ),
+            |reference| {
+                (
+                    reference.framework_reference,
+                    reference.source_url,
+                    reference.severity,
+                )
+            },
+        );
+        lines.push(format!("Framework reference: {framework_reference}"));
+        lines.push(format!("Source URL: {source_url}"));
+        lines.push(format!("Severity: {severity}"));
+    }
+    lines.push(format!(
+        "Remediation for {CONSENT_CORPUS_CONTROL_ID}: {CONSENT_CORPUS_REMEDIATION}"
+    ));
+}
+
+fn append_evidence_summary_lines(lines: &mut Vec<String>, evidence: &EvidenceLog) {
+    lines.push(format!("Evidence records: {}", evidence.len()));
+    if evidence.is_empty() {
+        lines.push(NO_EVIDENCE_PLACEHOLDER.to_string());
+    } else {
+        lines.extend(evidence_summary_lines(evidence));
+    }
 }
 
 struct EvidenceSummaryMetadata {
@@ -422,6 +450,10 @@ fn evidence_lines(evidence: &EvidenceLog) -> Vec<String> {
         ));
     }
     lines
+}
+
+fn record_is_potential_gap(record: &Evidence) -> bool {
+    record.control_id().is_some() && record.signal() != Some(PASS_SIGNAL)
 }
 
 fn records_ordered_by_control(evidence: &EvidenceLog) -> Vec<&Evidence> {
