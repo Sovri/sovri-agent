@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! R-08 - Missing optional sections render gracefully.
-//! Covers issue #121.
+//! Covers issues #121 and #122.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -170,6 +170,10 @@ fn assert_pdf_output(output: &Output, absent: &str) {
 }
 
 fn assert_section_shows_placeholder(text: &str, section: &str, placeholder: &str) {
+    assert_section_shows_text(text, section, placeholder);
+}
+
+fn assert_section_shows_text(text: &str, section: &str, expected: &str) {
     let section_marker = format!("({section}) Tj\n");
     let section_start = text
         .find(&section_marker)
@@ -182,10 +186,10 @@ fn assert_section_shows_placeholder(text: &str, section: &str, placeholder: &str
         .min()
         .unwrap_or(after_section.len());
     let section_text = &after_section[..section_end];
-    let placeholder_marker = format!("({placeholder}) Tj\n");
+    let expected_marker = format!("({expected}) Tj\n");
     assert!(
-        section_text.contains(&placeholder_marker),
-        "section {section:?} contains placeholder {placeholder:?}; actual section text:\n{section_text}"
+        section_text.contains(&expected_marker),
+        "section {section:?} contains text {expected:?}; actual section text:\n{section_text}"
     );
 }
 
@@ -206,4 +210,32 @@ fn absent_optional_section_renders_placeholder_not_broken_pdf() {
         let text = String::from_utf8_lossy(&output.stdout);
         assert_section_shows_placeholder(&text, case.section, case.placeholder);
     }
+}
+
+#[test]
+fn all_pass_corpus_still_produces_full_report_skeleton() {
+    // Given a compliance corpus where every control passes
+    let store = persisted_all_pass_store();
+
+    // When the PDF report is generated
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+
+    // Then a non-empty PDF is produced
+    assert!(
+        output.status.success(),
+        "all-PASS report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !output.stdout.is_empty(),
+        "all-PASS report produces a non-empty PDF"
+    );
+
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    // And the "Executive summary" section shows the result counts "2 PASS"
+    assert_section_shows_text(&text, "Executive summary", "Result counts: 2 PASS");
+
+    // And the "Gaps" section shows "No potential gaps observed"
+    assert_section_shows_text(&text, "Gaps", "No potential gaps observed");
 }
