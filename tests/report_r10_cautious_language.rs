@@ -81,6 +81,13 @@ fn assert_pdf_text_contains(text: &str, expected: &str) {
     );
 }
 
+fn assert_pdf_text_absent(text: &str, forbidden: &str) {
+    assert!(
+        !text.contains(forbidden),
+        "report does not contain {forbidden:?}; actual PDF text:\n{text}"
+    );
+}
+
 #[test]
 fn findings_are_framed_as_potential_gaps_requiring_review() {
     // Given a compliance report generated from the "shopfront-2026-06-24" consent corpus with a FAIL result
@@ -106,4 +113,30 @@ fn findings_are_framed_as_potential_gaps_requiring_review() {
         !text.contains("proof of illegality"),
         "report does not frame evidence as proof of illegality; actual PDF text:\n{text}"
     );
+}
+
+#[test]
+fn report_contains_no_legal_conclusion_wording() {
+    // Given a compliance report generated from the "shopfront-2026-06-24" consent corpus with a FAIL result
+    let store = persisted_consent_store();
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+
+    assert!(
+        output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    // Then the PDF does not contain the text "violation"
+    assert_pdf_text_absent(&text, "violation");
+
+    // Then the PDF does not contain the text "illegal"
+    assert_pdf_text_absent(&text, "illegal");
+
+    // Then the PDF does not contain the text "unlawful"
+    assert_pdf_text_absent(&text, "unlawful");
+
+    // Then the PDF does not contain the text "breach of law"
+    assert_pdf_text_absent(&text, "breach of law");
 }
