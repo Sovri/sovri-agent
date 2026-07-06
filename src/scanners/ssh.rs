@@ -57,13 +57,6 @@ pub const EFFECTIVE_CONFIG_EVIDENCE_ID: &str = "host.ssh.effective-config";
 /// The evidence id of the parsed `sshd_config` file, captured on the fallback path.
 pub const CONFIG_FILE_EVIDENCE_ID: &str = "host.ssh.config-file";
 
-/// A placeholder content-hash token carried on SSH-scanner evidence.
-///
-/// Evidence carries a content hash but does not compute one; producing a real
-/// SHA-256 digest is a separate concern (MAT-93). The token is non-blank so the
-/// record validates, and stands in until real hashing is wired.
-const UNVERIFIED_CONTENT_HASH: &str = "sha256:unverified";
-
 /// The `PermitRootLogin` directive name, lowercased as `sshd -T` emits it.
 const PERMIT_ROOT_LOGIN: &str = "permitrootlogin";
 /// The `PasswordAuthentication` directive name.
@@ -321,8 +314,7 @@ impl SshScanner {
                 .id(id)
                 .kind(kind)
                 .locator(locator)
-                .content_hash(UNVERIFIED_CONTENT_HASH)
-                .excerpt(snapshot.raw.clone())
+                .content(snapshot.raw.clone().into_bytes())
                 .build()
             {
                 evidence.push(built);

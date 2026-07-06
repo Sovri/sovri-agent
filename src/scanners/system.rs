@@ -46,13 +46,6 @@ const OS_RELEASE_EVIDENCE_ID: &str = "host.os-release";
 /// The evidence id of the package-inventory command record.
 const PACKAGE_INVENTORY_EVIDENCE_ID: &str = "host.package-inventory";
 
-/// A placeholder content-hash token carried on system-scanner evidence.
-///
-/// Evidence carries a content hash but does not compute one; producing a real
-/// SHA-256 digest is a separate concern (MAT-93). The token is non-blank so the
-/// record validates, and stands in until real hashing is wired.
-const UNVERIFIED_CONTENT_HASH: &str = "sha256:unverified";
-
 /// A distro package manager the scanner can inventory through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Manager {
@@ -408,8 +401,7 @@ impl SystemScanner {
                 .id(OS_RELEASE_EVIDENCE_ID)
                 .kind(EvidenceKind::Config)
                 .locator(OS_RELEASE_LOCATOR)
-                .content_hash(UNVERIFIED_CONTENT_HASH)
-                .excerpt(raw.clone())
+                .content(raw.clone().into_bytes())
                 .build()
             {
                 evidence.push(record);
@@ -421,8 +413,7 @@ impl SystemScanner {
                 .id(PACKAGE_INVENTORY_EVIDENCE_ID)
                 .kind(EvidenceKind::Command)
                 .locator(manager.inventory_command())
-                .content_hash(UNVERIFIED_CONTENT_HASH)
-                .excerpt(inventory)
+                .content(inventory.into_bytes())
                 .build()
             {
                 evidence.push(record);
