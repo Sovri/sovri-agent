@@ -82,6 +82,14 @@ fn run_report(run_id: &str, store: &Path, executed_at: &str) -> Output {
         .expect("running sovri-agent report")
 }
 
+fn assert_pdf_text_line(text: &str, expected: &str) {
+    let marker = format!("({expected}) Tj\n");
+    assert!(
+        text.contains(&marker),
+        "report contains {expected:?} as a distinct PDF text line"
+    );
+}
+
 #[test]
 fn each_required_section_is_present_in_the_report() {
     // Given a compliance report generated from the "shopfront-2026-06-24" consent corpus
@@ -96,9 +104,6 @@ fn each_required_section_is_present_in_the_report() {
     let text = String::from_utf8_lossy(&output.stdout);
     for section in REQUIRED_SECTIONS {
         // Then the report contains the "<section>" section
-        assert!(
-            text.contains(section),
-            "report contains the {section:?} section"
-        );
+        assert_pdf_text_line(&text, section);
     }
 }
