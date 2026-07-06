@@ -167,7 +167,7 @@ fn incomplete_results_line(error_count: usize) -> String {
 
 /// The `report` command help text.
 const HELP: &str = "\
-usage: sovri-agent report --run <id> --evidence-store <dir> --executed-at <timestamp>
+usage: sovri-agent report --run <id> --evidence-store <dir> --executed-at <timestamp> [--framework-score <percent>]
 
 Generate a deterministic PDF compliance report from a persisted evidence store.
 Run identifiers accept ASCII letters, numbers, hyphens, and underscores.
@@ -235,7 +235,8 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
             }
             SECTION_SCORES => lines.extend([
                 format!(
-                    "Framework score {CONSENT_CORPUS_FRAMEWORK_ID}: {CONSENT_CORPUS_FRAMEWORK_SCORE}"
+                    "Framework score {CONSENT_CORPUS_FRAMEWORK_ID}: {}",
+                    config.framework_score
                 ),
                 format!("Result counts: {CONSENT_CORPUS_SCORE_RESULT_COUNTS}"),
                 SCORE_POSTURE_CAVEAT.to_string(),
@@ -573,6 +574,7 @@ struct Config {
     run_id: String,
     evidence_store: PathBuf,
     executed_at: String,
+    framework_score: String,
 }
 
 enum ParsedArgs {
@@ -584,6 +586,7 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, Error> {
     let mut run_id = None;
     let mut evidence_store = None;
     let mut executed_at = None;
+    let mut framework_score = None;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -601,6 +604,10 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, Error> {
             executed_at = Some(value.to_string());
         } else if arg == "--executed-at" {
             executed_at = Some(next_value(&mut iter, "--executed-at")?);
+        } else if let Some(value) = arg.strip_prefix("--framework-score=") {
+            framework_score = Some(value.to_string());
+        } else if arg == "--framework-score" {
+            framework_score = Some(next_value(&mut iter, "--framework-score")?);
         } else {
             return Err(Error::UnknownArgument(arg.clone()));
         }
@@ -620,6 +627,8 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, Error> {
         run_id,
         evidence_store: PathBuf::from(evidence_store.ok_or(Error::MissingEvidenceStore)?),
         executed_at,
+        framework_score: framework_score
+            .unwrap_or_else(|| CONSENT_CORPUS_FRAMEWORK_SCORE.to_string()),
     }))
 }
 

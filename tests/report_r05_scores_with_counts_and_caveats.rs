@@ -78,7 +78,7 @@ fn run_report_with_framework_score(
     run_id: &str,
     store: &Path,
     executed_at: &str,
-    score: &str,
+    framework_score: &str,
 ) -> Output {
     Command::new(env!("CARGO_BIN_EXE_sovri-agent"))
         .arg("report")
@@ -89,7 +89,7 @@ fn run_report_with_framework_score(
         .arg("--executed-at")
         .arg(executed_at)
         .arg("--framework-score")
-        .arg(score)
+        .arg(framework_score)
         .output()
         .expect("running sovri-agent report")
 }
@@ -175,20 +175,24 @@ fn scores_are_never_labelled_as_a_legal_or_risk_rating() {
 
 #[test]
 fn score_percentages_render_at_the_boundaries_with_caveats() {
-    for score in ["0.0%", "100.0%"] {
+    for framework_score in ["0.0%", "100.0%"] {
         let store = persisted_consent_store();
         // Given the run's MAT-87 framework score is provided as "<score>"
         // When the report is generated
-        let output = run_report_with_framework_score(RUN_ID, store.path(), EXECUTED_AT, score);
+        let output =
+            run_report_with_framework_score(RUN_ID, store.path(), EXECUTED_AT, framework_score);
 
         assert!(
             output.status.success(),
-            "report command exits successfully for score {score}, stderr: {}",
+            "report command exits successfully for score {framework_score}, stderr: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         let text = String::from_utf8_lossy(&output.stdout);
         // Then the report shows framework score "gdpr-eprivacy" as "<score>"
-        assert_pdf_text_line(&text, &format!("Framework score gdpr-eprivacy: {score}"));
+        assert_pdf_text_line(
+            &text,
+            &format!("Framework score gdpr-eprivacy: {framework_score}"),
+        );
         // And the score section states that scores are not a legal risk rating
         assert_pdf_text_line(&text, "Scores do not provide legal-risk ratings.");
     }
