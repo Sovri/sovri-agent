@@ -5,11 +5,12 @@
 //!
 //! Re-exports the `sovri-sdk` evidence contract so agent code and downstream
 //! consumers speak one evidence vocabulary rather than redefining the auditable
-//! proof types. The agent adds nothing here yet; V0.4 scanners attach evidence
-//! through these re-exported types.
+//! proof types. The V0.4 scanners attach evidence through these types; the V0.5
+//! scan hashes each record over its real bytes ([`content_digest`]) and persists
+//! it to a content-addressed [`EvidenceStore`].
 
 pub use sovri_sdk::{
-    attach_evidence, collect_offline, Classification, Collection, Evidence, EvidenceBuilder,
-    EvidenceCitation, EvidenceError, EvidenceKind, EvidenceLog, EvidenceSource, GapExplanation,
-    EXCERPT_CAP_BYTES,
+    attach_evidence, collect_offline, content_digest, Classification, Collection, Digest, Evidence,
+    EvidenceBuilder, EvidenceCitation, EvidenceError, EvidenceKind, EvidenceLog, EvidenceSource,
+    EvidenceStore, GapExplanation, StoreError, EXCERPT_CAP_BYTES,
 };
