@@ -275,18 +275,16 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
             ]),
             SECTION_CONTROL_MATRIX => {
                 // Keep legacy rule lines for R-02; R-04 rows provide one countable row per status.
-                lines.extend([
-                    format!("Control: {CONSENT_CORPUS_CONTROL_ID}"),
-                    format!("Rule {CONSENT_CORPUS_TRACKER_RULE_ID}: FAIL"),
-                    control_row(CONSENT_CORPUS_CONTROL_ID, "FAIL"),
-                ]);
+                lines.push(format!("Control: {CONSENT_CORPUS_CONTROL_ID}"));
                 if let Some(reason) = cmp_warning_reason {
                     lines.push(format!("Rule {CONSENT_CORPUS_CMP_RULE_ID}: WARNING"));
                     lines.push(format!("Explanation: {reason}"));
                 } else {
                     lines.push(format!("Rule {CONSENT_CORPUS_CMP_RULE_ID}: PASS"));
                 }
-                for record in evidence.records() {
+                lines.push(format!("Rule {CONSENT_CORPUS_TRACKER_RULE_ID}: FAIL"));
+                lines.push(control_row(CONSENT_CORPUS_CONTROL_ID, "FAIL"));
+                for record in records_ordered_by_control(&evidence) {
                     let Some((control_id, reason, status)) = non_conclusive_record_status(record)
                     else {
                         continue;
@@ -296,7 +294,7 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                 }
             }
             SECTION_GAPS => {
-                for record in evidence.records() {
+                for record in records_ordered_by_control(&evidence) {
                     let Some(control_id) = record.control_id() else {
                         continue;
                     };
@@ -374,7 +372,7 @@ fn evidence_requires_redaction(record: &Evidence) -> bool {
 
 fn evidence_summary_lines(evidence: &EvidenceLog) -> Vec<String> {
     let mut lines = Vec::new();
-    for record in evidence.records() {
+    for record in records_ordered_by_control(evidence) {
         let metadata = EvidenceSummaryMetadata::from_record(record);
         lines.push(format!("Evidence: {}", record.id()));
         lines.push(format!(
@@ -398,7 +396,7 @@ fn evidence_summary_lines(evidence: &EvidenceLog) -> Vec<String> {
 
 fn evidence_lines(evidence: &EvidenceLog) -> Vec<String> {
     let mut lines = Vec::new();
-    for record in evidence.records() {
+    for record in records_ordered_by_control(evidence) {
         lines.push(format!("Evidence: {}", record.id()));
         if let Some(control_id) = record.control_id() {
             lines.push(format!("{EVIDENCE_FIELD_INDENT}Control: {control_id}"));
@@ -416,6 +414,27 @@ fn evidence_lines(evidence: &EvidenceLog) -> Vec<String> {
         ));
     }
     lines
+}
+
+fn records_ordered_by_control(evidence: &EvidenceLog) -> Vec<&Evidence> {
+    let mut records: Vec<&Evidence> = evidence.records().iter().collect();
+    records.sort_by(|left, right| record_order_key(left).cmp(&record_order_key(right)));
+    records
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum ControlOrderKey<'a> {
+    Missing,
+    Linked(&'a str),
+}
+
+fn record_order_key(record: &Evidence) -> (ControlOrderKey<'_>, &str) {
+    (
+        record
+            .control_id()
+            .map_or(ControlOrderKey::Missing, ControlOrderKey::Linked),
+        record.id(),
+    )
 }
 
 #[cfg(test)]
