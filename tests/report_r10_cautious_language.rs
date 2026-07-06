@@ -188,12 +188,12 @@ fn cautious_wording_holds_even_for_a_fail_status() {
     let gaps = section_text(&text, "Gaps");
 
     // Then the gap for control "consent.tracker.prior-consent" has status "FAIL"
-    assert_section_contains(&gaps, &format!("Gap: {CONSENT_CONTROL}"));
-    assert_section_contains(&gaps, "Status: FAIL");
+    assert_section_contains(gaps, &format!("Gap: {CONSENT_CONTROL}"));
+    assert_section_contains(gaps, "Status: FAIL");
 
     // And its reason describes a potential gap requiring review
-    assert_section_contains(&gaps, "Reason: potential gap requires review");
+    assert_section_contains(gaps, "Reason: potential gap requires review");
 
     // And its reason asserts no legal violation
-    assert_pdf_text_absent(&gaps, "violation");
+    assert_pdf_text_absent(gaps, "violation");
 }

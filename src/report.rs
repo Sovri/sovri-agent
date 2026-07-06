@@ -417,6 +417,12 @@ struct RawMissingIntegrityFields {
     has_content_hash: bool,
 }
 
+#[derive(Clone, Copy)]
+struct GapSummary<'a> {
+    control_id: &'a str,
+    status: &'static str,
+}
+
 fn report_evidence_metadata(root: &Path) -> Result<ReportEvidenceMetadata, Error> {
     match EvidenceStore::open(root) {
         Ok(store) => Ok(ReportEvidenceMetadata {
@@ -644,27 +650,28 @@ fn append_record_result_counts(counts: &mut ResultCounts, record: &Evidence) {
 }
 
 fn append_gap_lines(lines: &mut Vec<String>, evidence: &EvidenceLog) {
-    let mut gap_control_ids = records_ordered_by_control(evidence)
+    let mut gaps = records_ordered_by_control(evidence)
         .into_iter()
-        .filter_map(potential_gap_control_id);
-    let Some(first_control_id) = gap_control_ids.next() else {
+        .filter_map(potential_gap_summary);
+    let Some(first_gap) = gaps.next() else {
         lines.push(NO_GAPS_PLACEHOLDER.to_string());
         append_remediation_line(lines);
         return;
     };
 
-    append_gap_control_lines(lines, first_control_id);
-    for control_id in gap_control_ids {
-        append_gap_control_lines(lines, control_id);
+    append_gap_control_lines(lines, first_gap);
+    for gap in gaps {
+        append_gap_control_lines(lines, gap);
     }
     append_remediation_line(lines);
 }
 
-fn append_gap_control_lines(lines: &mut Vec<String>, control_id: &str) {
+fn append_gap_control_lines(lines: &mut Vec<String>, gap: GapSummary<'_>) {
     let reference = GAP_REFERENCES
         .iter()
-        .find(|reference| reference.control_id == control_id);
-    lines.push(format!("Gap: {control_id}"));
+        .find(|reference| reference.control_id == gap.control_id);
+    lines.push(format!("Gap: {}", gap.control_id));
+    lines.push(format!("Status: {}", gap.status));
     lines.push(POTENTIAL_GAP_REVIEW_REASON.to_string());
     let (framework_reference, source_url, severity) = reference.map_or(
         (
@@ -828,9 +835,22 @@ fn evidence_lines(evidence: &EvidenceLog) -> Vec<String> {
     lines
 }
 
-fn potential_gap_control_id(record: &Evidence) -> Option<&str> {
+fn potential_gap_summary(record: &Evidence) -> Option<GapSummary<'_>> {
     let control_id = record.control_id()?;
-    (record.signal() != Some(PASS_SIGNAL)).then_some(control_id)
+    let signal = record.signal();
+    if signal == Some(PASS_SIGNAL) {
+        return None;
+    }
+    let status = signal
+        .and_then(|reason| non_conclusive_status(control_id, reason))
+        .unwrap_or_else(|| {
+            if signal == Some(CONSENT_CORPUS_WARNING_REASON) {
+                "WARNING"
+            } else {
+                "FAIL"
+            }
+        });
+    Some(GapSummary { control_id, status })
 }
 
 fn records_ordered_by_control(evidence: &EvidenceLog) -> Vec<&Evidence> {
