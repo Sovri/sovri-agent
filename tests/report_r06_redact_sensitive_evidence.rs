@@ -13,13 +13,53 @@ use sovri_agent::evidence::{Classification, Evidence, EvidenceKind, EvidenceStor
 
 const RUN_ID: &str = "shopfront-2026-06-24";
 const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
-const SECRET_LOCATOR: &str = ".env.example:3";
-const SECRET_HASH: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-const SECRET_VALUE: &str = "sk_live_EXAMPLEonly_NOT_A_REAL_KEY";
-const ACCOUNT_LOCATOR: &str = "config/users.yaml:12";
-const ACCOUNT_HASH: &str =
-    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-const ACCOUNT_VALUE: &str = "admin@shopfront.example";
+
+struct TestEvidence {
+    id: &'static str,
+    report_kind: &'static str,
+    locator: &'static str,
+    classification: Classification,
+    raw_value: &'static str,
+    integrity: &'static str,
+    key: Option<&'static str>,
+}
+
+impl TestEvidence {
+    fn to_evidence(&self) -> Evidence {
+        let mut builder = Evidence::builder()
+            .id(self.id)
+            .kind(EvidenceKind::Config)
+            .locator(self.locator)
+            .classification(self.classification)
+            .content_hash(self.integrity)
+            .excerpt(self.raw_value);
+        if let Some(key) = self.key {
+            builder = builder.key(key);
+        }
+        builder.build().expect("classified evidence builds")
+    }
+}
+
+const CLASSIFIED_EVIDENCE: &[TestEvidence] = &[
+    TestEvidence {
+        id: "ev-secret-env",
+        report_kind: "config",
+        locator: ".env.example:3",
+        classification: Classification::Secret,
+        raw_value: "sk_live_EXAMPLEonly_NOT_A_REAL_KEY",
+        integrity: "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        key: None,
+    },
+    TestEvidence {
+        id: "ev-sensitive-account",
+        report_kind: "account",
+        locator: "config/users.yaml:12",
+        classification: Classification::Sensitive,
+        raw_value: "admin@shopfront.example",
+        integrity: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        key: Some("account"),
+    },
+];
 
 struct TempStore {
     root: PathBuf,
@@ -49,28 +89,13 @@ impl Drop for TempStore {
 
 fn classified_evidence_store() -> TempStore {
     let store = TempStore::new("classified-corpus");
-    let secret = Evidence::builder()
-        .id("ev-secret-env")
-        .kind(EvidenceKind::Config)
-        .locator(SECRET_LOCATOR)
-        .classification(Classification::Secret)
-        .content_hash(SECRET_HASH)
-        .excerpt(SECRET_VALUE)
-        .build()
-        .expect("secret evidence builds");
-    let account = Evidence::builder()
-        .id("ev-sensitive-account")
-        .kind(EvidenceKind::Config)
-        .locator(ACCOUNT_LOCATOR)
-        .key("account")
-        .classification(Classification::Sensitive)
-        .content_hash(ACCOUNT_HASH)
-        .excerpt(ACCOUNT_VALUE)
-        .build()
-        .expect("sensitive account evidence builds");
+    let evidence = CLASSIFIED_EVIDENCE
+        .iter()
+        .map(TestEvidence::to_evidence)
+        .collect::<Vec<_>>();
     let mut evidence_store = EvidenceStore::open(store.path()).expect("open evidence store");
     evidence_store
-        .write_all(&[secret, account])
+        .write_all(&evidence)
         .expect("write classified evidence");
     store
 }
@@ -151,10 +176,12 @@ fn a_classified_record_is_summarized_to_its_metadata() {
     // And it shows the locator "<locator>"
     // And it shows the integrity "<integrity>"
     // And it marks the "<locator>" record as redacted
-    for (kind, locator, integrity) in [
-        ("config", SECRET_LOCATOR, SECRET_HASH),
-        ("account", ACCOUNT_LOCATOR, ACCOUNT_HASH),
-    ] {
-        assert_record_metadata(&text, kind, locator, integrity);
+    for example in CLASSIFIED_EVIDENCE {
+        assert_record_metadata(
+            &text,
+            example.report_kind,
+            example.locator,
+            example.integrity,
+        );
     }
 }
