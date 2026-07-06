@@ -119,7 +119,7 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
     let mut lines = vec!["Sovri PDF compliance report".to_string()];
     for section in REQUIRED_REPORT_SECTIONS {
         if section == SECTION_CONTROL_MATRIX {
-            continue;
+            lines.extend(evidence_lines(&evidence));
         }
         lines.push(section.to_string());
         match section {
@@ -131,19 +131,17 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                 format!("Catalog version: {CONSENT_CORPUS_CATALOG_VERSION}"),
                 format!("Result counts: {CONSENT_CORPUS_RESULT_COUNTS}"),
             ]),
+            SECTION_CONTROL_MATRIX => lines.extend([
+                format!("Control: {CONSENT_CORPUS_CONTROL_ID}"),
+                format!("Rule {CONSENT_CORPUS_TRACKER_RULE_ID}: FAIL"),
+                format!("Rule {CONSENT_CORPUS_CMP_RULE_ID}: PASS"),
+            ]),
             SECTION_EVIDENCE_SUMMARY => {
                 lines.push(format!("Evidence records: {}", evidence.len()));
             }
             _ => {}
         }
     }
-    lines.extend(evidence_lines(&evidence));
-    lines.push(SECTION_CONTROL_MATRIX.to_string());
-    lines.extend([
-        format!("Control: {CONSENT_CORPUS_CONTROL_ID}"),
-        format!("Rule {CONSENT_CORPUS_TRACKER_RULE_ID}: FAIL"),
-        format!("Rule {CONSENT_CORPUS_CMP_RULE_ID}: PASS"),
-    ]);
     Ok(lines)
 }
 
