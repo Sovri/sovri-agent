@@ -54,6 +54,12 @@ const MAX_RUN_ID_BYTES: usize = 128;
 const EVIDENCE_FIELD_INDENT: &str = "  ";
 /// Header line used by persisted evidence record files.
 const EVIDENCE_RECORD_HEADER: &str = "format\tevidence-record-v1";
+/// Persisted evidence record field for the evidence id.
+const EVIDENCE_FIELD_ID: &str = "id";
+/// Persisted evidence record field for the locator.
+const EVIDENCE_FIELD_LOCATOR: &str = "locator";
+/// Persisted evidence record field for the integrity digest.
+const EVIDENCE_FIELD_CONTENT_HASH: &str = "content-hash";
 /// Report-layer evidence kind label for account inventory metadata.
 const ACCOUNT_EVIDENCE_KIND_LABEL: &str = "account";
 /// Executive-summary section heading.
@@ -500,9 +506,9 @@ fn decode_missing_integrity_record(
         let value =
             unescape_store_value(raw).map_err(|message| store_decode_error(path, &message))?;
         match key {
-            "id" => fields.id = Some(value),
-            "locator" => fields.locator = Some(value),
-            "content-hash" => fields.has_content_hash = true,
+            EVIDENCE_FIELD_ID => fields.id = Some(value),
+            EVIDENCE_FIELD_LOCATOR => fields.locator = Some(value),
+            EVIDENCE_FIELD_CONTENT_HASH => fields.has_content_hash = true,
             "kind" | "classification" | "line" | "key" | "signal" | "size-bytes"
             | "reviewer-status" | "control-id" | "control" => {}
             other => {
@@ -513,8 +519,8 @@ fn decode_missing_integrity_record(
             }
         }
     }
-    let id = required_report_record_field(path, fields.id, "id")?;
-    let locator = required_report_record_field(path, fields.locator, "locator")?;
+    let id = required_report_record_field(path, fields.id, EVIDENCE_FIELD_ID)?;
+    let locator = required_report_record_field(path, fields.locator, EVIDENCE_FIELD_LOCATOR)?;
     Ok(MissingIntegrityFields {
         id,
         locator,
@@ -551,7 +557,7 @@ fn unescape_store_value(value: &str) -> Result<String, String> {
 }
 
 fn store_io_error(operation: &'static str, path: &Path, error: &io::Error) -> Error {
-    Error::EvidenceStore(StoreError::Io {
+    store_error(StoreError::Io {
         operation,
         path: path.display().to_string(),
         message: error.to_string(),
@@ -559,10 +565,14 @@ fn store_io_error(operation: &'static str, path: &Path, error: &io::Error) -> Er
 }
 
 fn store_decode_error(path: &Path, message: &str) -> Error {
-    Error::EvidenceStore(StoreError::Decode {
+    store_error(StoreError::Decode {
         path: path.display().to_string(),
         message: message.to_string(),
     })
+}
+
+fn store_error(error: StoreError) -> Error {
+    Error::EvidenceStore(error)
 }
 
 fn append_score_lines(lines: &mut Vec<String>, evidence: &EvidenceLog, framework_score: &str) {
