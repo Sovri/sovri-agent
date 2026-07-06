@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! R-05 - Scores render with counts and caveats, not as legal risk ratings.
-//! Covers issues #111, #112, and #113.
+//! Covers issues #111, #112, #113, and #114.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -70,6 +70,26 @@ fn run_report(run_id: &str, store: &Path, executed_at: &str) -> Output {
         .arg(store)
         .arg("--executed-at")
         .arg(executed_at)
+        .output()
+        .expect("running sovri-agent report")
+}
+
+fn run_report_with_framework_score(
+    run_id: &str,
+    store: &Path,
+    executed_at: &str,
+    score: &str,
+) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_sovri-agent"))
+        .arg("report")
+        .arg("--run")
+        .arg(run_id)
+        .arg("--evidence-store")
+        .arg(store)
+        .arg("--executed-at")
+        .arg(executed_at)
+        .arg("--framework-score")
+        .arg(score)
         .output()
         .expect("running sovri-agent report")
 }
@@ -151,4 +171,25 @@ fn scores_are_never_labelled_as_a_legal_or_risk_rating() {
     assert_no_score_label(&text, "legal risk rating");
     // And no score in the report is labelled "risk score"
     assert_no_score_label(&text, "risk score");
+}
+
+#[test]
+fn score_percentages_render_at_the_boundaries_with_caveats() {
+    for score in ["0.0%", "100.0%"] {
+        let store = persisted_consent_store();
+        // Given the run's MAT-87 framework score is provided as "<score>"
+        // When the report is generated
+        let output = run_report_with_framework_score(RUN_ID, store.path(), EXECUTED_AT, score);
+
+        assert!(
+            output.status.success(),
+            "report command exits successfully for score {score}, stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8_lossy(&output.stdout);
+        // Then the report shows framework score "gdpr-eprivacy" as "<score>"
+        assert_pdf_text_line(&text, &format!("Framework score gdpr-eprivacy: {score}"));
+        // And the score section states that scores are not a legal risk rating
+        assert_pdf_text_line(&text, "Scores do not provide legal-risk ratings.");
+    }
 }
