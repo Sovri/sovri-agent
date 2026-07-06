@@ -301,7 +301,7 @@ fn fail(error: &Error) -> ExitCode {
 fn execute(config: &Config) -> Result<Vec<String>, Error> {
     let evidence_store = canonical_evidence_store(&config.evidence_store)?;
     let store = EvidenceStore::open(&evidence_store).map_err(Error::EvidenceStore)?;
-    let evidence = store.read_all().map_err(Error::EvidenceStore)?;
+    let evidence = evidence_metadata_log(&store);
     let cmp_warning_reason = evidence.records().iter().find_map(|record| {
         (record.signal() == Some(CONSENT_CORPUS_WARNING_REASON))
             .then_some(CONSENT_CORPUS_WARNING_REASON)
@@ -362,6 +362,14 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
         }
     }
     Ok(lines)
+}
+
+fn evidence_metadata_log(store: &EvidenceStore) -> EvidenceLog {
+    let mut log = EvidenceLog::new();
+    for entry in store.index().entries() {
+        log.record(entry.record().clone());
+    }
+    log
 }
 
 fn append_score_lines(lines: &mut Vec<String>, evidence: &EvidenceLog, framework_score: &str) {
