@@ -14,7 +14,7 @@ use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::evidence::{EvidenceStore, StoreError};
+use crate::evidence::{EvidenceLog, EvidenceStore, StoreError};
 use sovri_sdk::is_valid_execution_timestamp;
 
 /// Exit code when the report was produced successfully.
@@ -41,6 +41,8 @@ const DEFAULT_LINE_HEIGHT_POINTS: u8 = 14;
 const PDF_OBJECT_COUNT: usize = 5;
 /// Maximum accepted run identifier length.
 const MAX_RUN_ID_BYTES: usize = 128;
+/// Prefix for fields nested under a rendered evidence record.
+const EVIDENCE_FIELD_INDENT: &str = "  ";
 
 /// The `report` command help text.
 const HELP: &str = "\
@@ -85,12 +87,36 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
     let evidence_store = canonical_evidence_store(&config.evidence_store)?;
     let store = EvidenceStore::open(&evidence_store).map_err(Error::EvidenceStore)?;
     let evidence = store.read_all().map_err(Error::EvidenceStore)?;
-    Ok(vec![
+    let mut lines = vec![
         "Sovri PDF compliance report".to_string(),
         format!("Run: {}", config.run_id),
         format!("Generated date: {}", config.executed_at),
         format!("Evidence records: {}", evidence.len()),
-    ])
+    ];
+    lines.extend(evidence_lines(&evidence));
+    Ok(lines)
+}
+
+fn evidence_lines(evidence: &EvidenceLog) -> Vec<String> {
+    let mut lines = Vec::new();
+    for record in evidence.records() {
+        lines.push(format!("Evidence: {}", record.id()));
+        if let Some(control_id) = record.control_id() {
+            lines.push(format!("{EVIDENCE_FIELD_INDENT}Control: {control_id}"));
+        }
+        lines.push(format!(
+            "{EVIDENCE_FIELD_INDENT}Locator: {}",
+            record.locator()
+        ));
+        if let Some(signal) = record.signal() {
+            lines.push(format!("{EVIDENCE_FIELD_INDENT}Signal: {signal}"));
+        }
+        lines.push(format!(
+            "{EVIDENCE_FIELD_INDENT}Integrity: {}",
+            record.content_hash()
+        ));
+    }
+    lines
 }
 
 fn write_pdf<W: IoWrite>(sink: &mut W, lines: &[String]) -> io::Result<()> {
