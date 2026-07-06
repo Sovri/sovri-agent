@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! R-07 - Report output is deterministic.
-//! Covers issue #117.
+//! Covers issues #117 and #118.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -105,6 +105,16 @@ fn assert_pdf_output(output: &Output, label: &str) {
     );
 }
 
+fn assert_no_pdf_creation_timestamp(pdf: &[u8]) {
+    let text = String::from_utf8_lossy(pdf);
+    for forbidden in ["/CreationDate", "/ModDate", "D:"] {
+        assert!(
+            !text.contains(forbidden),
+            "PDF embeds creation timestamp marker {forbidden:?}; actual PDF bytes:\n{text}"
+        );
+    }
+}
+
 #[test]
 fn generating_the_report_twice_yields_byte_identical_pdfs() {
     // Given the "shopfront-2026-06-24" consent corpus with fixed executed-at "2026-06-24T13:16:28Z"
@@ -120,4 +130,24 @@ fn generating_the_report_twice_yields_byte_identical_pdfs() {
 
     // Then the two PDFs are byte-identical
     assert_eq!(second.stdout, first.stdout);
+}
+
+#[test]
+fn generated_date_is_the_runs_fixed_executed_at_not_the_wall_clock() {
+    // Given the "shopfront-2026-06-24" consent corpus with fixed executed-at "2026-06-24T13:16:28Z"
+    let store = persisted_consent_store();
+
+    // When the PDF report is generated from the corpus
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+    assert_pdf_output(&output, "report");
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    // Then the report's generated date is "2026-06-24T13:16:28Z"
+    assert!(
+        text.contains(&format!("Generated date: {EXECUTED_AT}")),
+        "PDF renders fixed generated date {EXECUTED_AT:?}; actual PDF bytes:\n{text}"
+    );
+
+    // And the PDF embeds no wall-clock creation timestamp
+    assert_no_pdf_creation_timestamp(&output.stdout);
 }
