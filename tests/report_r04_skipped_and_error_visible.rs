@@ -164,6 +164,21 @@ fn assert_pdf_text_line(text: &str, expected: &str) {
     );
 }
 
+fn count_control_rows(text: &str) -> usize {
+    text.lines()
+        .filter(|line| line.starts_with("(Control row: "))
+        .count()
+}
+
+fn assert_control_row_with_status(text: &str, status: &str) {
+    let suffix = format!(": {status}) Tj");
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("(Control row: ") && line.ends_with(&suffix)),
+        "report includes a control row with status {status:?}; actual PDF text:\n{text}"
+    );
+}
+
 #[test]
 fn non_conclusive_status_appears_with_its_explanation() {
     let store = persisted_non_conclusive_store();
@@ -185,6 +200,30 @@ fn non_conclusive_status_appears_with_its_explanation() {
         // And that row shows the explanation "<reason>"
         assert_pdf_text_line(&text, &format!("Explanation: {}", example.reason));
     }
+}
+
+#[test]
+fn skipped_and_error_rows_are_not_omitted_from_the_report() {
+    let store = persisted_non_conclusive_store();
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+
+    assert!(
+        output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert_pdf_text_line(&text, "Control matrix");
+    // Then the report shows 3 control rows
+    assert_eq!(
+        count_control_rows(&text),
+        3,
+        "report shows 3 control rows; actual PDF text:\n{text}"
+    );
+    // And the report includes a row with status "SKIPPED"
+    assert_control_row_with_status(&text, "SKIPPED");
+    // And the report includes a row with status "ERROR"
+    assert_control_row_with_status(&text, "ERROR");
 }
 
 #[test]
