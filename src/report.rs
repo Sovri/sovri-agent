@@ -47,6 +47,8 @@ const EVIDENCE_FIELD_INDENT: &str = "  ";
 const SECTION_EXECUTIVE_SUMMARY: &str = "Executive summary";
 /// Control-matrix section heading.
 const SECTION_CONTROL_MATRIX: &str = "Control matrix";
+/// Gaps section heading.
+const SECTION_GAPS: &str = "Gaps";
 /// Evidence-summary section heading.
 const SECTION_EVIDENCE_SUMMARY: &str = "Evidence summary";
 /// Section headings required in every generated report.
@@ -54,7 +56,7 @@ const REQUIRED_REPORT_SECTIONS: [&str; 6] = [
     SECTION_EXECUTIVE_SUMMARY,
     "Framework coverage",
     SECTION_CONTROL_MATRIX,
-    "Gaps",
+    SECTION_GAPS,
     SECTION_EVIDENCE_SUMMARY,
     "Remediation",
 ];
@@ -74,6 +76,9 @@ const CONSENT_CORPUS_TRACKER_RULE_ID: &str = "consent.detect-trackers-without-co
 const CONSENT_CORPUS_CMP_RULE_ID: &str = "consent.detect-cmp-misconfiguration";
 /// Warning reason represented by the canonical MAT-95 inconclusive-consent corpus.
 const CONSENT_CORPUS_WARNING_REASON: &str = "consent signal was inconclusive";
+/// Remediation represented by the canonical MAT-95 consent corpus.
+const CONSENT_CORPUS_REMEDIATION: &str =
+    "Block non-essential trackers until the visitor records consent.";
 
 /// The `report` command help text.
 const HELP: &str = "\
@@ -148,6 +153,11 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                 } else {
                     lines.push(format!("Rule {CONSENT_CORPUS_CMP_RULE_ID}: PASS"));
                 }
+            }
+            SECTION_GAPS => {
+                lines.push(format!(
+                    "Remediation for {CONSENT_CORPUS_CONTROL_ID}: {CONSENT_CORPUS_REMEDIATION}"
+                ));
             }
             SECTION_EVIDENCE_SUMMARY => {
                 lines.push(format!("Evidence records: {}", evidence.len()));
