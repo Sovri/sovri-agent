@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! R-03 - rendered gaps cite framework/control references, not CWE fallbacks.
-//! Covers issue #106.
+//! Covers issues #106 and #107.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,8 +13,13 @@ use sovri_agent::evidence::{Evidence, EvidenceKind, EvidenceStore};
 use sovri_agent::scanners::ssh;
 
 const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
+const SHOPFRONT_RUN_ID: &str = "shopfront-2026-06-24";
 const HASH: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+const SHOPFRONT_EVIDENCE_ID: &str = "ev-0001";
+const SHOPFRONT_LOCATOR: &str = "dist/main.js";
+const SHOPFRONT_TRACKER_SIGNAL: &str = "www.google-analytics.com";
 const CONSENT_CORPUS_CONTROL_ID: &str = "consent.tracker.prior-consent";
+const CONSENT_CORPUS_REFERENCE: &str = "gdpr-eprivacy:2016-679:Art.7";
 const UNKNOWN_CONTROL_ID: &str = "custom.framework.control-without-reference";
 
 struct GapExample {
@@ -27,7 +32,7 @@ struct GapExample {
 const GAP_EXAMPLES: [GapExample; 2] = [
     GapExample {
         control: CONSENT_CORPUS_CONTROL_ID,
-        reference: "gdpr-eprivacy:2016-679:Art.7",
+        reference: CONSENT_CORPUS_REFERENCE,
         url: "https://eur-lex.europa.eu/eli/reg/2016/679/oj",
         severity: "major",
     },
@@ -84,6 +89,25 @@ fn persisted_gap_store(control_id: &str) -> TempStore {
     store
 }
 
+fn persisted_shopfront_consent_corpus() -> TempStore {
+    let store = TempStore::new("shopfront-consent-corpus");
+    let evidence = Evidence::builder()
+        .id(SHOPFRONT_EVIDENCE_ID)
+        .kind(EvidenceKind::RouteBuild)
+        .locator(SHOPFRONT_LOCATOR)
+        .content_hash(HASH)
+        .signal(SHOPFRONT_TRACKER_SIGNAL)
+        .build()
+        .expect("tracker evidence builds")
+        .link_to_control(CONSENT_CORPUS_CONTROL_ID)
+        .expect("tracker evidence links");
+    let mut evidence_store = EvidenceStore::open(store.path()).expect("open evidence store");
+    evidence_store
+        .write_all(&[evidence])
+        .expect("write evidence");
+    store
+}
+
 fn run_report(run_id: &str, store: &Path, executed_at: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_sovri-agent"))
         .arg("report")
@@ -124,6 +148,31 @@ fn gap_with_unconfigured_reference_remains_visible_without_cwe_fallback() {
     assert!(
         !text.contains("CWE-"),
         "unconfigured gap metadata does not fall back to CWE; actual PDF text:\n{text}"
+    );
+}
+
+#[test]
+fn no_gap_in_the_report_falls_back_to_a_cwe_reference() {
+    // Given a compliance report generated from the "shopfront-2026-06-24" consent corpus
+    let store = persisted_shopfront_consent_corpus();
+    let output = run_report(SHOPFRONT_RUN_ID, store.path(), EXECUTED_AT);
+
+    assert!(
+        output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Then no gap in the report shows a reference beginning with "CWE-"
+    assert!(
+        !text.contains("CWE-"),
+        "report does not contain a CWE fallback reference; actual PDF text:\n{text}"
+    );
+    // And the gap for control "consent.tracker.prior-consent" shows the compliance reference "gdpr-eprivacy:2016-679:Art.7" in place of any CWE id
+    assert_pdf_text_line(&text, &format!("Gap: {CONSENT_CORPUS_CONTROL_ID}"));
+    assert_pdf_text_line(
+        &text,
+        &format!("Framework reference: {CONSENT_CORPUS_REFERENCE}"),
     );
 }
 
