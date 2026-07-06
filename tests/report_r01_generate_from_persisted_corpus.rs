@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use sovri_agent::evidence::{Evidence, EvidenceKind, EvidenceStore};
@@ -61,21 +61,31 @@ fn persisted_consent_store() -> TempStore {
     store
 }
 
+fn empty_store(label: &str) -> TempStore {
+    let store = TempStore::new(label);
+    EvidenceStore::open(store.path()).expect("create empty evidence store");
+    store
+}
+
+fn run_report(run_id: &str, store: &Path, executed_at: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_sovri-agent"))
+        .arg("report")
+        .arg("--run")
+        .arg(run_id)
+        .arg("--evidence-store")
+        .arg(store)
+        .arg("--executed-at")
+        .arg(executed_at)
+        .output()
+        .expect("running sovri-agent report")
+}
+
 #[test]
 fn generate_a_pdf_report_from_the_persisted_corpus() {
     // Given a persisted evidence store holds the compliance run "shopfront-2026-06-24".
     let store = persisted_consent_store();
     // And the run's fixed executed-at is "2026-06-24T13:16:28Z".
-    let output = Command::new(env!("CARGO_BIN_EXE_sovri-agent"))
-        .arg("report")
-        .arg("--run")
-        .arg(RUN_ID)
-        .arg("--evidence-store")
-        .arg(store.path())
-        .arg("--executed-at")
-        .arg(EXECUTED_AT)
-        .output()
-        .expect("running sovri-agent report");
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
 
     // When the maintainer generates the PDF compliance report for "shopfront-2026-06-24".
     assert!(
@@ -96,5 +106,73 @@ fn generate_a_pdf_report_from_the_persisted_corpus() {
     assert!(
         text.contains(EXECUTED_AT),
         "the fixed generated date is rendered"
+    );
+}
+
+#[test]
+fn reject_invalid_report_inputs_without_pdf_output() {
+    let store = persisted_consent_store();
+
+    let invalid_run = run_report("shopfront/2026-06-24", store.path(), EXECUTED_AT);
+    assert!(!invalid_run.status.success(), "invalid run id is rejected");
+    assert!(
+        String::from_utf8_lossy(&invalid_run.stderr).contains("invalid --run id"),
+        "invalid run id explains the validation error"
+    );
+    assert!(
+        invalid_run.stdout.is_empty(),
+        "no PDF is written on usage error"
+    );
+
+    let invalid_timestamp = run_report(RUN_ID, store.path(), "2026-06-24 13:16:28");
+    assert!(
+        !invalid_timestamp.status.success(),
+        "malformed execution timestamp is rejected"
+    );
+    assert!(
+        String::from_utf8_lossy(&invalid_timestamp.stderr).contains("invalid --executed-at"),
+        "invalid timestamp explains the validation error"
+    );
+    assert!(
+        invalid_timestamp.stdout.is_empty(),
+        "no PDF is written on timestamp error"
+    );
+
+    let missing_store = TempStore::new("missing-corpus");
+    let missing_store_output = run_report(RUN_ID, missing_store.path(), EXECUTED_AT);
+    assert!(
+        !missing_store_output.status.success(),
+        "missing evidence store is rejected"
+    );
+    assert!(
+        String::from_utf8_lossy(&missing_store_output.stderr)
+            .contains("invalid --evidence-store path"),
+        "missing evidence store explains the validation error"
+    );
+    assert!(
+        missing_store_output.stdout.is_empty(),
+        "no PDF is written for a missing store"
+    );
+}
+
+#[test]
+fn accept_maximum_length_run_ids_and_empty_evidence_stores() {
+    let store = empty_store("empty-corpus");
+    let run_id = "a".repeat(128);
+    let output = run_report(&run_id, store.path(), EXECUTED_AT);
+
+    assert!(
+        output.status.success(),
+        "maximum length run id and empty evidence store are accepted, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains(&format!("Run: {run_id}")),
+        "maximum length run id is rendered"
+    );
+    assert!(
+        text.contains("Evidence records: 0"),
+        "empty evidence store count is rendered"
     );
 }

@@ -22,21 +22,21 @@ const EXIT_OK: u8 = 0;
 /// Exit code for usage or input errors.
 const EXIT_USAGE: u8 = 64;
 /// US Letter page width in PDF points.
-const PAGE_WIDTH_POINTS: u16 = 612;
+const DEFAULT_PAGE_WIDTH_POINTS: u16 = 612;
 /// US Letter page height in PDF points.
-const PAGE_HEIGHT_POINTS: u16 = 792;
+const DEFAULT_PAGE_HEIGHT_POINTS: u16 = 792;
 /// Left margin in PDF points.
-const LEFT_MARGIN_POINTS: u16 = 72;
+const DEFAULT_LEFT_MARGIN_POINTS: u16 = 72;
 /// Top text baseline in PDF points.
-const TOP_BASELINE_POINTS: u16 = 760;
+const DEFAULT_TOP_BASELINE_POINTS: u16 = 760;
 /// Built-in PDF font resource name.
-const FONT_RESOURCE: &str = "F1";
+const DEFAULT_FONT_RESOURCE: &str = "F1";
 /// Built-in PDF base font name.
-const BASE_FONT: &str = "Helvetica";
+const DEFAULT_BASE_FONT: &str = "Helvetica";
 /// Text font size in PDF points.
-const FONT_SIZE_POINTS: u8 = 10;
+const DEFAULT_FONT_SIZE_POINTS: u8 = 10;
 /// Distance between text baselines in PDF points.
-const LINE_HEIGHT_POINTS: u8 = 14;
+const DEFAULT_LINE_HEIGHT_POINTS: u8 = 14;
 /// Number of PDF indirect objects written by the minimal renderer.
 const PDF_OBJECT_COUNT: usize = 5;
 /// Maximum accepted run identifier length.
@@ -94,6 +94,14 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
 }
 
 fn write_pdf<W: IoWrite>(sink: &mut W, lines: &[String]) -> io::Result<()> {
+    write_pdf_with_settings(sink, lines, &PdfSettings::default())
+}
+
+fn write_pdf_with_settings<W: IoWrite>(
+    sink: &mut W,
+    lines: &[String],
+    settings: &PdfSettings,
+) -> io::Result<()> {
     let mut writer = CountingWriter::new(sink);
     writer.write_bytes(b"%PDF-1.4\n")?;
     let mut offsets = Vec::with_capacity(PDF_OBJECT_COUNT + 1);
@@ -106,20 +114,22 @@ fn write_pdf<W: IoWrite>(sink: &mut W, lines: &[String]) -> io::Result<()> {
     })?;
     write_object(&mut writer, &mut offsets, 3, |writer| {
         writer.write_str(&format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {PAGE_WIDTH_POINTS} {PAGE_HEIGHT_POINTS}] /Resources << /Font << /{FONT_RESOURCE} 4 0 R >> >> /Contents 5 0 R >>\n"
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /{} 4 0 R >> >> /Contents 5 0 R >>\n",
+            settings.page_width_points, settings.page_height_points, settings.font_resource
         ))
     })?;
     write_object(&mut writer, &mut offsets, 4, |writer| {
         writer.write_str(&format!(
-            "<< /Type /Font /Subtype /Type1 /BaseFont /{BASE_FONT} >>\n"
+            "<< /Type /Font /Subtype /Type1 /BaseFont /{} >>\n",
+            settings.base_font
         ))
     })?;
     write_object(&mut writer, &mut offsets, 5, |writer| {
         writer.write_str(&format!(
             "<< /Length {} >>\nstream\n",
-            page_content_len(lines)
+            page_content_len(lines, settings)
         ))?;
-        write_page_content(writer, lines)?;
+        write_page_content(writer, lines, settings)?;
         writer.write_bytes(b"endstream\n")
     })?;
 
@@ -147,14 +157,19 @@ fn write_object<W: IoWrite>(
     writer.write_bytes(b"endobj\n")
 }
 
-fn page_content_len(lines: &[String]) -> usize {
-    let mut length =
-        format!("BT\n/{FONT_RESOURCE} {FONT_SIZE_POINTS} Tf\n{LEFT_MARGIN_POINTS} {TOP_BASELINE_POINTS} Td\n")
-            .len();
+fn page_content_len(lines: &[String], settings: &PdfSettings) -> usize {
+    let mut length = format!(
+        "BT\n/{} {} Tf\n{} {} Td\n",
+        settings.font_resource,
+        settings.font_size_points,
+        settings.left_margin_points,
+        settings.top_baseline_points
+    )
+    .len();
     for line in lines {
         length += 1;
         length += escaped_pdf_text_len(line);
-        length += format!(") Tj\n0 -{LINE_HEIGHT_POINTS} Td\n").len();
+        length += format!(") Tj\n0 -{} Td\n", settings.line_height_points).len();
     }
     length + b"ET\n".len()
 }
@@ -162,14 +177,19 @@ fn page_content_len(lines: &[String]) -> usize {
 fn write_page_content<W: IoWrite>(
     writer: &mut CountingWriter<'_, W>,
     lines: &[String],
+    settings: &PdfSettings,
 ) -> io::Result<()> {
     writer.write_str(&format!(
-        "BT\n/{FONT_RESOURCE} {FONT_SIZE_POINTS} Tf\n{LEFT_MARGIN_POINTS} {TOP_BASELINE_POINTS} Td\n"
+        "BT\n/{} {} Tf\n{} {} Td\n",
+        settings.font_resource,
+        settings.font_size_points,
+        settings.left_margin_points,
+        settings.top_baseline_points
     ))?;
     for line in lines {
         writer.write_bytes(b"(")?;
         write_escaped_pdf_text(writer, line)?;
-        writer.write_str(&format!(") Tj\n0 -{LINE_HEIGHT_POINTS} Td\n"))?;
+        writer.write_str(&format!(") Tj\n0 -{} Td\n", settings.line_height_points))?;
     }
     writer.write_bytes(b"ET\n")
 }
@@ -209,6 +229,15 @@ fn write_escaped_pdf_text<W: IoWrite>(
 }
 
 fn canonical_evidence_store(path: &Path) -> Result<PathBuf, Error> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let canonical_parent =
+        fs::canonicalize(parent).map_err(|reason| Error::InvalidEvidenceStorePath {
+            path: parent.display().to_string(),
+            reason,
+        })?;
     let canonical = fs::canonicalize(path).map_err(|reason| Error::InvalidEvidenceStorePath {
         path: path.display().to_string(),
         reason,
@@ -217,6 +246,15 @@ fn canonical_evidence_store(path: &Path) -> Result<PathBuf, Error> {
         return Err(Error::InvalidEvidenceStorePath {
             path: path.display().to_string(),
             reason: io::Error::new(io::ErrorKind::InvalidInput, "not a directory"),
+        });
+    }
+    if !canonical.starts_with(&canonical_parent) {
+        return Err(Error::InvalidEvidenceStorePath {
+            path: path.display().to_string(),
+            reason: io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "resolved path escapes its declared parent directory",
+            ),
         });
     }
     Ok(canonical)
@@ -257,6 +295,32 @@ impl<'a, W: IoWrite> CountingWriter<'a, W> {
     fn write_char(&mut self, character: char) -> io::Result<()> {
         let mut buffer = [0; 4];
         self.write_str(character.encode_utf8(&mut buffer))
+    }
+}
+
+struct PdfSettings {
+    page_width_points: u16,
+    page_height_points: u16,
+    left_margin_points: u16,
+    top_baseline_points: u16,
+    font_resource: &'static str,
+    base_font: &'static str,
+    font_size_points: u8,
+    line_height_points: u8,
+}
+
+impl Default for PdfSettings {
+    fn default() -> Self {
+        Self {
+            page_width_points: DEFAULT_PAGE_WIDTH_POINTS,
+            page_height_points: DEFAULT_PAGE_HEIGHT_POINTS,
+            left_margin_points: DEFAULT_LEFT_MARGIN_POINTS,
+            top_baseline_points: DEFAULT_TOP_BASELINE_POINTS,
+            font_resource: DEFAULT_FONT_RESOURCE,
+            base_font: DEFAULT_BASE_FONT,
+            font_size_points: DEFAULT_FONT_SIZE_POINTS,
+            line_height_points: DEFAULT_LINE_HEIGHT_POINTS,
+        }
     }
 }
 
