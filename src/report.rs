@@ -323,14 +323,19 @@ fn append_score_lines(lines: &mut Vec<String>, evidence: &EvidenceLog, framework
 }
 
 fn append_gap_lines(lines: &mut Vec<String>, evidence: &EvidenceLog) {
-    let gap_records: Vec<&Evidence> = records_ordered_by_control(evidence)
+    let ordered_records = records_ordered_by_control(evidence);
+    if !ordered_records
+        .iter()
+        .any(|record| record_is_potential_gap(record))
+    {
+        lines.push(NO_GAPS_PLACEHOLDER.to_string());
+        append_remediation_line(lines);
+        return;
+    }
+    for record in ordered_records
         .into_iter()
         .filter(|record| record_is_potential_gap(record))
-        .collect();
-    if gap_records.is_empty() {
-        lines.push(NO_GAPS_PLACEHOLDER.to_string());
-    }
-    for record in gap_records {
+    {
         let Some(control_id) = record.control_id() else {
             continue;
         };
@@ -356,6 +361,10 @@ fn append_gap_lines(lines: &mut Vec<String>, evidence: &EvidenceLog) {
         lines.push(format!("Source URL: {source_url}"));
         lines.push(format!("Severity: {severity}"));
     }
+    append_remediation_line(lines);
+}
+
+fn append_remediation_line(lines: &mut Vec<String>) {
     lines.push(format!(
         "Remediation for {CONSENT_CORPUS_CONTROL_ID}: {CONSENT_CORPUS_REMEDIATION}"
     ));
