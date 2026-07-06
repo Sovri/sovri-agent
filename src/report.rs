@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::evidence::{EvidenceLog, EvidenceStore, StoreError};
+use crate::scanners::ssh;
 use sovri_sdk::is_valid_execution_timestamp;
 
 /// Exit code when the report was produced successfully.
@@ -79,6 +80,34 @@ const CONSENT_CORPUS_WARNING_REASON: &str = "consent signal was inconclusive";
 /// Remediation represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_REMEDIATION: &str =
     "Block non-essential trackers until the visitor records consent.";
+/// Framework-reference marker for controls missing report metadata.
+const UNCONFIGURED_GAP_REFERENCE: &str = "unconfigured";
+/// Source URL marker for controls missing report metadata.
+const UNCONFIGURED_GAP_SOURCE_URL: &str = "unconfigured";
+/// Severity marker for controls missing report metadata.
+const UNCONFIGURED_GAP_SEVERITY: &str = "unknown";
+
+struct GapReference {
+    control_id: &'static str,
+    framework_reference: &'static str,
+    source_url: &'static str,
+    severity: &'static str,
+}
+
+const GAP_REFERENCES: [GapReference; 2] = [
+    GapReference {
+        control_id: CONSENT_CORPUS_CONTROL_ID,
+        framework_reference: "gdpr-eprivacy:2016-679:Art.7",
+        source_url: "https://eur-lex.europa.eu/eli/reg/2016/679/oj",
+        severity: "major",
+    },
+    GapReference {
+        control_id: ssh::PERMIT_ROOT_LOGIN_RULE,
+        framework_reference: "iso-27001:2022:A.8.2",
+        source_url: "https://www.iso.org/standard/27001",
+        severity: "major",
+    },
+];
 
 /// The `report` command help text.
 const HELP: &str = "\
@@ -155,6 +184,32 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                 }
             }
             SECTION_GAPS => {
+                for record in evidence.records() {
+                    let Some(control_id) = record.control_id() else {
+                        continue;
+                    };
+                    let reference = GAP_REFERENCES
+                        .iter()
+                        .find(|reference| reference.control_id == control_id);
+                    lines.push(format!("Gap: {control_id}"));
+                    let (framework_reference, source_url, severity) = reference.map_or(
+                        (
+                            UNCONFIGURED_GAP_REFERENCE,
+                            UNCONFIGURED_GAP_SOURCE_URL,
+                            UNCONFIGURED_GAP_SEVERITY,
+                        ),
+                        |reference| {
+                            (
+                                reference.framework_reference,
+                                reference.source_url,
+                                reference.severity,
+                            )
+                        },
+                    );
+                    lines.push(format!("Framework reference: {framework_reference}"));
+                    lines.push(format!("Source URL: {source_url}"));
+                    lines.push(format!("Severity: {severity}"));
+                }
                 lines.push(format!(
                     "Remediation for {CONSENT_CORPUS_CONTROL_ID}: {CONSENT_CORPUS_REMEDIATION}"
                 ));
