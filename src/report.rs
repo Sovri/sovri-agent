@@ -46,6 +46,8 @@ const PDF_OBJECT_COUNT: usize = 5;
 const MAX_RUN_ID_BYTES: usize = 128;
 /// Prefix for fields nested under a rendered evidence record.
 const EVIDENCE_FIELD_INDENT: &str = "  ";
+/// Report-layer evidence kind label for account inventory metadata.
+const ACCOUNT_EVIDENCE_KIND_LABEL: &str = "account";
 /// Executive-summary section heading.
 const SECTION_EXECUTIVE_SUMMARY: &str = "Executive summary";
 /// Scores section heading.
@@ -336,12 +338,20 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
     Ok(lines)
 }
 
-fn evidence_record_kind(record: &Evidence) -> &'static str {
-    if record.kind() == EvidenceKind::Config && record.key() == Some("account") {
-        "account"
+fn evidence_kind_label(record: &Evidence) -> &'static str {
+    // The pinned SDK stores account inventory as config evidence; the report keeps
+    // the scenario's domain label when the persisted key declares that subtype.
+    if record.kind() == EvidenceKind::Config && record.key() == Some(ACCOUNT_EVIDENCE_KIND_LABEL) {
+        ACCOUNT_EVIDENCE_KIND_LABEL
     } else {
         record.kind().as_str()
     }
+}
+
+fn evidence_requires_redaction(record: &Evidence) -> bool {
+    record
+        .classification()
+        .is_some_and(Classification::redacts_raw_value)
 }
 
 fn evidence_summary_lines(evidence: &EvidenceLog) -> Vec<String> {
@@ -350,7 +360,7 @@ fn evidence_summary_lines(evidence: &EvidenceLog) -> Vec<String> {
         lines.push(format!("Evidence: {}", record.id()));
         lines.push(format!(
             "{EVIDENCE_FIELD_INDENT}Kind: {}",
-            evidence_record_kind(record)
+            evidence_kind_label(record)
         ));
         lines.push(format!(
             "{EVIDENCE_FIELD_INDENT}Locator: {}",
@@ -360,10 +370,7 @@ fn evidence_summary_lines(evidence: &EvidenceLog) -> Vec<String> {
             "{EVIDENCE_FIELD_INDENT}Integrity: {}",
             record.content_hash()
         ));
-        if record
-            .classification()
-            .is_some_and(Classification::redacts_raw_value)
-        {
+        if evidence_requires_redaction(record) {
             lines.push(format!("{EVIDENCE_FIELD_INDENT}Redacted: yes"));
         }
     }
