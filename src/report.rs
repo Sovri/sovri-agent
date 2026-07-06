@@ -60,6 +60,18 @@ const EVIDENCE_FIELD_ID: &str = "id";
 const EVIDENCE_FIELD_LOCATOR: &str = "locator";
 /// Persisted evidence record field for the integrity digest.
 const EVIDENCE_FIELD_CONTENT_HASH: &str = "content-hash";
+/// Persisted evidence record fields accepted but not rendered by the missing-integrity fallback.
+const EVIDENCE_OPTIONAL_RECORD_FIELDS: [&str; 9] = [
+    "kind",
+    "classification",
+    "line",
+    "key",
+    "signal",
+    "size-bytes",
+    "reviewer-status",
+    "control-id",
+    "control",
+];
 /// Report-layer evidence kind label for account inventory metadata.
 const ACCOUNT_EVIDENCE_KIND_LABEL: &str = "account";
 /// Executive-summary section heading.
@@ -509,8 +521,7 @@ fn decode_missing_integrity_record(
             EVIDENCE_FIELD_ID => fields.id = Some(value),
             EVIDENCE_FIELD_LOCATOR => fields.locator = Some(value),
             EVIDENCE_FIELD_CONTENT_HASH => fields.has_content_hash = true,
-            "kind" | "classification" | "line" | "key" | "signal" | "size-bytes"
-            | "reviewer-status" | "control-id" | "control" => {}
+            other if EVIDENCE_OPTIONAL_RECORD_FIELDS.contains(&other) => {}
             other => {
                 return Err(store_decode_error(
                     path,
