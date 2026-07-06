@@ -15,8 +15,11 @@ const RUN_ID: &str = "shopfront-2026-06-24";
 const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
 const CONSENT_CONTROL: &str = "consent.tracker.prior-consent";
 const EVIDENCE_ID: &str = "ev-0001";
+const CARRIED_EVIDENCE_ID: &str = "ev-0002";
 const LOCATOR: &str = "dist/main.js";
 const DIGEST: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+const CARRIED_DIGEST: &str =
+    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const SECTION_HEADINGS: [&str; 8] = [
     "Executive summary",
     "Framework coverage",
@@ -71,6 +74,45 @@ fn persisted_integrity_store() -> TempStore {
         .write_all(&[evidence])
         .expect("write evidence");
     store
+}
+
+fn persisted_store_with_changed_blob() -> TempStore {
+    let store = TempStore::new("carried-integrity-corpus");
+    let evidence = Evidence::builder()
+        .id(CARRIED_EVIDENCE_ID)
+        .kind(EvidenceKind::RouteBuild)
+        .locator(LOCATOR)
+        .content(Vec::new())
+        .content_hash(CARRIED_DIGEST)
+        .signal("www.google-analytics.com")
+        .build()
+        .expect("carried integrity evidence builds")
+        .link_to_control(CONSENT_CONTROL)
+        .expect("carried integrity evidence links");
+    let mut evidence_store = EvidenceStore::open(store.path()).expect("open evidence store");
+    evidence_store
+        .write_all(&[evidence])
+        .expect("write evidence");
+    overwrite_only_blob(store.path(), b"abc");
+    store
+}
+
+fn overwrite_only_blob(root: &Path, bytes: &[u8]) {
+    let mut blobs = Vec::new();
+    collect_blob_paths(root, &mut blobs);
+    assert_eq!(blobs.len(), 1, "expected one stored content blob");
+    fs::write(&blobs[0], bytes).expect("change stored blob");
+}
+
+fn collect_blob_paths(dir: &Path, blobs: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).expect("read evidence store directory") {
+        let path = entry.expect("read evidence store entry").path();
+        if path.is_dir() {
+            collect_blob_paths(&path, blobs);
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("blob") {
+            blobs.push(path);
+        }
+    }
 }
 
 fn run_report(run_id: &str, store: &Path, executed_at: &str) -> Output {
@@ -134,4 +176,28 @@ fn appendix_shows_algorithm_and_digest_for_stored_record() {
 
     // And it shows the digest "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     assert_section_shows_line(&text, "Evidence appendix", &format!("  Digest: {DIGEST}"));
+}
+
+#[test]
+fn appendix_reads_integrity_metadata_from_the_store_without_recomputing_it() {
+    // Given a persisted evidence store holds a record "ev-0002" with integrity "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    let store = persisted_store_with_changed_blob();
+
+    // And a compliance report generated from that store
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+
+    // And no scanner or hasher is executed while generating the report
+    assert!(
+        output.status.success(),
+        "report command exits successfully without recomputing evidence bytes, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    // Then the "Evidence appendix" shows the digest "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    assert_section_shows_line(
+        &text,
+        "Evidence appendix",
+        &format!("  Digest: {CARRIED_DIGEST}"),
+    );
 }
