@@ -207,6 +207,7 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                         },
                     );
                     lines.push(format!("Framework reference: {framework_reference}"));
+                    lines.push(format!("Compliance reference: {framework_reference}"));
                     lines.push(format!("Source URL: {source_url}"));
                     lines.push(format!("Severity: {severity}"));
                 }
