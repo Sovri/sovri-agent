@@ -96,20 +96,17 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
     let evidence_store = canonical_evidence_store(&config.evidence_store)?;
     let store = EvidenceStore::open(&evidence_store).map_err(Error::EvidenceStore)?;
     let evidence = store.read_all().map_err(Error::EvidenceStore)?;
-    let [executive_summary, framework_coverage, control_matrix, gaps, evidence_summary, remediation] =
-        REQUIRED_REPORT_SECTIONS;
-    let mut lines = vec![
-        "Sovri PDF compliance report".to_string(),
-        executive_summary.to_string(),
+    let mut lines = vec!["Sovri PDF compliance report".to_string()];
+    lines.extend(
+        REQUIRED_REPORT_SECTIONS
+            .iter()
+            .map(|section| (*section).to_string()),
+    );
+    lines.extend([
         format!("Run: {}", config.run_id),
         format!("Generated date: {}", config.executed_at),
-        framework_coverage.to_string(),
-        control_matrix.to_string(),
-        gaps.to_string(),
-        evidence_summary.to_string(),
         format!("Evidence records: {}", evidence.len()),
-        remediation.to_string(),
-    ];
+    ]);
     lines.extend(evidence_lines(&evidence));
     Ok(lines)
 }
