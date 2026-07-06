@@ -183,6 +183,10 @@ fn score_percentage_tenths(value: &str) -> Option<u16> {
     }
 
     let whole = whole.parse::<u32>().ok()?;
+    if whole > 100 {
+        return None;
+    }
+
     let fractional = fractional.parse::<u32>().ok()?;
     let tenths = whole.checked_mul(10)?.checked_add(fractional)?;
     (tenths <= 1000)
