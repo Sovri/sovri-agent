@@ -115,6 +115,14 @@ const GAP_REFERENCES: [GapReference; 2] = [
     },
 ];
 
+fn non_conclusive_status(control_id: &str, reason: &str) -> Option<&'static str> {
+    match control_id {
+        DOCKER_BASE_IMAGE_CONTROL_ID if reason == DOCKER_SKIPPED_REASON => Some("SKIPPED"),
+        ssh::PERMIT_ROOT_LOGIN_RULE if reason == SSH_ERROR_REASON => Some("ERROR"),
+        _ => None,
+    }
+}
+
 /// The `report` command help text.
 const HELP: &str = "\
 usage: sovri-agent report --run <id> --evidence-store <dir> --executed-at <timestamp>
@@ -193,10 +201,8 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                     else {
                         continue;
                     };
-                    let status = match (control_id, reason) {
-                        (DOCKER_BASE_IMAGE_CONTROL_ID, DOCKER_SKIPPED_REASON) => "SKIPPED",
-                        (ssh::PERMIT_ROOT_LOGIN_RULE, SSH_ERROR_REASON) => "ERROR",
-                        _ => continue,
+                    let Some(status) = non_conclusive_status(control_id, reason) else {
+                        continue;
                     };
                     lines.push(format!("Control row: {control_id}: {status}"));
                     lines.push(format!("Explanation: {reason}"));
