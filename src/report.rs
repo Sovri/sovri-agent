@@ -128,6 +128,8 @@ const PASS_SIGNAL: &str = "PASS";
 const INTEGRITY_ALGORITHMS: [(&str, &str); 1] = [("sha256:", "SHA-256")];
 /// Appendix limitation shown when a persisted record lacks integrity metadata.
 const MISSING_INTEGRITY_LIMITATION: &str = "integrity metadata not available";
+/// SDK decode message for records missing persisted integrity metadata.
+const MISSING_CONTENT_HASH_DECODE_MESSAGE: &str = "record is missing a content hash";
 /// Executive-summary explanation when no controls were evaluated.
 const NO_CONTROLS_EVALUATED: &str = "No controls were evaluated";
 /// Placeholder when no potential gap rows are rendered.
@@ -381,8 +383,14 @@ struct MissingIntegrityRecord {
     locator: String,
 }
 
-#[derive(Default)]
 struct MissingIntegrityFields {
+    id: String,
+    locator: String,
+    has_content_hash: bool,
+}
+
+#[derive(Default)]
+struct RawMissingIntegrityFields {
     id: Option<String>,
     locator: Option<String>,
     has_content_hash: bool,
@@ -413,7 +421,7 @@ fn evidence_metadata_log(store: &EvidenceStore) -> EvidenceLog {
 fn is_missing_integrity_error(error: &StoreError) -> bool {
     matches!(
         error,
-        StoreError::Decode { message, .. } if message == "record is missing a content hash"
+        StoreError::Decode { message, .. } if message == MISSING_CONTENT_HASH_DECODE_MESSAGE
     )
 }
 
@@ -465,9 +473,10 @@ fn missing_integrity_record(path: &Path) -> Result<Option<MissingIntegrityRecord
     if fields.has_content_hash {
         Ok(None)
     } else {
-        let id = required_report_record_field(path, fields.id, "id")?;
-        let locator = required_report_record_field(path, fields.locator, "locator")?;
-        Ok(Some(MissingIntegrityRecord { id, locator }))
+        Ok(Some(MissingIntegrityRecord {
+            id: fields.id,
+            locator: fields.locator,
+        }))
     }
 }
 
@@ -480,7 +489,7 @@ fn decode_missing_integrity_record(
         return Err(store_decode_error(path, "missing or unknown record header"));
     }
 
-    let mut fields = MissingIntegrityFields::default();
+    let mut fields = RawMissingIntegrityFields::default();
     for line in lines {
         if line.is_empty() {
             continue;
@@ -504,7 +513,13 @@ fn decode_missing_integrity_record(
             }
         }
     }
-    Ok(fields)
+    let id = required_report_record_field(path, fields.id, "id")?;
+    let locator = required_report_record_field(path, fields.locator, "locator")?;
+    Ok(MissingIntegrityFields {
+        id,
+        locator,
+        has_content_hash: fields.has_content_hash,
+    })
 }
 
 fn required_report_record_field(
@@ -662,31 +677,42 @@ fn append_evidence_summary_lines(lines: &mut Vec<String>, evidence: &EvidenceLog
 
 fn append_evidence_appendix_lines(lines: &mut Vec<String>, evidence: &ReportEvidenceMetadata) {
     for record in records_ordered_by_control(&evidence.records) {
-        lines.push(format!("Evidence: {}", record.id()));
-        lines.push(format!(
-            "{EVIDENCE_FIELD_INDENT}Location: {}",
-            record.locator()
-        ));
-        if let Some(algorithm) = integrity_algorithm(record.content_hash()) {
-            lines.push(format!(
-                "{EVIDENCE_FIELD_INDENT}Integrity algorithm: {algorithm}"
-            ));
-        }
-        lines.push(format!(
-            "{EVIDENCE_FIELD_INDENT}Digest: {}",
-            record.content_hash()
-        ));
+        append_integrity_record_appendix_lines(lines, record);
     }
     for record in &evidence.missing_integrity {
-        lines.push(format!("Evidence: {}", record.id));
+        append_missing_integrity_appendix_lines(lines, record);
+    }
+}
+
+fn append_integrity_record_appendix_lines(lines: &mut Vec<String>, record: &Evidence) {
+    lines.push(format!("Evidence: {}", record.id()));
+    lines.push(format!(
+        "{EVIDENCE_FIELD_INDENT}Location: {}",
+        record.locator()
+    ));
+    if let Some(algorithm) = integrity_algorithm(record.content_hash()) {
         lines.push(format!(
-            "{EVIDENCE_FIELD_INDENT}Location: {}",
-            record.locator
-        ));
-        lines.push(format!(
-            "{EVIDENCE_FIELD_INDENT}Limitation: {MISSING_INTEGRITY_LIMITATION}"
+            "{EVIDENCE_FIELD_INDENT}Integrity algorithm: {algorithm}"
         ));
     }
+    lines.push(format!(
+        "{EVIDENCE_FIELD_INDENT}Digest: {}",
+        record.content_hash()
+    ));
+}
+
+fn append_missing_integrity_appendix_lines(
+    lines: &mut Vec<String>,
+    record: &MissingIntegrityRecord,
+) {
+    lines.push(format!("Evidence: {}", record.id));
+    lines.push(format!(
+        "{EVIDENCE_FIELD_INDENT}Location: {}",
+        record.locator
+    ));
+    lines.push(format!(
+        "{EVIDENCE_FIELD_INDENT}Limitation: {MISSING_INTEGRITY_LIMITATION}"
+    ));
 }
 
 fn integrity_algorithm(integrity: &str) -> Option<&'static str> {
