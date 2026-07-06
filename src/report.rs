@@ -46,6 +46,8 @@ const MAX_RUN_ID_BYTES: usize = 128;
 const EVIDENCE_FIELD_INDENT: &str = "  ";
 /// Executive-summary section heading.
 const SECTION_EXECUTIVE_SUMMARY: &str = "Executive summary";
+/// Scores section heading.
+const SECTION_SCORES: &str = "Scores";
 /// Control-matrix section heading.
 const SECTION_CONTROL_MATRIX: &str = "Control matrix";
 /// Gaps section heading.
@@ -53,9 +55,10 @@ const SECTION_GAPS: &str = "Gaps";
 /// Evidence-summary section heading.
 const SECTION_EVIDENCE_SUMMARY: &str = "Evidence summary";
 /// Section headings required in every generated report.
-const REQUIRED_REPORT_SECTIONS: [&str; 6] = [
+const REQUIRED_REPORT_SECTIONS: [&str; 7] = [
     SECTION_EXECUTIVE_SUMMARY,
     "Framework coverage",
+    SECTION_SCORES,
     SECTION_CONTROL_MATRIX,
     SECTION_GAPS,
     SECTION_EVIDENCE_SUMMARY,
@@ -69,6 +72,10 @@ const CONSENT_CORPUS_SCAN_TARGET: &str = "shopfront";
 const CONSENT_CORPUS_CATALOG_VERSION: &str = "2016-679";
 /// Result counts represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_RESULT_COUNTS: &str = "1 FAIL, 1 PASS";
+/// Expanded result counts represented by the canonical MAT-95 MAT-87 score output.
+const CONSENT_CORPUS_SCORE_RESULT_COUNTS: &str = "1 FAIL, 1 PASS, 0 WARNING, 0 SKIPPED, 0 ERROR";
+/// Framework score represented by the canonical MAT-95 MAT-87 score output.
+const CONSENT_CORPUS_FRAMEWORK_SCORE: &str = "0.0%";
 /// Control represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_CONTROL_ID: &str = "consent.tracker.prior-consent";
 /// Tracker evidence rule represented by the canonical MAT-95 consent corpus.
@@ -222,6 +229,12 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                     lines.push(incomplete_results_line(error_count));
                 }
             }
+            SECTION_SCORES => lines.extend([
+                format!(
+                    "Framework score {CONSENT_CORPUS_FRAMEWORK_ID}: {CONSENT_CORPUS_FRAMEWORK_SCORE}"
+                ),
+                format!("Result counts: {CONSENT_CORPUS_SCORE_RESULT_COUNTS}"),
+            ]),
             SECTION_CONTROL_MATRIX => {
                 // Keep legacy rule lines for R-02; R-04 rows provide one countable row per status.
                 lines.extend([
