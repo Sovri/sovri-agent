@@ -142,6 +142,9 @@ const UNCONFIGURED_GAP_SOURCE_URL: &str = "unconfigured";
 const UNCONFIGURED_GAP_SEVERITY: &str = "unknown";
 /// Signal marker used by report fixtures for controls that passed.
 const PASS_SIGNAL: &str = "PASS";
+/// Cautious report framing used for rendered findings.
+const POTENTIAL_GAP_REVIEW_REASON: &str =
+    "Reason: potential gap requires review based on observed evidence";
 /// Integrity digest prefixes rendered as report algorithm labels.
 const INTEGRITY_ALGORITHMS: [(&str, &str); 1] = [("sha256:", "SHA-256")];
 /// Appendix limitation shown when a persisted record lacks integrity metadata.
@@ -662,6 +665,7 @@ fn append_gap_control_lines(lines: &mut Vec<String>, control_id: &str) {
         .iter()
         .find(|reference| reference.control_id == control_id);
     lines.push(format!("Gap: {control_id}"));
+    lines.push(POTENTIAL_GAP_REVIEW_REASON.to_string());
     let (framework_reference, source_url, severity) = reference.map_or(
         (
             UNCONFIGURED_GAP_REFERENCE,
