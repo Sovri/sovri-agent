@@ -142,10 +142,16 @@ const UNCONFIGURED_GAP_SOURCE_URL: &str = "unconfigured";
 const UNCONFIGURED_GAP_SEVERITY: &str = "unknown";
 /// Report status label for failing controls.
 const STATUS_FAIL: &str = "FAIL";
+/// Report status label for passing controls.
+const STATUS_PASS: &str = "PASS";
 /// Report status label for warning controls.
 const STATUS_WARNING: &str = "WARNING";
+/// Report status label for skipped controls.
+const STATUS_SKIPPED: &str = "SKIPPED";
+/// Report status label for errored controls.
+const STATUS_ERROR: &str = "ERROR";
 /// Signal marker used by report fixtures for controls that passed.
-const PASS_SIGNAL: &str = "PASS";
+const PASS_SIGNAL: &str = STATUS_PASS;
 /// Cautious report framing used for rendered findings.
 const POTENTIAL_GAP_REVIEW_REASON: &str =
     "Reason: potential gap requires review based on observed evidence";
@@ -171,6 +177,28 @@ struct GapReference {
     severity: &'static str,
 }
 
+#[derive(Clone, Copy)]
+enum GapSignalPolicy {
+    Suppress,
+    Status(&'static str),
+}
+
+struct GapSignalStatusPolicy {
+    signal: &'static str,
+    policy: GapSignalPolicy,
+}
+
+const GAP_SIGNAL_STATUS_POLICIES: [GapSignalStatusPolicy; 2] = [
+    GapSignalStatusPolicy {
+        signal: PASS_SIGNAL,
+        policy: GapSignalPolicy::Suppress,
+    },
+    GapSignalStatusPolicy {
+        signal: CONSENT_CORPUS_WARNING_REASON,
+        policy: GapSignalPolicy::Status(STATUS_WARNING),
+    },
+];
+
 #[derive(Default)]
 struct ResultCounts {
     fail: usize,
@@ -183,22 +211,22 @@ struct ResultCounts {
 impl ResultCounts {
     fn increment(&mut self, status: &str) {
         match status {
-            "FAIL" => self.fail += 1,
-            "PASS" => self.pass += 1,
-            "WARNING" => self.warning += 1,
-            "SKIPPED" => self.skipped += 1,
-            "ERROR" => self.error += 1,
+            STATUS_FAIL => self.fail += 1,
+            STATUS_PASS => self.pass += 1,
+            STATUS_WARNING => self.warning += 1,
+            STATUS_SKIPPED => self.skipped += 1,
+            STATUS_ERROR => self.error += 1,
             _ => {}
         }
     }
 
     fn compact(&self) -> String {
         let mut parts = Vec::new();
-        append_non_zero_count(&mut parts, self.fail, "FAIL");
-        append_non_zero_count(&mut parts, self.pass, "PASS");
-        append_non_zero_count(&mut parts, self.warning, "WARNING");
-        append_non_zero_count(&mut parts, self.skipped, "SKIPPED");
-        append_non_zero_count(&mut parts, self.error, "ERROR");
+        append_non_zero_count(&mut parts, self.fail, STATUS_FAIL);
+        append_non_zero_count(&mut parts, self.pass, STATUS_PASS);
+        append_non_zero_count(&mut parts, self.warning, STATUS_WARNING);
+        append_non_zero_count(&mut parts, self.skipped, STATUS_SKIPPED);
+        append_non_zero_count(&mut parts, self.error, STATUS_ERROR);
         parts.join(", ")
     }
 }
@@ -226,8 +254,8 @@ const GAP_REFERENCES: [GapReference; 2] = [
 
 fn non_conclusive_status(control_id: &str, reason: &str) -> Option<&'static str> {
     match control_id {
-        DOCKER_BASE_IMAGE_CONTROL_ID if reason == DOCKER_SKIPPED_REASON => Some("SKIPPED"),
-        ssh::PERMIT_ROOT_LOGIN_RULE if reason == SSH_ERROR_REASON => Some("ERROR"),
+        DOCKER_BASE_IMAGE_CONTROL_ID if reason == DOCKER_SKIPPED_REASON => Some(STATUS_SKIPPED),
+        ssh::PERMIT_ROOT_LOGIN_RULE if reason == SSH_ERROR_REASON => Some(STATUS_ERROR),
         _ => None,
     }
 }
@@ -249,7 +277,8 @@ fn error_control_count(evidence: &EvidenceLog) -> usize {
         .records()
         .iter()
         .filter(|record| {
-            non_conclusive_record_status(record).is_some_and(|(_, _, status)| status == "ERROR")
+            non_conclusive_record_status(record)
+                .is_some_and(|(_, _, status)| status == STATUS_ERROR)
         })
         .count()
 }
@@ -637,18 +666,18 @@ fn append_record_result_counts(counts: &mut ResultCounts, record: &Evidence) {
     }
 
     match (record.control_id(), record.signal()) {
-        (_, Some(PASS_SIGNAL)) => counts.increment("PASS"),
+        (_, Some(PASS_SIGNAL)) => counts.increment(STATUS_PASS),
         (_, Some(CONSENT_CORPUS_WARNING_REASON)) => {
-            counts.increment("FAIL");
-            counts.increment("WARNING");
+            counts.increment(STATUS_FAIL);
+            counts.increment(STATUS_WARNING);
         }
         (Some(CONSENT_CORPUS_CONTROL_ID), Some(CONSENT_CORPUS_TRACKER_SIGNAL)) => {
             // The canonical consent fixture persists the tracker finding once,
             // while the report renders it as a tracker FAIL plus a CMP PASS.
-            counts.increment("FAIL");
-            counts.increment("PASS");
+            counts.increment(STATUS_FAIL);
+            counts.increment(STATUS_PASS);
         }
-        (_, Some(_)) => counts.increment("FAIL"),
+        (_, Some(_)) => counts.increment(STATUS_FAIL),
         _ => {}
     }
 }
@@ -849,16 +878,21 @@ fn gap_status(control_id: &str, signal: Option<&str>) -> Option<&'static str> {
     let Some(reason) = signal else {
         return Some(STATUS_FAIL);
     };
-    if reason == PASS_SIGNAL {
-        return None;
-    }
     if let Some(status) = non_conclusive_status(control_id, reason) {
         return Some(status);
     }
-    if reason == CONSENT_CORPUS_WARNING_REASON {
-        return Some(STATUS_WARNING);
+    match configured_gap_signal_policy(reason) {
+        Some(GapSignalPolicy::Suppress) => None,
+        Some(GapSignalPolicy::Status(status)) => Some(status),
+        None => Some(STATUS_FAIL),
     }
-    Some(STATUS_FAIL)
+}
+
+fn configured_gap_signal_policy(signal: &str) -> Option<GapSignalPolicy> {
+    GAP_SIGNAL_STATUS_POLICIES
+        .iter()
+        .find(|policy| policy.signal == signal)
+        .map(|policy| policy.policy)
 }
 
 fn records_ordered_by_control(evidence: &EvidenceLog) -> Vec<&Evidence> {

@@ -14,7 +14,9 @@ use sovri_agent::evidence::{Evidence, EvidenceKind, EvidenceStore};
 const RUN_ID: &str = "shopfront-2026-06-24";
 const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
 const CONSENT_CONTROL: &str = "consent.tracker.prior-consent";
+const CONSENT_PASS_SIGNAL: &str = "PASS";
 const CONSENT_TRACKER_SIGNAL: &str = "www.google-analytics.com";
+const CONSENT_UNKNOWN_SIGNAL: &str = "unknown_signal";
 const CONSENT_WARNING_REASON: &str = "consent signal was inconclusive";
 const HASH: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const SECTION_HEADINGS: [&str; 8] = [
@@ -225,4 +227,37 @@ fn cautious_wording_holds_for_a_warning_status() {
     assert_section_contains(gaps, "Status: WARNING");
     assert_section_contains(gaps, "Reason: potential gap requires review");
     assert_pdf_text_absent(gaps, "violation");
+}
+
+#[test]
+fn warning_status_does_not_apply_to_pass_or_unknown_signals() {
+    let pass_store = persisted_consent_store_with_signal("pass-signal-corpus", CONSENT_PASS_SIGNAL);
+    let pass_output = run_report(RUN_ID, pass_store.path(), EXECUTED_AT);
+
+    assert!(
+        pass_output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&pass_output.stderr)
+    );
+    let pass_text = String::from_utf8_lossy(&pass_output.stdout);
+    let pass_gaps = section_text(&pass_text, "Gaps");
+
+    assert_section_contains(pass_gaps, "No potential gaps observed");
+    assert_pdf_text_absent(pass_gaps, "Status: WARNING");
+
+    let unknown_store =
+        persisted_consent_store_with_signal("unknown-signal-corpus", CONSENT_UNKNOWN_SIGNAL);
+    let unknown_output = run_report(RUN_ID, unknown_store.path(), EXECUTED_AT);
+
+    assert!(
+        unknown_output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&unknown_output.stderr)
+    );
+    let unknown_text = String::from_utf8_lossy(&unknown_output.stdout);
+    let unknown_gaps = section_text(&unknown_text, "Gaps");
+
+    assert_section_contains(unknown_gaps, &format!("Gap: {CONSENT_CONTROL}"));
+    assert_section_contains(unknown_gaps, "Status: FAIL");
+    assert_pdf_text_absent(unknown_gaps, "Status: WARNING");
 }
