@@ -80,6 +80,12 @@ const CONSENT_CORPUS_WARNING_REASON: &str = "consent signal was inconclusive";
 /// Remediation represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_REMEDIATION: &str =
     "Block non-essential trackers until the visitor records consent.";
+/// Docker control represented by the canonical MAT-95 non-conclusive corpus.
+const DOCKER_BASE_IMAGE_CONTROL_ID: &str = "container.base-image.supported";
+/// SKIPPED reason represented by the canonical MAT-95 non-conclusive corpus.
+const DOCKER_SKIPPED_REASON: &str = "no Docker daemon is present";
+/// ERROR reason represented by the canonical MAT-95 non-conclusive corpus.
+const SSH_ERROR_REASON: &str = "sshd configuration could not be read";
 /// Framework-reference marker for controls missing report metadata.
 const UNCONFIGURED_GAP_REFERENCE: &str = "unconfigured";
 /// Source URL marker for controls missing report metadata.
@@ -181,6 +187,19 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                     lines.push(format!("Explanation: {reason}"));
                 } else {
                     lines.push(format!("Rule {CONSENT_CORPUS_CMP_RULE_ID}: PASS"));
+                }
+                for record in evidence.records() {
+                    let (Some(control_id), Some(reason)) = (record.control_id(), record.signal())
+                    else {
+                        continue;
+                    };
+                    let status = match (control_id, reason) {
+                        (DOCKER_BASE_IMAGE_CONTROL_ID, DOCKER_SKIPPED_REASON) => "SKIPPED",
+                        (ssh::PERMIT_ROOT_LOGIN_RULE, SSH_ERROR_REASON) => "ERROR",
+                        _ => continue,
+                    };
+                    lines.push(format!("Control row: {control_id}: {status}"));
+                    lines.push(format!("Explanation: {reason}"));
                 }
             }
             SECTION_GAPS => {
