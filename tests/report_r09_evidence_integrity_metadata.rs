@@ -16,10 +16,13 @@ const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
 const CONSENT_CONTROL: &str = "consent.tracker.prior-consent";
 const EVIDENCE_ID: &str = "ev-0001";
 const CARRIED_EVIDENCE_ID: &str = "ev-0002";
+const MISSING_INTEGRITY_EVIDENCE_ID: &str = "ev-0003";
 const LOCATOR: &str = "dist/main.js";
+const EVIDENCE_FIELD_INDENT: &str = "  ";
 const DIGEST: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const CARRIED_DIGEST: &str =
     "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const MISSING_INTEGRITY_LIMITATION: &str = "integrity metadata not available";
 const SECTION_HEADINGS: [&str; 8] = [
     "Executive summary",
     "Framework coverage",
@@ -94,6 +97,28 @@ fn persisted_store_with_changed_blob() -> TempStore {
         .write_all(&[evidence])
         .expect("write evidence");
     overwrite_only_blob(store.path(), b"abc");
+    store
+}
+
+fn persisted_store_without_integrity_metadata() -> TempStore {
+    let store = TempStore::new("missing-integrity-corpus");
+    let shard = store.path().join("objects").join("00");
+    fs::create_dir_all(&shard).expect("create evidence object shard");
+    fs::write(
+        shard.join("missing-integrity.rec"),
+        [
+            "format\tevidence-record-v1",
+            "id\tev-0003",
+            "kind\troute-build",
+            "locator\tdist/main.js",
+            "signal\twww.google-analytics.com",
+            "control-id\tconsent.tracker.prior-consent",
+            "control\tconsent.tracker.prior-consent",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("write legacy evidence record without integrity metadata");
     store
 }
 
@@ -199,5 +224,35 @@ fn appendix_reads_integrity_metadata_from_the_store_without_recomputing_it() {
         &text,
         "Evidence appendix",
         &format!("  Digest: {CARRIED_DIGEST}"),
+    );
+}
+
+#[test]
+fn appendix_notes_a_collection_limitation_when_integrity_metadata_is_absent() {
+    // Given a persisted evidence store holds a record "ev-0003" with no integrity metadata
+    let store = persisted_store_without_integrity_metadata();
+
+    // And a compliance report generated from that store
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+
+    assert!(
+        output.status.success(),
+        "report command exits successfully for missing integrity metadata, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    // Then the "Evidence appendix" section shows evidence id "ev-0003"
+    assert_section_shows_line(
+        &text,
+        "Evidence appendix",
+        &format!("Evidence: {MISSING_INTEGRITY_EVIDENCE_ID}"),
+    );
+
+    // And it notes the limitation "integrity metadata not available"
+    assert_section_shows_line(
+        &text,
+        "Evidence appendix",
+        &format!("{EVIDENCE_FIELD_INDENT}Limitation: {MISSING_INTEGRITY_LIMITATION}"),
     );
 }
