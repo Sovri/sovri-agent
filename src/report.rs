@@ -64,14 +64,17 @@ const SECTION_CONTROL_MATRIX: &str = "Control matrix";
 const SECTION_GAPS: &str = "Gaps";
 /// Evidence-summary section heading.
 const SECTION_EVIDENCE_SUMMARY: &str = "Evidence summary";
+/// Evidence-appendix section heading.
+const SECTION_EVIDENCE_APPENDIX: &str = "Evidence appendix";
 /// Section headings required in every generated report.
-const REQUIRED_REPORT_SECTIONS: [&str; 7] = [
+const REQUIRED_REPORT_SECTIONS: [&str; 8] = [
     SECTION_EXECUTIVE_SUMMARY,
     "Framework coverage",
     SECTION_SCORES,
     SECTION_CONTROL_MATRIX,
     SECTION_GAPS,
     SECTION_EVIDENCE_SUMMARY,
+    SECTION_EVIDENCE_APPENDIX,
     "Remediation",
 ];
 /// Framework covered by the canonical MAT-95 consent corpus.
@@ -119,6 +122,8 @@ const UNCONFIGURED_GAP_SOURCE_URL: &str = "unconfigured";
 const UNCONFIGURED_GAP_SEVERITY: &str = "unknown";
 /// Signal marker used by report fixtures for controls that passed.
 const PASS_SIGNAL: &str = "PASS";
+/// Integrity digest prefixes rendered as report algorithm labels.
+const INTEGRITY_ALGORITHMS: [(&str, &str); 1] = [("sha256:", "SHA-256")];
 /// Executive-summary explanation when no controls were evaluated.
 const NO_CONTROLS_EVALUATED: &str = "No controls were evaluated";
 /// Placeholder when no potential gap rows are rendered.
@@ -352,6 +357,7 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
             }
             SECTION_GAPS => append_gap_lines(&mut lines, &evidence),
             SECTION_EVIDENCE_SUMMARY => append_evidence_summary_lines(&mut lines, &evidence),
+            SECTION_EVIDENCE_APPENDIX => append_evidence_appendix_lines(&mut lines, &evidence),
             _ => {}
         }
     }
@@ -466,6 +472,31 @@ fn append_evidence_summary_lines(lines: &mut Vec<String>, evidence: &EvidenceLog
     } else {
         lines.extend(evidence_summary_lines(evidence));
     }
+}
+
+fn append_evidence_appendix_lines(lines: &mut Vec<String>, evidence: &EvidenceLog) {
+    for record in records_ordered_by_control(evidence) {
+        lines.push(format!("Evidence: {}", record.id()));
+        lines.push(format!(
+            "{EVIDENCE_FIELD_INDENT}Location: {}",
+            record.locator()
+        ));
+        if let Some(algorithm) = integrity_algorithm(record.content_hash()) {
+            lines.push(format!(
+                "{EVIDENCE_FIELD_INDENT}Integrity algorithm: {algorithm}"
+            ));
+        }
+        lines.push(format!(
+            "{EVIDENCE_FIELD_INDENT}Digest: {}",
+            record.content_hash()
+        ));
+    }
+}
+
+fn integrity_algorithm(integrity: &str) -> Option<&'static str> {
+    INTEGRITY_ALGORITHMS
+        .iter()
+        .find_map(|(prefix, algorithm)| integrity.starts_with(prefix).then_some(*algorithm))
 }
 
 struct EvidenceSummaryMetadata {
