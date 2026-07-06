@@ -14,6 +14,8 @@ use sovri_agent::evidence::{Evidence, EvidenceKind, EvidenceStore};
 const RUN_ID: &str = "shopfront-2026-06-24";
 const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
 const CONSENT_CONTROL: &str = "consent.tracker.prior-consent";
+const CONSENT_TRACKER_SIGNAL: &str = "www.google-analytics.com";
+const CONSENT_WARNING_REASON: &str = "consent signal was inconclusive";
 const HASH: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const SECTION_HEADINGS: [&str; 8] = [
     "Executive summary",
@@ -53,13 +55,21 @@ impl Drop for TempStore {
 }
 
 fn persisted_consent_store() -> TempStore {
-    let store = TempStore::new("cautious-language-corpus");
+    persisted_consent_store_with_signal("cautious-language-corpus", CONSENT_TRACKER_SIGNAL)
+}
+
+fn persisted_warning_consent_store() -> TempStore {
+    persisted_consent_store_with_signal("cautious-warning-corpus", CONSENT_WARNING_REASON)
+}
+
+fn persisted_consent_store_with_signal(label: &str, signal: &str) -> TempStore {
+    let store = TempStore::new(label);
     let tracker_evidence = Evidence::builder()
         .id("ev-0001")
         .kind(EvidenceKind::RouteBuild)
         .locator("dist/main.js")
         .content_hash(HASH)
-        .signal("www.google-analytics.com")
+        .signal(signal)
         .build()
         .expect("tracker evidence builds")
         .link_to_control(CONSENT_CONTROL)
@@ -195,5 +205,24 @@ fn cautious_wording_holds_even_for_a_fail_status() {
     assert_section_contains(gaps, "Reason: potential gap requires review");
 
     // And its reason asserts no legal violation
+    assert_pdf_text_absent(gaps, "violation");
+}
+
+#[test]
+fn cautious_wording_holds_for_a_warning_status() {
+    let store = persisted_warning_consent_store();
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+
+    assert!(
+        output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    let gaps = section_text(&text, "Gaps");
+
+    assert_section_contains(gaps, &format!("Gap: {CONSENT_CONTROL}"));
+    assert_section_contains(gaps, "Status: WARNING");
+    assert_section_contains(gaps, "Reason: potential gap requires review");
     assert_pdf_text_absent(gaps, "violation");
 }

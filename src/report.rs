@@ -841,20 +841,24 @@ fn evidence_lines(evidence: &EvidenceLog) -> Vec<String> {
 
 fn potential_gap_summary(record: &Evidence) -> Option<GapSummary<'_>> {
     let control_id = record.control_id()?;
-    let signal = record.signal();
-    if signal == Some(PASS_SIGNAL) {
+    let status = gap_status(control_id, record.signal())?;
+    Some(GapSummary { control_id, status })
+}
+
+fn gap_status(control_id: &str, signal: Option<&str>) -> Option<&'static str> {
+    let Some(reason) = signal else {
+        return Some(STATUS_FAIL);
+    };
+    if reason == PASS_SIGNAL {
         return None;
     }
-    let status = signal
-        .and_then(|reason| non_conclusive_status(control_id, reason))
-        .unwrap_or_else(|| {
-            if signal == Some(CONSENT_CORPUS_WARNING_REASON) {
-                STATUS_WARNING
-            } else {
-                STATUS_FAIL
-            }
-        });
-    Some(GapSummary { control_id, status })
+    if let Some(status) = non_conclusive_status(control_id, reason) {
+        return Some(status);
+    }
+    if reason == CONSENT_CORPUS_WARNING_REASON {
+        return Some(STATUS_WARNING);
+    }
+    Some(STATUS_FAIL)
 }
 
 fn records_ordered_by_control(evidence: &EvidenceLog) -> Vec<&Evidence> {
