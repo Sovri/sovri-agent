@@ -44,6 +44,8 @@ const PDF_OBJECT_COUNT: usize = 5;
 const MAX_RUN_ID_BYTES: usize = 128;
 /// Prefix for fields nested under a rendered evidence record.
 const EVIDENCE_FIELD_INDENT: &str = "  ";
+/// Explicit report-order bucket for evidence that is not linked to a control.
+const MISSING_CONTROL_ID_ORDER_KEY: &str = "__no_control_id__";
 /// Report-layer evidence kind label for account inventory metadata.
 const ACCOUNT_EVIDENCE_KIND_LABEL: &str = "account";
 /// Executive-summary section heading.
@@ -423,7 +425,10 @@ fn records_ordered_by_control(evidence: &EvidenceLog) -> Vec<&Evidence> {
 }
 
 fn record_order_key(record: &Evidence) -> (&str, &str) {
-    (record.control_id().unwrap_or(""), record.id())
+    (
+        record.control_id().unwrap_or(MISSING_CONTROL_ID_ORDER_KEY),
+        record.id(),
+    )
 }
 
 #[cfg(test)]
