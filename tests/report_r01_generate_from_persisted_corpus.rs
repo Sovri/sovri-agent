@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! R-01 — a PDF report is generated from a persisted MAT-114-style corpus.
-//! Covers issue #99.
+//! Covers issues #99 and #100.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -106,6 +106,58 @@ fn generate_a_pdf_report_from_the_persisted_corpus() {
     assert!(
         text.contains(EXECUTED_AT),
         "the fixed generated date is rendered"
+    );
+}
+
+#[test]
+fn report_generation_reads_the_corpus_and_runs_no_scanner() {
+    // Given a persisted evidence store holds the compliance run "shopfront-2026-06-24".
+    let store = persisted_consent_store();
+    let before = EvidenceStore::open(store.path())
+        .expect("reopen evidence store before report")
+        .read_all()
+        .expect("read evidence before report");
+    // And the run's fixed executed-at is "2026-06-24T13:16:28Z".
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+
+    // When the maintainer generates the PDF compliance report for "shopfront-2026-06-24".
+    assert!(
+        output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Then no scanner is executed.
+    let after = EvidenceStore::open(store.path())
+        .expect("reopen evidence store after report")
+        .read_all()
+        .expect("read evidence after report");
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "report generation does not append scanner evidence"
+    );
+    // And no network access is performed.
+    assert!(
+        output.stderr.is_empty(),
+        "report generation does not emit host or network acquisition errors"
+    );
+    // And the report content is derived only from the persisted store.
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains(CONSENT_CONTROL),
+        "the persisted control id is rendered"
+    );
+    assert!(
+        text.contains("dist/main.js"),
+        "the persisted evidence locator is rendered"
+    );
+    assert!(
+        text.contains("www.google-analytics.com"),
+        "the persisted evidence signal is rendered"
+    );
+    assert!(
+        text.contains(HASH),
+        "the persisted evidence integrity hash is rendered"
     );
 }
 
