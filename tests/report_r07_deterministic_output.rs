@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sovri_agent::evidence::{Evidence, EvidenceKind, EvidenceStore};
 
@@ -25,8 +26,12 @@ impl TempStore {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let root = loop {
             let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock is after unix epoch")
+                .as_nanos();
             let candidate = std::env::temp_dir().join(format!(
-                "sovri-agent-mat95-r07-{label}-{}-{unique}",
+                "sovri-agent-mat95-r07-{label}-{}-{nonce}-{unique}",
                 std::process::id()
             ));
             if !candidate.exists() {
