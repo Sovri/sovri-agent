@@ -43,6 +43,15 @@ const PDF_OBJECT_COUNT: usize = 5;
 const MAX_RUN_ID_BYTES: usize = 128;
 /// Prefix for fields nested under a rendered evidence record.
 const EVIDENCE_FIELD_INDENT: &str = "  ";
+/// Section headings required in every generated report.
+const REQUIRED_REPORT_SECTIONS: [&str; 6] = [
+    "Executive summary",
+    "Framework coverage",
+    "Control matrix",
+    "Gaps",
+    "Evidence summary",
+    "Remediation",
+];
 
 /// The `report` command help text.
 const HELP: &str = "\
@@ -87,12 +96,17 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
     let evidence_store = canonical_evidence_store(&config.evidence_store)?;
     let store = EvidenceStore::open(&evidence_store).map_err(Error::EvidenceStore)?;
     let evidence = store.read_all().map_err(Error::EvidenceStore)?;
-    let mut lines = vec![
-        "Sovri PDF compliance report".to_string(),
+    let mut lines = vec!["Sovri PDF compliance report".to_string()];
+    lines.extend(
+        REQUIRED_REPORT_SECTIONS
+            .iter()
+            .map(|section| (*section).to_string()),
+    );
+    lines.extend([
         format!("Run: {}", config.run_id),
         format!("Generated date: {}", config.executed_at),
         format!("Evidence records: {}", evidence.len()),
-    ];
+    ]);
     lines.extend(evidence_lines(&evidence));
     Ok(lines)
 }
