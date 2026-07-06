@@ -34,8 +34,13 @@ impl TempStore {
                 "sovri-agent-mat95-r07-{label}-{}-{nonce}-{unique}",
                 std::process::id()
             ));
-            if !candidate.exists() {
-                break candidate;
+            match fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    let path = candidate.display();
+                    panic!("create temporary evidence store directory {path}: {error}");
+                }
             }
         };
         TempStore { root }
