@@ -119,6 +119,8 @@ const UNCONFIGURED_GAP_SOURCE_URL: &str = "unconfigured";
 const UNCONFIGURED_GAP_SEVERITY: &str = "unknown";
 /// Signal marker used by report fixtures for controls that passed.
 const PASS_SIGNAL: &str = "PASS";
+/// Executive-summary explanation when no controls were evaluated.
+const NO_CONTROLS_EVALUATED: &str = "No controls were evaluated";
 /// Placeholder when no potential gap rows are rendered.
 const NO_GAPS_PLACEHOLDER: &str = "No potential gaps observed";
 /// Placeholder when no evidence rows are available.
@@ -314,8 +316,15 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                     format!("Scan target: {CONSENT_CORPUS_SCAN_TARGET}"),
                     format!("Generated date: {}", config.executed_at),
                     format!("Catalog version: {CONSENT_CORPUS_CATALOG_VERSION}"),
-                    format!("Result counts: {}", executive_result_counts(&evidence)),
                 ]);
+                if evidence.is_empty() {
+                    lines.push(NO_CONTROLS_EVALUATED.to_string());
+                } else {
+                    lines.push(format!(
+                        "Result counts: {}",
+                        executive_result_counts(&evidence)
+                    ));
+                }
                 if error_count > 0 {
                     lines.push(incomplete_results_line(error_count));
                 }
@@ -363,10 +372,6 @@ fn append_score_lines(lines: &mut Vec<String>, evidence: &EvidenceLog, framework
 }
 
 fn executive_result_counts(evidence: &EvidenceLog) -> String {
-    if evidence.is_empty() {
-        return CONSENT_CORPUS_RESULT_COUNTS.to_string();
-    }
-
     let counts = result_counts(evidence);
     let compact = counts.compact();
     if compact.is_empty() {
