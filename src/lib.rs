@@ -12,6 +12,7 @@
 //! - [`controls`] — the self-contained selftest control that proves the engine
 //!   seam end to end.
 //! - [`evidence`] — a relay re-exporting the `sovri-sdk` evidence contract.
+//! - [`report`] — the deterministic PDF report renderer over persisted evidence.
 //! - [`scan`] — the `sovri-agent scan` command that runs a catalog's controls
 //!   against the host scanners and reports the outcome.
 //!
@@ -19,6 +20,7 @@
 
 pub mod controls;
 pub mod evidence;
+pub mod report;
 pub mod scan;
 pub mod scanners;
 
