@@ -10,9 +10,11 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use sovri_agent::evidence::{Evidence, EvidenceKind, EvidenceStore};
+use sovri_agent::scanners::ssh;
 
 const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
 const HASH: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+const CONSENT_CORPUS_CONTROL_ID: &str = "consent.tracker.prior-consent";
 
 struct GapExample {
     control: &'static str,
@@ -23,13 +25,13 @@ struct GapExample {
 
 const GAP_EXAMPLES: [GapExample; 2] = [
     GapExample {
-        control: "consent.tracker.prior-consent",
+        control: CONSENT_CORPUS_CONTROL_ID,
         reference: "gdpr-eprivacy:2016-679:Art.7",
         url: "https://eur-lex.europa.eu/eli/reg/2016/679/oj",
         severity: "major",
     },
     GapExample {
-        control: "host.ssh.permit-root-login",
+        control: ssh::PERMIT_ROOT_LOGIN_RULE,
         reference: "iso-27001:2022:A.8.2",
         url: "https://www.iso.org/standard/27001",
         severity: "major",

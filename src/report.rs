@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::evidence::{EvidenceLog, EvidenceStore, StoreError};
+use crate::scanners::ssh;
 use sovri_sdk::is_valid_execution_timestamp;
 
 /// Exit code when the report was produced successfully.
@@ -95,7 +96,7 @@ const GAP_REFERENCES: [GapReference; 2] = [
         severity: "major",
     },
     GapReference {
-        control_id: "host.ssh.permit-root-login",
+        control_id: ssh::PERMIT_ROOT_LOGIN_RULE,
         framework_reference: "iso-27001:2022:A.8.2",
         source_url: "https://www.iso.org/standard/27001",
         severity: "major",
