@@ -76,6 +76,8 @@ const CONSENT_CORPUS_RESULT_COUNTS: &str = "1 FAIL, 1 PASS";
 const CONSENT_CORPUS_SCORE_RESULT_COUNTS: &str = "1 FAIL, 1 PASS, 0 WARNING, 0 SKIPPED, 0 ERROR";
 /// Framework score represented by the canonical MAT-95 MAT-87 score output.
 const CONSENT_CORPUS_FRAMEWORK_SCORE: &str = "0.0%";
+/// Usage hint for report framework score input.
+const FRAMEWORK_SCORE_USAGE: &str = "use 0.0% through 100.0%";
 /// Compliance-posture caveat shown with MAT-87 scores.
 const SCORE_POSTURE_CAVEAT: &str = "Scores summarize observed compliance posture.";
 /// Legal-risk caveat shown with MAT-87 scores.
@@ -165,9 +167,36 @@ fn incomplete_results_line(error_count: usize) -> String {
     format!("Results incomplete: {error_count} {control} errored")
 }
 
+fn is_valid_score_percentage(value: &str) -> bool {
+    score_percentage_tenths(value).is_some()
+}
+
+fn score_percentage_tenths(value: &str) -> Option<u16> {
+    let value = value.strip_suffix('%')?;
+    let (whole, fractional) = value.split_once('.')?;
+    if whole.is_empty()
+        || fractional.len() != 1
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fractional.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let whole = whole.parse::<u32>().ok()?;
+    if whole > 100 {
+        return None;
+    }
+
+    let fractional = fractional.parse::<u32>().ok()?;
+    let tenths = whole.checked_mul(10)?.checked_add(fractional)?;
+    (tenths <= 1000)
+        .then_some(tenths)
+        .and_then(|tenths| u16::try_from(tenths).ok())
+}
+
 /// The `report` command help text.
 const HELP: &str = "\
-usage: sovri-agent report --run <id> --evidence-store <dir> --executed-at <timestamp>
+usage: sovri-agent report --run <id> --evidence-store <dir> --executed-at <timestamp> [--framework-score <percent>]
 
 Generate a deterministic PDF compliance report from a persisted evidence store.
 Run identifiers accept ASCII letters, numbers, hyphens, and underscores.
@@ -235,7 +264,8 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
             }
             SECTION_SCORES => lines.extend([
                 format!(
-                    "Framework score {CONSENT_CORPUS_FRAMEWORK_ID}: {CONSENT_CORPUS_FRAMEWORK_SCORE}"
+                    "Framework score {CONSENT_CORPUS_FRAMEWORK_ID}: {}",
+                    config.framework_score
                 ),
                 format!("Result counts: {CONSENT_CORPUS_SCORE_RESULT_COUNTS}"),
                 SCORE_POSTURE_CAVEAT.to_string(),
@@ -334,6 +364,45 @@ mod tests {
         assert_eq!(
             incomplete_results_line(2),
             "Results incomplete: 2 controls errored"
+        );
+    }
+
+    #[test]
+    fn score_percentage_validation_accepts_boundaries() {
+        assert!(is_valid_score_percentage("0.0%"));
+        assert!(is_valid_score_percentage("100.0%"));
+    }
+
+    #[test]
+    fn score_percentage_validation_rejects_malformed_values() {
+        for percentage in ["-0.1%", "100.1%", "101.0%", "42%", "50.12%", "50.x%", "abc"] {
+            assert!(
+                !is_valid_score_percentage(percentage),
+                "{percentage} is not a valid one-decimal percentage"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_framework_score_is_a_usage_error() {
+        let args = [
+            "--run",
+            "shopfront-2026-06-24",
+            "--evidence-store",
+            ".",
+            "--executed-at",
+            "2026-06-24T13:16:28Z",
+            "--framework-score",
+            "101.0%",
+        ]
+        .map(str::to_string);
+        let Err(error) = parse_args(&args) else {
+            panic!("invalid framework score should be rejected");
+        };
+
+        assert_eq!(
+            error.to_string(),
+            format!("invalid --framework-score '101.0%' ({FRAMEWORK_SCORE_USAGE})")
         );
     }
 }
@@ -573,6 +642,7 @@ struct Config {
     run_id: String,
     evidence_store: PathBuf,
     executed_at: String,
+    framework_score: String,
 }
 
 enum ParsedArgs {
@@ -584,6 +654,7 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, Error> {
     let mut run_id = None;
     let mut evidence_store = None;
     let mut executed_at = None;
+    let mut framework_score = None;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -601,6 +672,10 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, Error> {
             executed_at = Some(value.to_string());
         } else if arg == "--executed-at" {
             executed_at = Some(next_value(&mut iter, "--executed-at")?);
+        } else if let Some(value) = arg.strip_prefix("--framework-score=") {
+            framework_score = Some(value.to_string());
+        } else if arg == "--framework-score" {
+            framework_score = Some(next_value(&mut iter, "--framework-score")?);
         } else {
             return Err(Error::UnknownArgument(arg.clone()));
         }
@@ -616,10 +691,17 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, Error> {
         return Err(Error::InvalidExecutedAt(executed_at));
     }
 
+    let framework_score =
+        framework_score.unwrap_or_else(|| CONSENT_CORPUS_FRAMEWORK_SCORE.to_string());
+    if !is_valid_score_percentage(&framework_score) {
+        return Err(Error::InvalidFrameworkScore(framework_score));
+    }
+
     Ok(ParsedArgs::Report(Config {
         run_id,
         evidence_store: PathBuf::from(evidence_store.ok_or(Error::MissingEvidenceStore)?),
         executed_at,
+        framework_score,
     }))
 }
 
@@ -636,6 +718,7 @@ enum Error {
     MissingExecutedAt,
     InvalidRun(String),
     InvalidExecutedAt(String),
+    InvalidFrameworkScore(String),
     MissingValue(String),
     UnknownArgument(String),
     InvalidEvidenceStorePath { path: String, reason: io::Error },
@@ -654,6 +737,12 @@ impl fmt::Display for Error {
             ),
             Error::InvalidExecutedAt(value) => {
                 write!(f, "invalid --executed-at timestamp '{value}'")
+            }
+            Error::InvalidFrameworkScore(value) => {
+                write!(
+                    f,
+                    "invalid --framework-score '{value}' ({FRAMEWORK_SCORE_USAGE})"
+                )
             }
             Error::MissingValue(flag) => write!(f, "missing value for {flag}"),
             Error::UnknownArgument(arg) => write!(f, "unknown argument '{arg}'"),
