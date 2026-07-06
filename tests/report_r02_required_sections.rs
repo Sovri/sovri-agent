@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! R-02 - the PDF report contains every required section.
-//! Covers issue #101.
+//! Covers issues #101 and #102.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,6 +13,10 @@ use sovri_agent::evidence::{Evidence, EvidenceKind, EvidenceStore};
 
 const RUN_ID: &str = "shopfront-2026-06-24";
 const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
+const SCAN_TARGET: &str = "shopfront";
+const FRAMEWORK_ID: &str = "gdpr-eprivacy";
+const CATALOG_VERSION: &str = "2016-679";
+const RESULT_COUNTS: &str = "1 FAIL, 1 PASS";
 const CONSENT_CONTROL: &str = "consent.tracker.prior-consent";
 const HASH: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const REQUIRED_SECTIONS: [&str; 6] = [
@@ -106,4 +110,29 @@ fn each_required_section_is_present_in_the_report() {
         // Then the report contains the "<section>" section
         assert_pdf_text_line(&text, section);
     }
+}
+
+#[test]
+fn executive_summary_carries_the_runs_headline_facts() {
+    // Given a compliance report generated from the "shopfront-2026-06-24" consent corpus
+    let store = persisted_consent_store();
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+
+    assert!(
+        output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Then the "Executive summary" section lists framework "gdpr-eprivacy" as covered
+    assert_pdf_text_line(&text, "Executive summary");
+    assert_pdf_text_line(&text, &format!("Framework covered: {FRAMEWORK_ID}"));
+    // And it shows the scan target "shopfront"
+    assert_pdf_text_line(&text, &format!("Scan target: {SCAN_TARGET}"));
+    // And it shows the generated date "2026-06-24T13:16:28Z"
+    assert_pdf_text_line(&text, &format!("Generated date: {EXECUTED_AT}"));
+    // And it shows the catalog version "2016-679"
+    assert_pdf_text_line(&text, &format!("Catalog version: {CATALOG_VERSION}"));
+    // And it shows the result counts "1 FAIL, 1 PASS"
+    assert_pdf_text_line(&text, &format!("Result counts: {RESULT_COUNTS}"));
 }

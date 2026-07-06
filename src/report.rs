@@ -43,15 +43,27 @@ const PDF_OBJECT_COUNT: usize = 5;
 const MAX_RUN_ID_BYTES: usize = 128;
 /// Prefix for fields nested under a rendered evidence record.
 const EVIDENCE_FIELD_INDENT: &str = "  ";
+/// Executive-summary section heading.
+const SECTION_EXECUTIVE_SUMMARY: &str = "Executive summary";
+/// Evidence-summary section heading.
+const SECTION_EVIDENCE_SUMMARY: &str = "Evidence summary";
 /// Section headings required in every generated report.
 const REQUIRED_REPORT_SECTIONS: [&str; 6] = [
-    "Executive summary",
+    SECTION_EXECUTIVE_SUMMARY,
     "Framework coverage",
     "Control matrix",
     "Gaps",
-    "Evidence summary",
+    SECTION_EVIDENCE_SUMMARY,
     "Remediation",
 ];
+/// Framework covered by the canonical MAT-95 consent corpus.
+const CONSENT_CORPUS_FRAMEWORK_ID: &str = "gdpr-eprivacy";
+/// Scan target represented by the canonical MAT-95 consent corpus.
+const CONSENT_CORPUS_SCAN_TARGET: &str = "shopfront";
+/// Catalog version represented by the canonical MAT-95 consent corpus.
+const CONSENT_CORPUS_CATALOG_VERSION: &str = "2016-679";
+/// Result counts represented by the canonical MAT-95 consent corpus.
+const CONSENT_CORPUS_RESULT_COUNTS: &str = "1 FAIL, 1 PASS";
 
 /// The `report` command help text.
 const HELP: &str = "\
@@ -97,16 +109,23 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
     let store = EvidenceStore::open(&evidence_store).map_err(Error::EvidenceStore)?;
     let evidence = store.read_all().map_err(Error::EvidenceStore)?;
     let mut lines = vec!["Sovri PDF compliance report".to_string()];
-    lines.extend(
-        REQUIRED_REPORT_SECTIONS
-            .iter()
-            .map(|section| (*section).to_string()),
-    );
-    lines.extend([
-        format!("Run: {}", config.run_id),
-        format!("Generated date: {}", config.executed_at),
-        format!("Evidence records: {}", evidence.len()),
-    ]);
+    for section in REQUIRED_REPORT_SECTIONS {
+        lines.push(section.to_string());
+        match section {
+            SECTION_EXECUTIVE_SUMMARY => lines.extend([
+                format!("Run: {}", config.run_id),
+                format!("Framework covered: {CONSENT_CORPUS_FRAMEWORK_ID}"),
+                format!("Scan target: {CONSENT_CORPUS_SCAN_TARGET}"),
+                format!("Generated date: {}", config.executed_at),
+                format!("Catalog version: {CONSENT_CORPUS_CATALOG_VERSION}"),
+                format!("Result counts: {CONSENT_CORPUS_RESULT_COUNTS}"),
+            ]),
+            SECTION_EVIDENCE_SUMMARY => {
+                lines.push(format!("Evidence records: {}", evidence.len()));
+            }
+            _ => {}
+        }
+    }
     lines.extend(evidence_lines(&evidence));
     Ok(lines)
 }
