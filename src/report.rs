@@ -206,11 +206,7 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                             )
                         },
                     );
-                    // Both labels are intentional: earlier R-03 output uses
-                    // "Framework reference", while the no-CWE scenario uses
-                    // auditor-facing "Compliance reference" wording.
                     lines.push(format!("Framework reference: {framework_reference}"));
-                    lines.push(format!("Compliance reference: {framework_reference}"));
                     lines.push(format!("Source URL: {source_url}"));
                     lines.push(format!("Severity: {severity}"));
                 }

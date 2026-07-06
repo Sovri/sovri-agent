@@ -172,7 +172,7 @@ fn no_gap_in_the_report_falls_back_to_a_cwe_reference() {
     assert_pdf_text_line(&text, &format!("Gap: {CONSENT_CORPUS_CONTROL_ID}"));
     assert_pdf_text_line(
         &text,
-        &format!("Compliance reference: {CONSENT_CORPUS_REFERENCE}"),
+        &format!("Framework reference: {CONSENT_CORPUS_REFERENCE}"),
     );
 }
 
