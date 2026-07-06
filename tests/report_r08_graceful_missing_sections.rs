@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! R-08 - Missing optional sections render gracefully.
-//! Covers issues #121 and #122.
+//! Covers issues #121, #122, and #123.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -238,4 +238,22 @@ fn all_pass_corpus_still_produces_full_report_skeleton() {
 
     // And the "Gaps" section shows "No potential gaps observed"
     assert_section_shows_text(&text, "Gaps", "No potential gaps observed");
+}
+
+#[test]
+fn empty_corpus_does_not_produce_empty_or_truncated_pdf() {
+    // Given an empty compliance corpus
+    let store = persisted_empty_store();
+
+    // When the PDF report is generated
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+
+    // Then a non-empty PDF is produced
+    // And the PDF begins with "%PDF-" and ends with "%%EOF"
+    assert_pdf_output(&output, "empty corpus");
+
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    // And the "Executive summary" section explains that no controls were evaluated
+    assert_section_shows_text(&text, "Executive summary", "No controls were evaluated");
 }
