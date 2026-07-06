@@ -52,6 +52,8 @@ const PDF_CONTENT_OBJECT_OFFSET: usize = 1;
 const MAX_RUN_ID_BYTES: usize = 128;
 /// Prefix for fields nested under a rendered evidence record.
 const EVIDENCE_FIELD_INDENT: &str = "  ";
+/// Header line used by persisted evidence record files.
+const EVIDENCE_RECORD_HEADER: &str = "format\tevidence-record-v1";
 /// Report-layer evidence kind label for account inventory metadata.
 const ACCOUNT_EVIDENCE_KIND_LABEL: &str = "account";
 /// Executive-summary section heading.
@@ -124,6 +126,8 @@ const UNCONFIGURED_GAP_SEVERITY: &str = "unknown";
 const PASS_SIGNAL: &str = "PASS";
 /// Integrity digest prefixes rendered as report algorithm labels.
 const INTEGRITY_ALGORITHMS: [(&str, &str); 1] = [("sha256:", "SHA-256")];
+/// Appendix limitation shown when a persisted record lacks integrity metadata.
+const MISSING_INTEGRITY_LIMITATION: &str = "integrity metadata not available";
 /// Executive-summary explanation when no controls were evaluated.
 const NO_CONTROLS_EVALUATED: &str = "No controls were evaluated";
 /// Placeholder when no potential gap rows are rendered.
@@ -300,17 +304,17 @@ fn fail(error: &Error) -> ExitCode {
 
 fn execute(config: &Config) -> Result<Vec<String>, Error> {
     let evidence_store = canonical_evidence_store(&config.evidence_store)?;
-    let store = EvidenceStore::open(&evidence_store).map_err(Error::EvidenceStore)?;
-    let evidence = evidence_metadata_log(&store);
+    let report_evidence = report_evidence_metadata(&evidence_store)?;
+    let evidence = &report_evidence.records;
     let cmp_warning_reason = evidence.records().iter().find_map(|record| {
         (record.signal() == Some(CONSENT_CORPUS_WARNING_REASON))
             .then_some(CONSENT_CORPUS_WARNING_REASON)
     });
-    let error_count = error_control_count(&evidence);
+    let error_count = error_control_count(evidence);
     let mut lines = vec!["Sovri PDF compliance report".to_string()];
     for section in REQUIRED_REPORT_SECTIONS {
         if section == SECTION_CONTROL_MATRIX {
-            lines.extend(evidence_lines(&evidence));
+            lines.extend(evidence_lines(evidence));
         }
         lines.push(section.to_string());
         match section {
@@ -327,14 +331,14 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                 } else {
                     lines.push(format!(
                         "Result counts: {}",
-                        executive_result_counts(&evidence)
+                        executive_result_counts(evidence)
                     ));
                 }
                 if error_count > 0 {
                     lines.push(incomplete_results_line(error_count));
                 }
             }
-            SECTION_SCORES => append_score_lines(&mut lines, &evidence, &config.framework_score),
+            SECTION_SCORES => append_score_lines(&mut lines, evidence, &config.framework_score),
             SECTION_CONTROL_MATRIX => {
                 // Keep legacy rule lines for R-02; R-04 rows provide one countable row per status.
                 lines.push(format!("Control: {CONSENT_CORPUS_CONTROL_ID}"));
@@ -346,7 +350,7 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                 }
                 lines.push(format!("Rule {CONSENT_CORPUS_TRACKER_RULE_ID}: FAIL"));
                 lines.push(control_row(CONSENT_CORPUS_CONTROL_ID, "FAIL"));
-                for record in records_ordered_by_control(&evidence) {
+                for record in records_ordered_by_control(evidence) {
                     let Some((control_id, reason, status)) = non_conclusive_record_status(record)
                     else {
                         continue;
@@ -355,13 +359,47 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                     lines.push(format!("Explanation: {reason}"));
                 }
             }
-            SECTION_GAPS => append_gap_lines(&mut lines, &evidence),
-            SECTION_EVIDENCE_SUMMARY => append_evidence_summary_lines(&mut lines, &evidence),
-            SECTION_EVIDENCE_APPENDIX => append_evidence_appendix_lines(&mut lines, &evidence),
+            SECTION_GAPS => append_gap_lines(&mut lines, evidence),
+            SECTION_EVIDENCE_SUMMARY => append_evidence_summary_lines(&mut lines, evidence),
+            SECTION_EVIDENCE_APPENDIX => {
+                append_evidence_appendix_lines(&mut lines, &report_evidence);
+            }
             _ => {}
         }
     }
     Ok(lines)
+}
+
+#[derive(Default)]
+struct ReportEvidenceMetadata {
+    records: EvidenceLog,
+    missing_integrity: Vec<MissingIntegrityRecord>,
+}
+
+struct MissingIntegrityRecord {
+    id: String,
+    locator: String,
+}
+
+#[derive(Default)]
+struct MissingIntegrityFields {
+    id: Option<String>,
+    locator: Option<String>,
+    has_content_hash: bool,
+}
+
+fn report_evidence_metadata(root: &Path) -> Result<ReportEvidenceMetadata, Error> {
+    match EvidenceStore::open(root) {
+        Ok(store) => Ok(ReportEvidenceMetadata {
+            records: evidence_metadata_log(&store),
+            missing_integrity: Vec::new(),
+        }),
+        Err(error) if is_missing_integrity_error(&error) => Ok(ReportEvidenceMetadata {
+            records: EvidenceLog::new(),
+            missing_integrity: missing_integrity_records(root)?,
+        }),
+        Err(error) => Err(Error::EvidenceStore(error)),
+    }
 }
 
 fn evidence_metadata_log(store: &EvidenceStore) -> EvidenceLog {
@@ -370,6 +408,146 @@ fn evidence_metadata_log(store: &EvidenceStore) -> EvidenceLog {
         log.record(entry.record().clone());
     }
     log
+}
+
+fn is_missing_integrity_error(error: &StoreError) -> bool {
+    matches!(
+        error,
+        StoreError::Decode { message, .. } if message == "record is missing a content hash"
+    )
+}
+
+fn missing_integrity_records(root: &Path) -> Result<Vec<MissingIntegrityRecord>, Error> {
+    let mut records = Vec::new();
+    for path in evidence_record_paths(root)? {
+        if let Some(record) = missing_integrity_record(&path)? {
+            records.push(record);
+        }
+    }
+    records.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(records)
+}
+
+fn evidence_record_paths(root: &Path) -> Result<Vec<PathBuf>, Error> {
+    let objects = root.join("objects");
+    let shard_dirs = match fs::read_dir(&objects) {
+        Ok(dirs) => dirs,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(store_io_error("read object tree", &objects, &error)),
+    };
+
+    let mut record_paths = Vec::new();
+    for shard in shard_dirs {
+        let shard = shard.map_err(|error| store_io_error("read object tree", &objects, &error))?;
+        let shard_path = shard.path();
+        if !shard_path.is_dir() {
+            continue;
+        }
+        let files = fs::read_dir(&shard_path)
+            .map_err(|error| store_io_error("read object shard", &shard_path, &error))?;
+        for file in files {
+            let file =
+                file.map_err(|error| store_io_error("read object shard", &shard_path, &error))?;
+            let path = file.path();
+            if path.extension().and_then(|extension| extension.to_str()) == Some("rec") {
+                record_paths.push(path);
+            }
+        }
+    }
+    record_paths.sort();
+    Ok(record_paths)
+}
+
+fn missing_integrity_record(path: &Path) -> Result<Option<MissingIntegrityRecord>, Error> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| store_io_error("read record file", path, &error))?;
+    let fields = decode_missing_integrity_record(path, &text)?;
+    if fields.has_content_hash {
+        Ok(None)
+    } else {
+        let id = required_report_record_field(path, fields.id, "id")?;
+        let locator = required_report_record_field(path, fields.locator, "locator")?;
+        Ok(Some(MissingIntegrityRecord { id, locator }))
+    }
+}
+
+fn decode_missing_integrity_record(
+    path: &Path,
+    text: &str,
+) -> Result<MissingIntegrityFields, Error> {
+    let mut lines = text.lines();
+    if lines.next() != Some(EVIDENCE_RECORD_HEADER) {
+        return Err(store_decode_error(path, "missing or unknown record header"));
+    }
+
+    let mut fields = MissingIntegrityFields::default();
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        let (key, raw) = line
+            .split_once('\t')
+            .ok_or_else(|| store_decode_error(path, "record line has no field separator"))?;
+        let value =
+            unescape_store_value(raw).map_err(|message| store_decode_error(path, &message))?;
+        match key {
+            "id" => fields.id = Some(value),
+            "locator" => fields.locator = Some(value),
+            "content-hash" => fields.has_content_hash = true,
+            "kind" | "classification" | "line" | "key" | "signal" | "size-bytes"
+            | "reviewer-status" | "control-id" | "control" => {}
+            other => {
+                return Err(store_decode_error(
+                    path,
+                    &format!("unknown record field '{other}'"),
+                ));
+            }
+        }
+    }
+    Ok(fields)
+}
+
+fn required_report_record_field(
+    path: &Path,
+    value: Option<String>,
+    field: &str,
+) -> Result<String, Error> {
+    value.ok_or_else(|| store_decode_error(path, &format!("record is missing an {field}")))
+}
+
+fn unescape_store_value(value: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('\\') => out.push('\\'),
+            Some('t') => out.push('\t'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some(other) => return Err(format!("unknown escape '\\{other}'")),
+            None => return Err("value ends with a dangling escape".to_string()),
+        }
+    }
+    Ok(out)
+}
+
+fn store_io_error(operation: &'static str, path: &Path, error: &io::Error) -> Error {
+    Error::EvidenceStore(StoreError::Io {
+        operation,
+        path: path.display().to_string(),
+        message: error.to_string(),
+    })
+}
+
+fn store_decode_error(path: &Path, message: &str) -> Error {
+    Error::EvidenceStore(StoreError::Decode {
+        path: path.display().to_string(),
+        message: message.to_string(),
+    })
 }
 
 fn append_score_lines(lines: &mut Vec<String>, evidence: &EvidenceLog, framework_score: &str) {
@@ -482,8 +660,8 @@ fn append_evidence_summary_lines(lines: &mut Vec<String>, evidence: &EvidenceLog
     }
 }
 
-fn append_evidence_appendix_lines(lines: &mut Vec<String>, evidence: &EvidenceLog) {
-    for record in records_ordered_by_control(evidence) {
+fn append_evidence_appendix_lines(lines: &mut Vec<String>, evidence: &ReportEvidenceMetadata) {
+    for record in records_ordered_by_control(&evidence.records) {
         lines.push(format!("Evidence: {}", record.id()));
         lines.push(format!(
             "{EVIDENCE_FIELD_INDENT}Location: {}",
@@ -497,6 +675,16 @@ fn append_evidence_appendix_lines(lines: &mut Vec<String>, evidence: &EvidenceLo
         lines.push(format!(
             "{EVIDENCE_FIELD_INDENT}Digest: {}",
             record.content_hash()
+        ));
+    }
+    for record in &evidence.missing_integrity {
+        lines.push(format!("Evidence: {}", record.id));
+        lines.push(format!(
+            "{EVIDENCE_FIELD_INDENT}Location: {}",
+            record.locator
+        ));
+        lines.push(format!(
+            "{EVIDENCE_FIELD_INDENT}Limitation: {MISSING_INTEGRITY_LIMITATION}"
         ));
     }
 }
