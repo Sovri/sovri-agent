@@ -227,6 +227,22 @@ fn skipped_and_error_rows_are_not_omitted_from_the_report() {
 }
 
 #[test]
+fn error_result_marks_the_run_as_incomplete_in_the_report() {
+    let store = persisted_non_conclusive_store();
+    let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
+
+    assert!(
+        output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert_pdf_text_line(&text, "Executive summary");
+    // Then the "Executive summary" section notes that results are incomplete because 1 control errored
+    assert_pdf_text_line(&text, "Results incomplete: 1 control errored");
+}
+
+#[test]
 fn incomplete_non_conclusive_records_are_skipped() {
     let store = persisted_incomplete_status_store();
     let output = run_report(RUN_ID, store.path(), EXECUTED_AT);
