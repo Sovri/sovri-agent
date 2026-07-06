@@ -80,6 +80,12 @@ const CONSENT_CORPUS_WARNING_REASON: &str = "consent signal was inconclusive";
 /// Remediation represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_REMEDIATION: &str =
     "Block non-essential trackers until the visitor records consent.";
+/// Framework-reference marker for controls missing report metadata.
+const UNCONFIGURED_GAP_REFERENCE: &str = "unconfigured";
+/// Source URL marker for controls missing report metadata.
+const UNCONFIGURED_GAP_SOURCE_URL: &str = "unconfigured";
+/// Severity marker for controls missing report metadata.
+const UNCONFIGURED_GAP_SEVERITY: &str = "unknown";
 
 struct GapReference {
     control_id: &'static str,
@@ -182,19 +188,27 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                     let Some(control_id) = record.control_id() else {
                         continue;
                     };
-                    let Some(reference) = GAP_REFERENCES
+                    let reference = GAP_REFERENCES
                         .iter()
-                        .find(|reference| reference.control_id == control_id)
-                    else {
-                        continue;
-                    };
+                        .find(|reference| reference.control_id == control_id);
                     lines.push(format!("Gap: {control_id}"));
-                    lines.push(format!(
-                        "Framework reference: {}",
-                        reference.framework_reference
-                    ));
-                    lines.push(format!("Source URL: {}", reference.source_url));
-                    lines.push(format!("Severity: {}", reference.severity));
+                    let (framework_reference, source_url, severity) = reference.map_or(
+                        (
+                            UNCONFIGURED_GAP_REFERENCE,
+                            UNCONFIGURED_GAP_SOURCE_URL,
+                            UNCONFIGURED_GAP_SEVERITY,
+                        ),
+                        |reference| {
+                            (
+                                reference.framework_reference,
+                                reference.source_url,
+                                reference.severity,
+                            )
+                        },
+                    );
+                    lines.push(format!("Framework reference: {framework_reference}"));
+                    lines.push(format!("Source URL: {source_url}"));
+                    lines.push(format!("Severity: {severity}"));
                 }
                 lines.push(format!(
                     "Remediation for {CONSENT_CORPUS_CONTROL_ID}: {CONSENT_CORPUS_REMEDIATION}"

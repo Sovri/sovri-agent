@@ -15,6 +15,7 @@ use sovri_agent::scanners::ssh;
 const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
 const HASH: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const CONSENT_CORPUS_CONTROL_ID: &str = "consent.tracker.prior-consent";
+const UNKNOWN_CONTROL_ID: &str = "custom.framework.control-without-reference";
 
 struct GapExample {
     control: &'static str,
@@ -101,6 +102,28 @@ fn assert_pdf_text_line(text: &str, expected: &str) {
     assert!(
         text.contains(&marker),
         "report contains {expected:?} as a distinct PDF text line; actual PDF text:\n{text}"
+    );
+}
+
+#[test]
+fn gap_with_unconfigured_reference_remains_visible_without_cwe_fallback() {
+    let store = persisted_gap_store(UNKNOWN_CONTROL_ID);
+    let output = run_report("gap-reference-unconfigured", store.path(), EXECUTED_AT);
+
+    assert!(
+        output.status.success(),
+        "report command exits successfully, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert_pdf_text_line(&text, "Gaps");
+    assert_pdf_text_line(&text, &format!("Gap: {UNKNOWN_CONTROL_ID}"));
+    assert_pdf_text_line(&text, "Framework reference: unconfigured");
+    assert_pdf_text_line(&text, "Source URL: unconfigured");
+    assert_pdf_text_line(&text, "Severity: unknown");
+    assert!(
+        !text.contains("CWE-"),
+        "unconfigured gap metadata does not fall back to CWE; actual PDF text:\n{text}"
     );
 }
 
