@@ -86,7 +86,7 @@ fn assert_pdf_text_line(text: &str, expected: &str) {
     let marker = format!("({expected}) Tj\n");
     assert!(
         text.contains(&marker),
-        "report contains {expected:?} as a distinct PDF text line"
+        "report contains {expected:?} as a distinct PDF text line; actual PDF text:\n{text}"
     );
 }
 
