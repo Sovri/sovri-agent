@@ -14,7 +14,7 @@ use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::evidence::{Evidence, EvidenceLog, EvidenceStore, StoreError};
+use crate::evidence::{Evidence, EvidenceKind, EvidenceLog, EvidenceStore, StoreError};
 use crate::scanners::ssh;
 use sovri_sdk::is_valid_execution_timestamp;
 
@@ -44,6 +44,8 @@ const PDF_OBJECT_COUNT: usize = 5;
 const MAX_RUN_ID_BYTES: usize = 128;
 /// Prefix for fields nested under a rendered evidence record.
 const EVIDENCE_FIELD_INDENT: &str = "  ";
+/// Report-layer evidence kind label for account inventory metadata.
+const ACCOUNT_EVIDENCE_KIND_LABEL: &str = "account";
 /// Executive-summary section heading.
 const SECTION_EXECUTIVE_SUMMARY: &str = "Executive summary";
 /// Scores section heading.
@@ -326,11 +328,72 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
             }
             SECTION_EVIDENCE_SUMMARY => {
                 lines.push(format!("Evidence records: {}", evidence.len()));
+                lines.extend(evidence_summary_lines(&evidence));
             }
             _ => {}
         }
     }
     Ok(lines)
+}
+
+struct EvidenceSummaryMetadata {
+    kind_label: &'static str,
+    redacted: bool,
+}
+
+impl EvidenceSummaryMetadata {
+    fn from_record(record: &Evidence) -> Self {
+        EvidenceSummaryMetadata {
+            kind_label: evidence_kind_label(record),
+            redacted: evidence_requires_redaction(record),
+        }
+    }
+}
+
+fn evidence_kind_label(record: &Evidence) -> &'static str {
+    // The pinned SDK stores account inventory as config evidence; the report keeps
+    // the scenario's domain label when the persisted key declares that subtype.
+    if record.kind() == EvidenceKind::Config && record.key() == Some(ACCOUNT_EVIDENCE_KIND_LABEL) {
+        ACCOUNT_EVIDENCE_KIND_LABEL
+    } else {
+        record.kind().as_str()
+    }
+}
+
+/// Whether an evidence summary must be marked redacted.
+///
+/// Evidence summaries never render raw excerpts. A missing classification is
+/// still marked redacted as a fail-safe because the source sensitivity is
+/// unknown.
+fn evidence_requires_redaction(record: &Evidence) -> bool {
+    match record.classification() {
+        Some(classification) => classification.redacts_raw_value(),
+        None => true,
+    }
+}
+
+fn evidence_summary_lines(evidence: &EvidenceLog) -> Vec<String> {
+    let mut lines = Vec::new();
+    for record in evidence.records() {
+        let metadata = EvidenceSummaryMetadata::from_record(record);
+        lines.push(format!("Evidence: {}", record.id()));
+        lines.push(format!(
+            "{EVIDENCE_FIELD_INDENT}Kind: {}",
+            metadata.kind_label
+        ));
+        lines.push(format!(
+            "{EVIDENCE_FIELD_INDENT}Locator: {}",
+            record.locator()
+        ));
+        lines.push(format!(
+            "{EVIDENCE_FIELD_INDENT}Integrity: {}",
+            record.content_hash()
+        ));
+        if metadata.redacted {
+            lines.push(format!("{EVIDENCE_FIELD_INDENT}Redacted: yes"));
+        }
+    }
+    lines
 }
 
 fn evidence_lines(evidence: &EvidenceLog) -> Vec<String> {
@@ -358,6 +421,29 @@ fn evidence_lines(evidence: &EvidenceLog) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::evidence::Classification;
+
+    const TEST_HASH: &str =
+        "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    fn report_evidence(
+        id: &str,
+        key: Option<&str>,
+        classification: Option<Classification>,
+    ) -> Evidence {
+        let mut builder = Evidence::builder()
+            .id(id)
+            .kind(EvidenceKind::Config)
+            .locator("config/users.yaml:12")
+            .content_hash(TEST_HASH);
+        if let Some(key) = key {
+            builder = builder.key(key);
+        }
+        if let Some(classification) = classification {
+            builder = builder.classification(classification);
+        }
+        builder.build().expect("test evidence builds")
+    }
 
     #[test]
     fn incomplete_results_line_pluralizes_error_count() {
@@ -371,6 +457,30 @@ mod tests {
     fn score_percentage_validation_accepts_boundaries() {
         assert!(is_valid_score_percentage("0.0%"));
         assert!(is_valid_score_percentage("100.0%"));
+    }
+
+    #[test]
+    fn account_summary_metadata_uses_report_layer_kind_label() {
+        let record = report_evidence(
+            "ev-account",
+            Some("account"),
+            Some(Classification::Sensitive),
+        );
+        let metadata = EvidenceSummaryMetadata::from_record(&record);
+
+        assert_eq!(metadata.kind_label, "account");
+        assert!(metadata.redacted);
+    }
+
+    #[test]
+    fn summary_redaction_is_fail_safe_for_unknown_classification() {
+        let unknown = report_evidence("ev-unknown", None, None);
+        let public = report_evidence("ev-public", None, Some(Classification::Public));
+        let secret = report_evidence("ev-secret", None, Some(Classification::Secret));
+
+        assert!(EvidenceSummaryMetadata::from_record(&unknown).redacted);
+        assert!(!EvidenceSummaryMetadata::from_record(&public).redacted);
+        assert!(EvidenceSummaryMetadata::from_record(&secret).redacted);
     }
 
     #[test]
