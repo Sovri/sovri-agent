@@ -323,45 +323,44 @@ fn append_score_lines(lines: &mut Vec<String>, evidence: &EvidenceLog, framework
 }
 
 fn append_gap_lines(lines: &mut Vec<String>, evidence: &EvidenceLog) {
-    let ordered_records = records_ordered_by_control(evidence);
-    if !ordered_records
-        .iter()
-        .any(|record| record_is_potential_gap(record))
-    {
+    let mut gap_control_ids = records_ordered_by_control(evidence)
+        .into_iter()
+        .filter_map(potential_gap_control_id);
+    let Some(first_control_id) = gap_control_ids.next() else {
         lines.push(NO_GAPS_PLACEHOLDER.to_string());
         append_remediation_line(lines);
         return;
-    }
-    for record in ordered_records
-        .into_iter()
-        .filter(|record| record_is_potential_gap(record))
-    {
-        let Some(control_id) = record.control_id() else {
-            continue;
-        };
-        let reference = GAP_REFERENCES
-            .iter()
-            .find(|reference| reference.control_id == control_id);
-        lines.push(format!("Gap: {control_id}"));
-        let (framework_reference, source_url, severity) = reference.map_or(
-            (
-                UNCONFIGURED_GAP_REFERENCE,
-                UNCONFIGURED_GAP_SOURCE_URL,
-                UNCONFIGURED_GAP_SEVERITY,
-            ),
-            |reference| {
-                (
-                    reference.framework_reference,
-                    reference.source_url,
-                    reference.severity,
-                )
-            },
-        );
-        lines.push(format!("Framework reference: {framework_reference}"));
-        lines.push(format!("Source URL: {source_url}"));
-        lines.push(format!("Severity: {severity}"));
+    };
+
+    append_gap_control_lines(lines, first_control_id);
+    for control_id in gap_control_ids {
+        append_gap_control_lines(lines, control_id);
     }
     append_remediation_line(lines);
+}
+
+fn append_gap_control_lines(lines: &mut Vec<String>, control_id: &str) {
+    let reference = GAP_REFERENCES
+        .iter()
+        .find(|reference| reference.control_id == control_id);
+    lines.push(format!("Gap: {control_id}"));
+    let (framework_reference, source_url, severity) = reference.map_or(
+        (
+            UNCONFIGURED_GAP_REFERENCE,
+            UNCONFIGURED_GAP_SOURCE_URL,
+            UNCONFIGURED_GAP_SEVERITY,
+        ),
+        |reference| {
+            (
+                reference.framework_reference,
+                reference.source_url,
+                reference.severity,
+            )
+        },
+    );
+    lines.push(format!("Framework reference: {framework_reference}"));
+    lines.push(format!("Source URL: {source_url}"));
+    lines.push(format!("Severity: {severity}"));
 }
 
 fn append_remediation_line(lines: &mut Vec<String>) {
@@ -461,8 +460,9 @@ fn evidence_lines(evidence: &EvidenceLog) -> Vec<String> {
     lines
 }
 
-fn record_is_potential_gap(record: &Evidence) -> bool {
-    record.control_id().is_some() && record.signal() != Some(PASS_SIGNAL)
+fn potential_gap_control_id(record: &Evidence) -> Option<&str> {
+    let control_id = record.control_id()?;
+    (record.signal() != Some(PASS_SIGNAL)).then_some(control_id)
 }
 
 fn records_ordered_by_control(evidence: &EvidenceLog) -> Vec<&Evidence> {
