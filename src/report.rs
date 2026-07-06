@@ -40,6 +40,14 @@ const DEFAULT_BASE_FONT: &str = "Helvetica";
 const DEFAULT_FONT_SIZE_POINTS: u8 = 10;
 /// Distance between text baselines in PDF points.
 const DEFAULT_LINE_HEIGHT_POINTS: u8 = 14;
+/// Number of fixed PDF objects before page/content pairs.
+const PDF_FIXED_OBJECT_COUNT: usize = 3;
+/// Number of PDF objects written for each page.
+const PDF_OBJECTS_PER_PAGE: usize = 2;
+/// First page object number in the renderer's deterministic object layout.
+const PDF_FIRST_PAGE_OBJECT: usize = 4;
+/// Content stream object offset from its page object.
+const PDF_CONTENT_OBJECT_OFFSET: usize = 1;
 /// Maximum accepted run identifier length.
 const MAX_RUN_ID_BYTES: usize = 128;
 /// Prefix for fields nested under a rendered evidence record.
@@ -546,7 +554,7 @@ fn write_pdf_with_settings<W: IoWrite>(
     settings: &PdfSettings,
 ) -> io::Result<()> {
     let pages = paginate_lines(lines, settings);
-    let object_count = 3 + pages.len() * 2;
+    let object_count = pdf_object_count(pages.len())?;
     let mut writer = CountingWriter::new(sink);
     writer.write_bytes(b"%PDF-1.4\n")?;
     let mut offsets = Vec::with_capacity(object_count + 1);
@@ -560,7 +568,7 @@ fn write_pdf_with_settings<W: IoWrite>(
             if index > 0 {
                 writer.write_bytes(b" ")?;
             }
-            writer.write_str(&format!("{} 0 R", page_object_number(index)))?;
+            writer.write_str(&format!("{} 0 R", page_object_number(index)?))?;
         }
         writer.write_str(&format!("] /Count {} >>\n", pages.len()))
     })?;
@@ -571,33 +579,25 @@ fn write_pdf_with_settings<W: IoWrite>(
         ))
     })?;
     for (index, page_lines) in pages.iter().enumerate() {
-        write_object(
-            &mut writer,
-            &mut offsets,
-            page_object_number(index),
-            |writer| {
-                writer.write_str(&format!(
+        let page_object = page_object_number(index)?;
+        let content_object = content_object_number(index)?;
+        write_object(&mut writer, &mut offsets, page_object, |writer| {
+            writer.write_str(&format!(
                     "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /{} 3 0 R >> >> /Contents {} 0 R >>\n",
                     settings.page_width_points,
                     settings.page_height_points,
                     settings.font_resource,
-                    content_object_number(index)
+                    content_object
                 ))
-            },
-        )?;
-        write_object(
-            &mut writer,
-            &mut offsets,
-            content_object_number(index),
-            |writer| {
-                writer.write_str(&format!(
-                    "<< /Length {} >>\nstream\n",
-                    page_content_len(page_lines, settings)
-                ))?;
-                write_page_content(writer, page_lines, settings)?;
-                writer.write_bytes(b"endstream\n")
-            },
-        )?;
+        })?;
+        write_object(&mut writer, &mut offsets, content_object, |writer| {
+            writer.write_str(&format!(
+                "<< /Length {} >>\nstream\n",
+                page_content_len(page_lines, settings)
+            ))?;
+            write_page_content(writer, page_lines, settings)?;
+            writer.write_bytes(b"endstream\n")
+        })?;
     }
 
     let xref_offset = writer.offset();
@@ -628,12 +628,31 @@ fn lines_per_page(settings: &PdfSettings) -> usize {
     usize::from(usable_height / u16::from(settings.line_height_points)) + 1
 }
 
-fn page_object_number(index: usize) -> usize {
-    4 + index * 2
+fn pdf_object_count(page_count: usize) -> io::Result<usize> {
+    page_count
+        .checked_mul(PDF_OBJECTS_PER_PAGE)
+        .and_then(|page_objects| PDF_FIXED_OBJECT_COUNT.checked_add(page_objects))
+        .ok_or_else(pdf_page_count_overflow)
 }
 
-fn content_object_number(index: usize) -> usize {
-    page_object_number(index) + 1
+fn page_object_number(index: usize) -> io::Result<usize> {
+    index
+        .checked_mul(PDF_OBJECTS_PER_PAGE)
+        .and_then(|offset| PDF_FIRST_PAGE_OBJECT.checked_add(offset))
+        .ok_or_else(pdf_page_count_overflow)
+}
+
+fn content_object_number(index: usize) -> io::Result<usize> {
+    page_object_number(index)?
+        .checked_add(PDF_CONTENT_OBJECT_OFFSET)
+        .ok_or_else(pdf_page_count_overflow)
+}
+
+fn pdf_page_count_overflow() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "report contains too many pages to render",
+    )
 }
 
 fn write_object<W: IoWrite>(
