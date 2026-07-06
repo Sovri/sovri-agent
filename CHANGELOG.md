@@ -5,6 +5,25 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Evidence persistence (MAT-94): `sovri-agent scan --evidence-store <dir>` writes
+  the evidence the scanners collect to a content-addressed store under `<dir>`,
+  keyed by each record's SHA-256 content digest. Identical records collapse onto a
+  single entry, so re-running into the same directory is idempotent, and a record
+  whose classification redacts its raw value is stored without a content blob —
+  only the digest and metadata reach the disk. The run appends an evidence-store
+  summary to the report; without the flag the scan is unchanged. The public
+  `scan::persist_evidence` exposes the same step to library callers.
+
+### Changed
+- Scanner evidence now carries a real SHA-256 content digest (MAT-93): each
+  record's `content_hash` is the canonical digest of the bytes the scanner
+  observed, computed through the SDK, in place of the earlier non-computing
+  placeholder token. A non-redacted record still exposes its excerpt; a redacted
+  one keeps the real digest while dropping the bytes. Pins `sovri-sdk` to v0.3.0,
+  which provides the content hashing and the content-addressed store this builds
+  on.
+
 ## [0.4.0] - 2026-07-05
 
 ### Added

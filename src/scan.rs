@@ -28,8 +28,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use sovri_sdk::{
-    collect_gaps, Catalog, ControlResult, Engine, ExecutionError, LoadError, RuleEvaluator,
-    Selection, Status, ValidationIssue,
+    collect_gaps, Catalog, ControlResult, Engine, Evidence, EvidenceStore, ExecutionError,
+    LoadError, RuleEvaluator, Selection, Status, StoreError, ValidationIssue,
 };
 
 use crate::scanners::docker::{
@@ -71,16 +71,17 @@ const BASELINE_DOCKER_MIN_RECOMMENDED: &str = "27.0";
 /// The `--help` text. It documents the exit codes so the contract is discoverable
 /// from the command line (R-05).
 const HELP: &str = "\
-usage: sovri-agent scan --catalog <dir> (--framework <id> | --control <ids>) [--fail-on <level>]
+usage: sovri-agent scan --catalog <dir> (--framework <id> | --control <ids>) [--fail-on <level>] [--evidence-store <dir>]
 
 Run a catalog's controls against the host and report the outcome.
 
 options:
-  --catalog <dir>     directory of framework/control/rule/mapping YAML (required)
-  --framework <id>    run every control mapped to this framework
-  --control <ids>     run these comma-separated control ids
-  --fail-on <level>   posture threshold: fail (default), warning, or never
-  -h, --help          show this help
+  --catalog <dir>         directory of framework/control/rule/mapping YAML (required)
+  --framework <id>        run every control mapped to this framework
+  --control <ids>         run these comma-separated control ids
+  --fail-on <level>       posture threshold: fail (default), warning, or never
+  --evidence-store <dir>  persist collected evidence to a content-addressed store at <dir>
+  -h, --help              show this help
 
 exit codes:
   0 when clean, 2 on a FAIL or execution error, 64 on a usage error
@@ -296,6 +297,26 @@ pub fn run_scan<E: RuleEvaluator>(
     })
 }
 
+/// Persists `evidence` to a content-addressed [`EvidenceStore`] rooted at `dir`,
+/// creating the store on first write, and returns the store's total record count.
+///
+/// The store keys each record by its SHA-256 content digest, so re-running a scan
+/// into the same directory is idempotent: identical evidence collapses onto the
+/// existing entry rather than duplicating it. A record whose classification
+/// redacts its raw value is stored without a content blob, so no secret reaches
+/// the disk — only the digest and metadata do.
+///
+/// # Errors
+/// Returns [`ScanError::EvidenceStore`] when the store cannot be opened at `dir`
+/// or a record cannot be written.
+pub fn persist_evidence(dir: &str, evidence: &[Evidence]) -> Result<usize, ScanError> {
+    let mut store = EvidenceStore::open(dir).map_err(ScanError::EvidenceStore)?;
+    store
+        .write_all(evidence)
+        .map_err(ScanError::EvidenceStore)?;
+    Ok(store.entry_count())
+}
+
 /// Runs `sovri-agent scan` from the arguments after the `scan` subcommand and
 /// returns the process exit code.
 ///
@@ -336,42 +357,64 @@ fn execute(config: &ScanConfig) -> Result<ScanOutcome, ScanError> {
         config.framework.as_deref(),
         config.control.as_deref(),
     )?;
-    let registry = host_registry()?;
-    run_scan(
+    let (registry, evidence) = host_registry()?;
+    let mut outcome = run_scan(
         &catalog,
         &selection,
         &registry,
         config.fail_on,
         SCAN_EXECUTED_AT,
-    )
+    )?;
+    if let Some(dir) = &config.evidence_store {
+        let stored = persist_evidence(dir, &evidence)?;
+        outcome
+            .report
+            .push_str(&evidence_store_summary(stored, dir));
+    }
+    Ok(outcome)
 }
 
-/// Builds the host registry: acquire each V0.4 scanner from the host under the
-/// agent's baseline policies and register it for its rule id(s). The SSH scanner
-/// backs two rules, so it is shared through one `Arc`.
+/// The report footer describing the persisted evidence store: the record count
+/// and the directory. It carries no wall-clock value, so it does not disturb the
+/// byte-for-byte reproducibility of the report (R-06).
+fn evidence_store_summary(count: usize, dir: &str) -> String {
+    format!("\nEvidence store\n  {count} records at {dir}\n")
+}
+
+/// Builds the host registry and collects the scanners' evidence: acquire each
+/// V0.4 scanner from the host under the agent's baseline policies, snapshot its
+/// evidence log, and register it for its rule id(s). The SSH scanner backs two
+/// rules, so it is shared through one `Arc`; its evidence is snapshotted once
+/// before wrapping. The collected records are returned alongside the registry so
+/// the caller can persist them (MAT-94).
 ///
 /// The baseline policies are placeholders; sourcing the real CIS baselines is
 /// MAT-124. Docker and SSH acquisition are infallible; a System or User
 /// acquisition failure aborts the scan with [`ScanError::HostAcquire`].
-fn host_registry() -> Result<Registry, ScanError> {
+fn host_registry() -> Result<(Registry, Vec<Evidence>), ScanError> {
     let mut registry = Registry::new();
+    let mut evidence: Vec<Evidence> = Vec::new();
 
     let system =
         SystemScanner::acquire(baseline_system_policy()).map_err(ScanError::HostAcquire)?;
+    evidence.extend(system.evidence_log().records().iter().cloned());
     registry.register_rule_evaluator(OS_EOL_RULE, Arc::new(system));
 
     let user = UserScanner::acquire(baseline_user_policy()).map_err(ScanError::HostAcquire)?;
+    evidence.extend(user.evidence_log().records().iter().cloned());
     registry.register_rule_evaluator(SINGLE_ROOT_RULE, Arc::new(user));
 
     let docker = DockerScanner::acquire(baseline_docker_policy());
+    evidence.extend(docker.evidence_log().records().iter().cloned());
     registry.register_rule_evaluator(DAEMON_VERSION_EOL_RULE, Arc::new(docker));
 
-    let ssh: Arc<dyn RuleEvaluator + Send + Sync> =
-        Arc::new(SshScanner::acquire(baseline_ssh_policy()));
+    let ssh_scanner = SshScanner::acquire(baseline_ssh_policy());
+    evidence.extend(ssh_scanner.evidence_log().records().iter().cloned());
+    let ssh: Arc<dyn RuleEvaluator + Send + Sync> = Arc::new(ssh_scanner);
     registry.register_rule_evaluator(PERMIT_ROOT_LOGIN_RULE, Arc::clone(&ssh));
     registry.register_rule_evaluator(PASSWORD_AUTH_RULE, ssh);
 
-    Ok(registry)
+    Ok((registry, evidence))
 }
 
 /// The baseline system policy: no support table and no interdicted services
@@ -410,6 +453,7 @@ struct ScanConfig {
     framework: Option<String>,
     control: Option<String>,
     fail_on: FailOn,
+    evidence_store: Option<String>,
 }
 
 /// The two shapes of a parsed command line: a help request or a scan to run.
@@ -424,6 +468,7 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, ScanError> {
     let mut framework: Option<String> = None;
     let mut control: Option<String> = None;
     let mut fail_on = FailOn::Fail;
+    let mut evidence_store: Option<String> = None;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -445,6 +490,10 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, ScanError> {
             fail_on = FailOn::parse(value)?;
         } else if arg == "--fail-on" {
             fail_on = FailOn::parse(&next_value(&mut iter, "--fail-on")?)?;
+        } else if let Some(value) = arg.strip_prefix("--evidence-store=") {
+            evidence_store = Some(value.to_string());
+        } else if arg == "--evidence-store" {
+            evidence_store = Some(next_value(&mut iter, "--evidence-store")?);
         } else {
             return Err(ScanError::UnknownArgument(arg.clone()));
         }
@@ -456,6 +505,7 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, ScanError> {
         framework,
         control,
         fail_on,
+        evidence_store,
     }))
 }
 
@@ -495,15 +545,17 @@ pub enum ScanError {
     CatalogInvalid(ValidationIssue),
     /// Host state could not be acquired for a scanner.
     HostAcquire(AcquireError),
+    /// The collected evidence could not be persisted to the store.
+    EvidenceStore(StoreError),
 }
 
 impl ScanError {
     /// The process exit code this error maps to: `64` for a usage, load, or
-    /// validation error, and `2` for a host-acquisition failure (an execution
-    /// error).
+    /// validation error, and `2` for a host-acquisition or evidence-store failure
+    /// (an execution error).
     fn exit_code(&self) -> u8 {
         match self {
-            Self::HostAcquire(_) => EXIT_POSTURE_BREACH,
+            Self::HostAcquire(_) | Self::EvidenceStore(_) => EXIT_POSTURE_BREACH,
             _ => EXIT_USAGE,
         }
     }
@@ -537,6 +589,7 @@ impl fmt::Display for ScanError {
             Self::CatalogLoad(error) => write!(f, "the catalog could not be loaded: {error}"),
             Self::CatalogInvalid(issue) => write!(f, "the catalog is invalid: {issue}"),
             Self::HostAcquire(error) => write!(f, "host state could not be acquired: {error}"),
+            Self::EvidenceStore(error) => write!(f, "evidence could not be persisted: {error}"),
         }
     }
 }

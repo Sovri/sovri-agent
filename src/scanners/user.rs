@@ -51,14 +51,6 @@ pub const GROUP_LOCATOR: &str = "/etc/group";
 /// The locator `sudoers`-sourced privilege evidence anchors on.
 pub const SUDOERS_LOCATOR: &str = "/etc/sudoers";
 
-/// A placeholder content-hash token carried on user-scanner evidence.
-///
-/// Evidence carries a content hash but does not compute one; producing a real
-/// SHA-256 digest is a separate concern (MAT-93). The token is non-blank so the
-/// record validates, and — crucially — it is never the account's password hash,
-/// so no secret rides in the hash field either.
-const UNVERIFIED_CONTENT_HASH: &str = "sha256:unverified";
-
 /// The non-login shells that mark an account as unable to start an interactive
 /// session, so it is a system account and never a passwordless-login finding.
 const NON_LOGIN_SHELLS: [&str; 5] = [
@@ -806,10 +798,9 @@ fn push_evidence(
         .id(id)
         .kind(EvidenceKind::Config)
         .locator(locator)
-        .content_hash(UNVERIFIED_CONTENT_HASH)
         .key(key)
         .classification(classification)
-        .excerpt(excerpt)
+        .content(excerpt.into_bytes())
         .build()
     {
         evidence.push(record);

@@ -72,13 +72,6 @@ pub const DAEMON_JSON_EVIDENCE_ID: &str = "container.docker.daemon-json";
 const DOCKER_ABSENT_REASON: &str =
     "Docker is not present on the host (no docker binary and no /etc/docker/daemon.json), so Docker hardening does not apply";
 
-/// A placeholder content-hash token carried on Docker-scanner evidence.
-///
-/// Evidence carries a content hash but does not compute one; producing a real
-/// SHA-256 digest is a separate concern (MAT-93). The token is non-blank so the
-/// record validates, and stands in until real hashing is wired.
-const UNVERIFIED_CONTENT_HASH: &str = "sha256:unverified";
-
 /// Whether the Docker daemon could be reached when the posture was captured.
 #[derive(Debug, Clone)]
 enum Daemon {
@@ -533,7 +526,7 @@ impl DockerScanner {
                 DOCKER_INFO_COMMAND,
                 None,
                 None,
-                Some(command_excerpt(&snapshot, &policy)),
+                command_excerpt(&snapshot, &policy),
             );
             if matches!(snapshot.daemon_json, DaemonJsonState::Present) {
                 if let Some(config) = &snapshot.config {
@@ -544,7 +537,7 @@ impl DockerScanner {
                         DAEMON_JSON_LOCATOR,
                         None,
                         None,
-                        Some(config_summary(config, &policy)),
+                        config_summary(config, &policy),
                     );
                     for (key, value) in config.secret_log_opts() {
                         let id = format!("container.docker.log-opt.{key}");
@@ -555,7 +548,7 @@ impl DockerScanner {
                             DAEMON_JSON_LOCATOR,
                             Some(key),
                             Some(Classification::Secret),
-                            Some(value),
+                            value,
                         );
                     }
                 }
@@ -751,21 +744,18 @@ fn push_evidence(
     locator: &str,
     key: Option<String>,
     classification: Option<Classification>,
-    excerpt: Option<String>,
+    excerpt: String,
 ) {
     let mut builder = Evidence::builder()
         .id(id)
         .kind(kind)
         .locator(locator)
-        .content_hash(UNVERIFIED_CONTENT_HASH);
+        .content(excerpt.into_bytes());
     if let Some(key) = key {
         builder = builder.key(key);
     }
     if let Some(classification) = classification {
         builder = builder.classification(classification);
-    }
-    if let Some(excerpt) = excerpt {
-        builder = builder.excerpt(excerpt);
     }
     if let Ok(record) = builder.build() {
         evidence.push(record);
