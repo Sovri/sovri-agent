@@ -85,12 +85,24 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
     let evidence_store = canonical_evidence_store(&config.evidence_store)?;
     let store = EvidenceStore::open(&evidence_store).map_err(Error::EvidenceStore)?;
     let evidence = store.read_all().map_err(Error::EvidenceStore)?;
-    Ok(vec![
+    let mut lines = vec![
         "Sovri PDF compliance report".to_string(),
         format!("Run: {}", config.run_id),
         format!("Generated date: {}", config.executed_at),
         format!("Evidence records: {}", evidence.len()),
-    ])
+    ];
+    for record in evidence.records() {
+        lines.push(format!("Evidence: {}", record.id()));
+        if let Some(control_id) = record.control_id() {
+            lines.push(format!("  Control: {control_id}"));
+        }
+        lines.push(format!("  Locator: {}", record.locator()));
+        if let Some(signal) = record.signal() {
+            lines.push(format!("  Signal: {signal}"));
+        }
+        lines.push(format!("  Integrity: {}", record.content_hash()));
+    }
+    Ok(lines)
 }
 
 fn write_pdf<W: IoWrite>(sink: &mut W, lines: &[String]) -> io::Result<()> {
