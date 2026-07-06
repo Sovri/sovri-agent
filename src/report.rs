@@ -14,7 +14,7 @@ use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::evidence::{EvidenceLog, EvidenceStore, StoreError};
+use crate::evidence::{Evidence, EvidenceLog, EvidenceStore, StoreError};
 use crate::scanners::ssh;
 use sovri_sdk::is_valid_execution_timestamp;
 
@@ -123,6 +123,14 @@ fn non_conclusive_status(control_id: &str, reason: &str) -> Option<&'static str>
     }
 }
 
+fn non_conclusive_record_status(record: &Evidence) -> Option<(&str, &str, &'static str)> {
+    let (Some(control_id), Some(reason)) = (record.control_id(), record.signal()) else {
+        return None;
+    };
+    let status = non_conclusive_status(control_id, reason)?;
+    Some((control_id, reason, status))
+}
+
 fn control_row(control_id: &str, status: &str) -> String {
     format!("Control row: {control_id}: {status}")
 }
@@ -132,10 +140,7 @@ fn error_control_count(evidence: &EvidenceLog) -> usize {
         .records()
         .iter()
         .filter(|record| {
-            let (Some(control_id), Some(reason)) = (record.control_id(), record.signal()) else {
-                return false;
-            };
-            non_conclusive_status(control_id, reason) == Some("ERROR")
+            non_conclusive_record_status(record).is_some_and(|(_, _, status)| status == "ERROR")
         })
         .count()
 }
@@ -231,11 +236,8 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                     lines.push(format!("Rule {CONSENT_CORPUS_CMP_RULE_ID}: PASS"));
                 }
                 for record in evidence.records() {
-                    let (Some(control_id), Some(reason)) = (record.control_id(), record.signal())
+                    let Some((control_id, reason, status)) = non_conclusive_record_status(record)
                     else {
-                        continue;
-                    };
-                    let Some(status) = non_conclusive_status(control_id, reason) else {
                         continue;
                     };
                     lines.push(control_row(control_id, status));
@@ -302,6 +304,19 @@ fn evidence_lines(evidence: &EvidenceLog) -> Vec<String> {
         ));
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incomplete_results_line_pluralizes_error_count() {
+        assert_eq!(
+            incomplete_results_line(2),
+            "Results incomplete: 2 controls errored"
+        );
+    }
 }
 
 fn write_pdf<W: IoWrite>(sink: &mut W, lines: &[String]) -> io::Result<()> {
