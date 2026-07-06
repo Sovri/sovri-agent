@@ -131,6 +131,44 @@ struct GapReference {
     severity: &'static str,
 }
 
+#[derive(Default)]
+struct ResultCounts {
+    fail: usize,
+    pass: usize,
+    warning: usize,
+    skipped: usize,
+    error: usize,
+}
+
+impl ResultCounts {
+    fn increment(&mut self, status: &str) {
+        match status {
+            "FAIL" => self.fail += 1,
+            "PASS" => self.pass += 1,
+            "WARNING" => self.warning += 1,
+            "SKIPPED" => self.skipped += 1,
+            "ERROR" => self.error += 1,
+            _ => {}
+        }
+    }
+
+    fn compact(&self) -> String {
+        let mut parts = Vec::new();
+        append_non_zero_count(&mut parts, self.fail, "FAIL");
+        append_non_zero_count(&mut parts, self.pass, "PASS");
+        append_non_zero_count(&mut parts, self.warning, "WARNING");
+        append_non_zero_count(&mut parts, self.skipped, "SKIPPED");
+        append_non_zero_count(&mut parts, self.error, "ERROR");
+        parts.join(", ")
+    }
+}
+
+fn append_non_zero_count(parts: &mut Vec<String>, count: usize, status: &str) {
+    if count > 0 {
+        parts.push(format!("{count} {status}"));
+    }
+}
+
 const GAP_REFERENCES: [GapReference; 2] = [
     GapReference {
         control_id: CONSENT_CORPUS_CONTROL_ID,
@@ -274,7 +312,7 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                     format!("Scan target: {CONSENT_CORPUS_SCAN_TARGET}"),
                     format!("Generated date: {}", config.executed_at),
                     format!("Catalog version: {CONSENT_CORPUS_CATALOG_VERSION}"),
-                    format!("Result counts: {CONSENT_CORPUS_RESULT_COUNTS}"),
+                    format!("Result counts: {}", executive_result_counts(&evidence)),
                 ]);
                 if error_count > 0 {
                     lines.push(incomplete_results_line(error_count));
@@ -319,6 +357,49 @@ fn append_score_lines(lines: &mut Vec<String>, evidence: &EvidenceLog, framework
             SCORE_POSTURE_CAVEAT.to_string(),
             SCORE_LEGAL_RISK_CAVEAT.to_string(),
         ]);
+    }
+}
+
+fn executive_result_counts(evidence: &EvidenceLog) -> String {
+    if evidence.is_empty() {
+        return CONSENT_CORPUS_RESULT_COUNTS.to_string();
+    }
+
+    let counts = result_counts(evidence);
+    let compact = counts.compact();
+    if compact.is_empty() {
+        CONSENT_CORPUS_RESULT_COUNTS.to_string()
+    } else {
+        compact
+    }
+}
+
+fn result_counts(evidence: &EvidenceLog) -> ResultCounts {
+    let mut counts = ResultCounts::default();
+    for record in evidence.records() {
+        append_record_result_counts(&mut counts, record);
+    }
+    counts
+}
+
+fn append_record_result_counts(counts: &mut ResultCounts, record: &Evidence) {
+    if let Some((_, _, status)) = non_conclusive_record_status(record) {
+        counts.increment(status);
+        return;
+    }
+
+    match (record.control_id(), record.signal()) {
+        (_, Some(PASS_SIGNAL)) => counts.increment("PASS"),
+        (_, Some(CONSENT_CORPUS_WARNING_REASON)) => {
+            counts.increment("FAIL");
+            counts.increment("WARNING");
+        }
+        (Some(CONSENT_CORPUS_CONTROL_ID), Some(_)) => {
+            counts.increment("FAIL");
+            counts.increment("PASS");
+        }
+        (_, Some(_)) => counts.increment("FAIL"),
+        _ => {}
     }
 }
 
