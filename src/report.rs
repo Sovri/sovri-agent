@@ -127,6 +127,28 @@ fn control_row(control_id: &str, status: &str) -> String {
     format!("Control row: {control_id}: {status}")
 }
 
+fn error_control_count(evidence: &EvidenceLog) -> usize {
+    evidence
+        .records()
+        .iter()
+        .filter(|record| {
+            let (Some(control_id), Some(reason)) = (record.control_id(), record.signal()) else {
+                return false;
+            };
+            non_conclusive_status(control_id, reason) == Some("ERROR")
+        })
+        .count()
+}
+
+fn incomplete_results_line(error_count: usize) -> String {
+    let control = if error_count == 1 {
+        "control"
+    } else {
+        "controls"
+    };
+    format!("Results incomplete: {error_count} {control} errored")
+}
+
 /// The `report` command help text.
 const HELP: &str = "\
 usage: sovri-agent report --run <id> --evidence-store <dir> --executed-at <timestamp>
@@ -174,6 +196,7 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
         (record.signal() == Some(CONSENT_CORPUS_WARNING_REASON))
             .then_some(CONSENT_CORPUS_WARNING_REASON)
     });
+    let error_count = error_control_count(&evidence);
     let mut lines = vec!["Sovri PDF compliance report".to_string()];
     for section in REQUIRED_REPORT_SECTIONS {
         if section == SECTION_CONTROL_MATRIX {
@@ -181,14 +204,19 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
         }
         lines.push(section.to_string());
         match section {
-            SECTION_EXECUTIVE_SUMMARY => lines.extend([
-                format!("Run: {}", config.run_id),
-                format!("Framework covered: {CONSENT_CORPUS_FRAMEWORK_ID}"),
-                format!("Scan target: {CONSENT_CORPUS_SCAN_TARGET}"),
-                format!("Generated date: {}", config.executed_at),
-                format!("Catalog version: {CONSENT_CORPUS_CATALOG_VERSION}"),
-                format!("Result counts: {CONSENT_CORPUS_RESULT_COUNTS}"),
-            ]),
+            SECTION_EXECUTIVE_SUMMARY => {
+                lines.extend([
+                    format!("Run: {}", config.run_id),
+                    format!("Framework covered: {CONSENT_CORPUS_FRAMEWORK_ID}"),
+                    format!("Scan target: {CONSENT_CORPUS_SCAN_TARGET}"),
+                    format!("Generated date: {}", config.executed_at),
+                    format!("Catalog version: {CONSENT_CORPUS_CATALOG_VERSION}"),
+                    format!("Result counts: {CONSENT_CORPUS_RESULT_COUNTS}"),
+                ]);
+                if error_count > 0 {
+                    lines.push(incomplete_results_line(error_count));
+                }
+            }
             SECTION_CONTROL_MATRIX => {
                 // Keep legacy rule lines for R-02; R-04 rows provide one countable row per status.
                 lines.extend([
