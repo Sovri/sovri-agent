@@ -14,7 +14,7 @@ use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::evidence::{EvidenceLog, EvidenceStore, StoreError};
+use crate::evidence::{Evidence, EvidenceLog, EvidenceStore, StoreError};
 use crate::scanners::ssh;
 use sovri_sdk::is_valid_execution_timestamp;
 
@@ -123,8 +123,35 @@ fn non_conclusive_status(control_id: &str, reason: &str) -> Option<&'static str>
     }
 }
 
+fn non_conclusive_record_status(record: &Evidence) -> Option<(&str, &str, &'static str)> {
+    let (Some(control_id), Some(reason)) = (record.control_id(), record.signal()) else {
+        return None;
+    };
+    let status = non_conclusive_status(control_id, reason)?;
+    Some((control_id, reason, status))
+}
+
 fn control_row(control_id: &str, status: &str) -> String {
     format!("Control row: {control_id}: {status}")
+}
+
+fn error_control_count(evidence: &EvidenceLog) -> usize {
+    evidence
+        .records()
+        .iter()
+        .filter(|record| {
+            non_conclusive_record_status(record).is_some_and(|(_, _, status)| status == "ERROR")
+        })
+        .count()
+}
+
+fn incomplete_results_line(error_count: usize) -> String {
+    let control = if error_count == 1 {
+        "control"
+    } else {
+        "controls"
+    };
+    format!("Results incomplete: {error_count} {control} errored")
 }
 
 /// The `report` command help text.
@@ -174,6 +201,7 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
         (record.signal() == Some(CONSENT_CORPUS_WARNING_REASON))
             .then_some(CONSENT_CORPUS_WARNING_REASON)
     });
+    let error_count = error_control_count(&evidence);
     let mut lines = vec!["Sovri PDF compliance report".to_string()];
     for section in REQUIRED_REPORT_SECTIONS {
         if section == SECTION_CONTROL_MATRIX {
@@ -181,14 +209,19 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
         }
         lines.push(section.to_string());
         match section {
-            SECTION_EXECUTIVE_SUMMARY => lines.extend([
-                format!("Run: {}", config.run_id),
-                format!("Framework covered: {CONSENT_CORPUS_FRAMEWORK_ID}"),
-                format!("Scan target: {CONSENT_CORPUS_SCAN_TARGET}"),
-                format!("Generated date: {}", config.executed_at),
-                format!("Catalog version: {CONSENT_CORPUS_CATALOG_VERSION}"),
-                format!("Result counts: {CONSENT_CORPUS_RESULT_COUNTS}"),
-            ]),
+            SECTION_EXECUTIVE_SUMMARY => {
+                lines.extend([
+                    format!("Run: {}", config.run_id),
+                    format!("Framework covered: {CONSENT_CORPUS_FRAMEWORK_ID}"),
+                    format!("Scan target: {CONSENT_CORPUS_SCAN_TARGET}"),
+                    format!("Generated date: {}", config.executed_at),
+                    format!("Catalog version: {CONSENT_CORPUS_CATALOG_VERSION}"),
+                    format!("Result counts: {CONSENT_CORPUS_RESULT_COUNTS}"),
+                ]);
+                if error_count > 0 {
+                    lines.push(incomplete_results_line(error_count));
+                }
+            }
             SECTION_CONTROL_MATRIX => {
                 // Keep legacy rule lines for R-02; R-04 rows provide one countable row per status.
                 lines.extend([
@@ -203,11 +236,8 @@ fn execute(config: &Config) -> Result<Vec<String>, Error> {
                     lines.push(format!("Rule {CONSENT_CORPUS_CMP_RULE_ID}: PASS"));
                 }
                 for record in evidence.records() {
-                    let (Some(control_id), Some(reason)) = (record.control_id(), record.signal())
+                    let Some((control_id, reason, status)) = non_conclusive_record_status(record)
                     else {
-                        continue;
-                    };
-                    let Some(status) = non_conclusive_status(control_id, reason) else {
                         continue;
                     };
                     lines.push(control_row(control_id, status));
@@ -274,6 +304,19 @@ fn evidence_lines(evidence: &EvidenceLog) -> Vec<String> {
         ));
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incomplete_results_line_pluralizes_error_count() {
+        assert_eq!(
+            incomplete_results_line(2),
+            "Results incomplete: 2 controls errored"
+        );
+    }
 }
 
 fn write_pdf<W: IoWrite>(sink: &mut W, lines: &[String]) -> io::Result<()> {
