@@ -96,6 +96,8 @@ const SCORE_LEGAL_RISK_CAVEAT: &str = "Scores do not provide legal-risk ratings.
 const CONSENT_CORPUS_CONTROL_ID: &str = "consent.tracker.prior-consent";
 /// Tracker evidence rule represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_TRACKER_RULE_ID: &str = "consent.detect-trackers-without-consent-evidence";
+/// Tracker signal represented by the canonical MAT-95 consent corpus.
+const CONSENT_CORPUS_TRACKER_SIGNAL: &str = "www.google-analytics.com";
 /// CMP configuration rule represented by the canonical MAT-95 consent corpus.
 const CONSENT_CORPUS_CMP_RULE_ID: &str = "consent.detect-cmp-misconfiguration";
 /// Warning reason represented by the canonical MAT-95 inconclusive-consent corpus.
@@ -394,7 +396,9 @@ fn append_record_result_counts(counts: &mut ResultCounts, record: &Evidence) {
             counts.increment("FAIL");
             counts.increment("WARNING");
         }
-        (Some(CONSENT_CORPUS_CONTROL_ID), Some(_)) => {
+        (Some(CONSENT_CORPUS_CONTROL_ID), Some(CONSENT_CORPUS_TRACKER_SIGNAL)) => {
+            // The canonical consent fixture persists the tracker finding once,
+            // while the report renders it as a tracker FAIL plus a CMP PASS.
             counts.increment("FAIL");
             counts.increment("PASS");
         }
