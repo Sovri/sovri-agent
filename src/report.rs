@@ -140,6 +140,10 @@ const UNCONFIGURED_GAP_REFERENCE: &str = "unconfigured";
 const UNCONFIGURED_GAP_SOURCE_URL: &str = "unconfigured";
 /// Severity marker for controls missing report metadata.
 const UNCONFIGURED_GAP_SEVERITY: &str = "unknown";
+/// Report status label for failing controls.
+const STATUS_FAIL: &str = "FAIL";
+/// Report status label for warning controls.
+const STATUS_WARNING: &str = "WARNING";
 /// Signal marker used by report fixtures for controls that passed.
 const PASS_SIGNAL: &str = "PASS";
 /// Cautious report framing used for rendered findings.
@@ -845,9 +849,9 @@ fn potential_gap_summary(record: &Evidence) -> Option<GapSummary<'_>> {
         .and_then(|reason| non_conclusive_status(control_id, reason))
         .unwrap_or_else(|| {
             if signal == Some(CONSENT_CORPUS_WARNING_REASON) {
-                "WARNING"
+                STATUS_WARNING
             } else {
-                "FAIL"
+                STATUS_FAIL
             }
         });
     Some(GapSummary { control_id, status })
