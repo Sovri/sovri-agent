@@ -295,6 +295,35 @@ pub fn classified_evidence_corpus() -> Corpus {
         )
 }
 
+/// The stable id of the stored, unclassified evidence record R-09 renders with its
+/// integrity digest: `ev-0001`, the built asset `dist/main.js` the consent gap is
+/// anchored at.
+pub const STORED_EVIDENCE_ID: &str = "ev-0001";
+/// The kind of the stored evidence record — a built asset collected as a file.
+pub const STORED_EVIDENCE_KIND: &str = "file";
+/// The location the stored evidence record was collected from.
+pub const STORED_EVIDENCE_LOCATION: &str = "dist/main.js";
+/// The `sha256:…` integrity digest the persisted store recorded for the stored
+/// evidence record, rendered verbatim on its Evidence row.
+pub const STORED_EVIDENCE_INTEGRITY: &str =
+    "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+/// The "stored-record-2026-06-24" corpus: a persisted store holding one unclassified
+/// evidence record — `ev-0001`, the built asset `dist/main.js`, carrying its
+/// `sha256:…` integrity digest. The record kept its value, so unlike the classified
+/// records of `classified_evidence_corpus` its Evidence row is not redacted: the
+/// sheet shows the digest read from the store alongside a `none` redaction status.
+/// Reused by the R-09 sibling scenarios that read integrity from the persisted store.
+#[must_use]
+pub fn stored_evidence_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT).with_evidence_digest(
+        STORED_EVIDENCE_ID,
+        STORED_EVIDENCE_KIND,
+        STORED_EVIDENCE_LOCATION,
+        STORED_EVIDENCE_INTEGRITY,
+    )
+}
+
 /// The "all-pass-2026-06-24" corpus: the consent control's two rules both PASS
 /// under the gdpr-eprivacy framework, so the run records no FAIL or WARNING and the
 /// Gaps sheet has no gap to list. The Summary tallies two PASS results, so a
