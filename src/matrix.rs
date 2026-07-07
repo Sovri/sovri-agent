@@ -23,6 +23,9 @@ const MSO_APPLICATION_PROCESSING_INSTRUCTION: &str = r#"<?mso-application progid
 const SPREADSHEET_NAMESPACE: &str = "urn:schemas-microsoft-com:office:spreadsheet";
 /// Office namespace the workbook's document properties are qualified with.
 const OFFICE_NAMESPACE: &str = "urn:schemas-microsoft-com:office:office";
+/// Excel namespace the `<AutoFilter>` range attribute is qualified with, so a
+/// spreadsheet application reads the range as an R1C1 filter over the sheet.
+const EXCEL_NAMESPACE: &str = "urn:schemas-microsoft-com:office:excel";
 
 /// The Controls worksheet's name — the sheet that lists one row per catalogued
 /// control the corpus evaluated. Named once so the emission loop can single it out.
@@ -413,6 +416,21 @@ fn push_row(out: &mut String, cells: &[&str]) {
     out.push_str("</Row>\n");
 }
 
+/// Appends an `<AutoFilter>` element whose range spans the header row (row 1)
+/// across every documented column and down to the last data row, so a spreadsheet
+/// application shows a filter dropdown on each column when it opens the sheet. The
+/// range is fixed by the sheet's shape — `row_count` rows by `column_count`
+/// columns in R1C1 notation — so it stays byte-identical across runs.
+fn push_autofilter(out: &mut String, row_count: usize, column_count: usize) {
+    out.push_str("<AutoFilter x:Range=\"R1C1:R");
+    out.push_str(&row_count.to_string());
+    out.push('C');
+    out.push_str(&column_count.to_string());
+    out.push_str("\" xmlns:x=\"");
+    out.push_str(EXCEL_NAMESPACE);
+    out.push_str("\"/>\n");
+}
+
 /// The applicability a Results row records for `status`: a `SKIPPED` control was
 /// not applicable to the target, and any other status was applicable to it.
 fn applicability_for(status: Status) -> &'static str {
@@ -427,9 +445,10 @@ fn applicability_for(status: Status) -> &'static str {
 /// `<Row>` per catalogued control carrying a cell for each documented column: the
 /// framework it belongs to, its control id, catalogued title, severity, and
 /// weight, then its applicability (`applicable` until a later rule models an
-/// exclusion) and an empty applicability reason. A corpus with no catalogued
-/// control keeps the self-closing `<Table/>`, so no control absent from the corpus
-/// can appear.
+/// exclusion) and an empty applicability reason. The populated table is followed
+/// by an `<AutoFilter>` spanning its header row so the sheet opens filterable. A
+/// corpus with no catalogued control keeps the self-closing `<Table/>`, so no
+/// control absent from the corpus can appear.
 fn push_controls_table(out: &mut String, controls: &[Control]) {
     if controls.is_empty() {
         out.push_str("<Table/>\n");
@@ -453,6 +472,7 @@ fn push_controls_table(out: &mut String, controls: &[Control]) {
         );
     }
     out.push_str("</Table>\n");
+    push_autofilter(out, controls.len() + 1, CONTROLS_HEADER.len());
 }
 
 /// Appends the Results sheet's `<Table>` — the documented header row, then one
@@ -462,7 +482,8 @@ fn push_controls_table(out: &mut String, controls: &[Control]) {
 /// `SKIPPED`, or `ERROR`), its severity, an empty score impact, the evidence ids
 /// it references, an empty remediation, and its applicability (`not applicable`
 /// for a `SKIPPED` result, else `applicable`). The empty columns are filled by
-/// later rules. An empty corpus keeps the self-closing `<Table/>`, so the sheet
+/// later rules. The populated table is followed by an `<AutoFilter>` spanning its
+/// header row. An empty corpus keeps the self-closing `<Table/>`, so the sheet
 /// stays present but carries no rows.
 fn push_results_table(out: &mut String, results: &[ScopedResult]) {
     if results.is_empty() {
@@ -491,6 +512,7 @@ fn push_results_table(out: &mut String, results: &[ScopedResult]) {
         );
     }
     out.push_str("</Table>\n");
+    push_autofilter(out, results.len() + 1, RESULTS_HEADER.len());
 }
 
 /// Appends the Gaps sheet's `<Table>` — the documented header row, then one
@@ -499,15 +521,16 @@ fn push_results_table(out: &mut String, results: &[ScopedResult]) {
 /// gap id (`framework:control:rule`), the framework, control, and rule ids that
 /// trace it to the corpus, an empty reference and source URL, the severity, the
 /// gap type (the `FAIL`/`WARNING` status label), the evidence ids, and an empty
-/// remediation. The empty columns are filled by later rules. A corpus with no
-/// failing or warning framework-scoped result keeps the self-closing `<Table/>`,
-/// so the sheet stays present but carries no rows.
+/// remediation. The populated table is followed by an `<AutoFilter>` spanning its
+/// header row. A corpus with no failing or warning framework-scoped result keeps
+/// the self-closing `<Table/>`, so the sheet stays present but carries no rows.
 fn push_gaps_table(out: &mut String, results: &[ScopedResult]) {
     let gaps: Vec<(&str, &ControlResult)> = results.iter().filter_map(gap_of).collect();
     if gaps.is_empty() {
         out.push_str("<Table/>\n");
         return;
     }
+    let row_count = gaps.len() + 1;
     out.push_str("<Table>\n");
     push_row(out, &GAPS_HEADER);
     for (framework_id, result) in gaps {
@@ -534,6 +557,7 @@ fn push_gaps_table(out: &mut String, results: &[ScopedResult]) {
         );
     }
     out.push_str("</Table>\n");
+    push_autofilter(out, row_count, GAPS_HEADER.len());
 }
 
 /// Returns the framework a gap was found under and the result that records it,
