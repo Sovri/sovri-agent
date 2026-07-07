@@ -5,6 +5,12 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- PDF compliance reporting (MAT-95): `sovri-agent report --run <id>
+  --evidence-store <dir> --executed-at <timestamp>` reads a persisted evidence
+  store and emits deterministic PDF bytes using a minimal built-in writer, with
+  no third-party runtime dependency.
+
 ## [0.5.0] - 2026-07-06
 
 ### Added
