@@ -145,17 +145,45 @@ struct Control {
     reference: String,
 }
 
+/// The confidentiality classification a persisted evidence record carries.
+///
+/// The evidence store classified each record when it collected it and dropped the
+/// raw value of a [`Classification::Secret`] or [`Classification::Sensitive`]
+/// record, so that value never reaches the export. The classification decides the
+/// record's redaction status on the Evidence sheet: a classified record renders
+/// `redacted`, an unclassified record `none`.
+#[derive(Clone, Copy)]
+pub enum Classification {
+    /// A secret value — a key, token, or credential — the store dropped, so the
+    /// record's Evidence row is reduced to metadata and marked `redacted`.
+    Secret,
+    /// A sensitive value — personal or otherwise restricted data — the store
+    /// dropped, so the record's Evidence row is reduced to metadata and marked
+    /// `redacted`.
+    Sensitive,
+    /// An unclassified value the store kept in full, so the record's Evidence row
+    /// is not redacted and its redaction status renders `none`.
+    Unclassified,
+}
+
 /// A collected evidence record the corpus holds, carrying the stable id it is
-/// filed under and the location it was collected from.
+/// filed under, its metadata, and the classification that decides its redaction
+/// status.
 ///
 /// The Evidence sheet lays out one row per record: its evidence id, so a Results
-/// or Gaps row's evidence reference traces back to the record here, and the
-/// location the evidence was collected at — a built asset, a config file, or
-/// another artifact a finding was anchored to. The record is read from the
+/// or Gaps row's evidence reference traces back to the record here; its kind and
+/// the location it was collected at — a built asset, a config file, or another
+/// artifact a finding was anchored to; its `sha256:…` integrity digest when the
+/// store recorded one; and the redaction status its classification yields. A
+/// classified record holds only this metadata — the store dropped its raw value on
+/// disk, so no raw value is kept here to reach a cell. The record is read from the
 /// persisted store, never recollected here.
 struct Evidence {
     id: String,
+    kind: String,
     location: String,
+    integrity: String,
+    classification: Classification,
 }
 
 impl Corpus {
@@ -249,10 +277,13 @@ impl Corpus {
     /// Adds a collected evidence record the corpus holds, rendered as one row on
     /// the Evidence sheet.
     ///
-    /// The Evidence sheet lays out each record's stable evidence id — the id a
+    /// The Evidence sheet lays out the record's stable evidence id — the id a
     /// Results or Gaps row references to trace a finding back to its evidence —
     /// and the location the evidence was collected from, as read from the
-    /// persisted store and never recollected here. The builder is chainable.
+    /// persisted store and never recollected here. The record is unclassified: it
+    /// carries no kind or integrity digest, and its redaction status renders
+    /// `none`. Use [`Corpus::with_classified_evidence`] for a record the store
+    /// classified and reduced to metadata. The builder is chainable.
     #[must_use]
     pub fn with_evidence(
         mut self,
@@ -261,7 +292,38 @@ impl Corpus {
     ) -> Self {
         self.evidence.push(Evidence {
             id: evidence_id.into(),
+            kind: String::new(),
             location: location.into(),
+            integrity: String::new(),
+            classification: Classification::Unclassified,
+        });
+        self
+    }
+
+    /// Adds a classified evidence record the store reduced to metadata, rendered
+    /// as one row on the Evidence sheet.
+    ///
+    /// A record the store classified as [`Classification::Secret`] or
+    /// [`Classification::Sensitive`] had its raw value dropped on disk, so the
+    /// corpus holds only its metadata — the stable evidence id, the `kind`, the
+    /// `location` it was collected from, and its `sha256:…` `integrity` digest —
+    /// and its Evidence row renders a `redacted` redaction status. No raw value is
+    /// taken or held here, so none can reach a cell. The builder is chainable.
+    #[must_use]
+    pub fn with_classified_evidence(
+        mut self,
+        evidence_id: impl Into<String>,
+        kind: impl Into<String>,
+        location: impl Into<String>,
+        classification: Classification,
+        integrity: impl Into<String>,
+    ) -> Self {
+        self.evidence.push(Evidence {
+            id: evidence_id.into(),
+            kind: kind.into(),
+            location: location.into(),
+            integrity: integrity.into(),
+            classification,
         });
         self
     }
@@ -454,6 +516,16 @@ fn applicability_for(status: Status) -> &'static str {
     }
 }
 
+/// The redaction status an evidence record of `classification` renders on its
+/// Evidence row: a `Secret` or `Sensitive` record was reduced to metadata, so its
+/// row is `redacted`; an unclassified record kept its value, so its row is `none`.
+fn redaction_status(classification: Classification) -> &'static str {
+    match classification {
+        Classification::Secret | Classification::Sensitive => "redacted",
+        Classification::Unclassified => "none",
+    }
+}
+
 /// Appends the Controls sheet's `<Table>` — the documented header row, then one
 /// `<Row>` per catalogued control carrying a cell for each documented column: the
 /// framework it belongs to, its control id, catalogued title, severity, and
@@ -616,11 +688,12 @@ fn framework_source_url<'a>(frameworks: &'a [Framework], framework_id: &str) -> 
 
 /// Appends the Evidence sheet's `<Table>` — the documented header row, then one
 /// `<Row>` per collected evidence record carrying a cell for each documented
-/// column: the stable evidence id it is filed under, an empty type, the location
-/// it was collected from, and an empty collector, integrity, and redaction status.
-/// The empty columns are filled by later rules. A corpus with no evidence record
-/// keeps the self-closing `<Table/>`, so the sheet stays present but carries no
-/// rows.
+/// column: the stable evidence id it is filed under, its kind, the location it was
+/// collected from, an empty collector, its `sha256:…` integrity digest, and the
+/// redaction status its classification yields. A classified record contributes
+/// only this metadata — the store dropped its raw value, so no raw value reaches a
+/// cell. A corpus with no evidence record keeps the self-closing `<Table/>`, so the
+/// sheet stays present but carries no rows.
 fn push_evidence_table(out: &mut String, evidence: &[Evidence]) {
     if evidence.is_empty() {
         out.push_str("<Table/>\n");
@@ -629,7 +702,17 @@ fn push_evidence_table(out: &mut String, evidence: &[Evidence]) {
     out.push_str("<Table>\n");
     push_row(out, &EVIDENCE_HEADER);
     for record in evidence {
-        push_row(out, &[&record.id, "", &record.location, "", "", ""]);
+        push_row(
+            out,
+            &[
+                &record.id,
+                &record.kind,
+                &record.location,
+                "",
+                &record.integrity,
+                redaction_status(record.classification),
+            ],
+        );
     }
     out.push_str("</Table>\n");
 }

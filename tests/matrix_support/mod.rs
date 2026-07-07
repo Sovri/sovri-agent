@@ -78,7 +78,7 @@ pub fn row_containing<'a>(rows: &'a [Vec<String>], value: &str) -> Option<&'a Ve
     rows.iter().find(|cells| cells.iter().any(|c| c == value))
 }
 
-use sovri_agent::matrix::Corpus;
+use sovri_agent::matrix::{Classification, Corpus};
 use sovri_sdk::{ControlResult, Status};
 
 /// The fixed executed-at the consent corpus records, reused as the generated date.
@@ -267,5 +267,30 @@ pub fn gap_references_corpus() -> Corpus {
         .with_control_result(
             SSH_FRAMEWORK,
             control_result(SSH_CONTROL, SSH_RULE, "major", Status::Fail),
+        )
+}
+
+/// The "classified-evidence-2026-06-24" corpus: a persisted store holding two
+/// classified evidence records the Evidence sheet must reduce to metadata — the
+/// Secret `ev-0007`, collected from `.env.example:3`, and the Sensitive `ev-0008`,
+/// collected from `config/users.yaml:12` — each carrying its `sha256:…` integrity
+/// digest. The store already dropped each record's raw value, so the corpus holds
+/// only the metadata a redacted Evidence row shows; no raw value is present to leak.
+#[must_use]
+pub fn classified_evidence_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_classified_evidence(
+            "ev-0007",
+            "config",
+            ".env.example:3",
+            Classification::Secret,
+            "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        )
+        .with_classified_evidence(
+            "ev-0008",
+            "config",
+            "config/users.yaml:12",
+            Classification::Sensitive,
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         )
 }
