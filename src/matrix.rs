@@ -77,6 +77,10 @@ const NO_EVIDENCE_PLACEHOLDER: &str = "No evidence records were collected";
 /// result to score, so an empty Summary section reads as "no scores for this run".
 const NO_SCORES_PLACEHOLDER: &str = "Scores are not available for this run";
 
+/// Explanatory row the Summary sheet shows when the corpus holds no control result
+/// at all, so the reason there is nothing to score is that nothing was evaluated.
+const NO_CONTROLS_PLACEHOLDER: &str = "No controls were evaluated";
+
 /// The statuses the Summary sheet tallies, in a fixed order so the count rows
 /// stay deterministic across runs.
 const SUMMARY_STATUS_ORDER: [Status; 5] = [
@@ -794,7 +798,12 @@ fn push_frameworks_table(out: &mut String, frameworks: &[Framework]) {
 fn push_summary_table(out: &mut String, results: &[ScopedResult]) {
     let environment = environment_score(results);
     if environment.frameworks().is_empty() {
-        push_empty_table(out, &SUMMARY_HEADER, Some(NO_SCORES_PLACEHOLDER));
+        let placeholder = if results.is_empty() {
+            NO_CONTROLS_PLACEHOLDER
+        } else {
+            NO_SCORES_PLACEHOLDER
+        };
+        push_empty_table(out, &SUMMARY_HEADER, Some(placeholder));
         return;
     }
     out.push_str("<Table>\n");
