@@ -309,7 +309,12 @@ pub fn export(corpus: &Corpus) -> String {
         } else if name == RESULTS_WORKSHEET {
             push_results_table(&mut worksheets, &corpus.results);
         } else if name == GAPS_WORKSHEET {
-            push_gaps_table(&mut worksheets, &corpus.results);
+            push_gaps_table(
+                &mut worksheets,
+                &corpus.results,
+                &corpus.controls,
+                &corpus.frameworks,
+            );
         } else if name == EVIDENCE_WORKSHEET {
             push_evidence_table(&mut worksheets, &corpus.evidence);
         } else if name == FRAMEWORKS_WORKSHEET {
@@ -527,12 +532,18 @@ fn push_results_table(out: &mut String, results: &[ScopedResult]) {
 /// `<Row>` per compliance gap (a framework-scoped result that failed or warned and
 /// so requires review) carrying a cell for each documented column: the composed
 /// gap id (`framework:control:rule`), the framework, control, and rule ids that
-/// trace it to the corpus, an empty reference and source URL, the severity, the
-/// gap type (the `FAIL`/`WARNING` status label), the evidence ids, and an empty
-/// remediation. The populated table is followed by an `<AutoFilter>` spanning its
-/// header row. A corpus with no failing or warning framework-scoped result keeps
-/// the self-closing `<Table/>`, so the sheet stays present but carries no rows.
-fn push_gaps_table(out: &mut String, results: &[ScopedResult]) {
+/// trace it to the corpus, the catalogued control's own framework reference and
+/// its framework's source URL, the severity, the gap type (the `FAIL`/`WARNING`
+/// status label), the evidence ids, and an empty remediation. The populated table
+/// is followed by an `<AutoFilter>` spanning its header row. A corpus with no
+/// failing or warning framework-scoped result keeps the self-closing `<Table/>`,
+/// so the sheet stays present but carries no rows.
+fn push_gaps_table(
+    out: &mut String,
+    results: &[ScopedResult],
+    controls: &[Control],
+    frameworks: &[Framework],
+) {
     let gaps: Vec<(&str, &ControlResult)> = results.iter().filter_map(gap_of).collect();
     if gaps.is_empty() {
         out.push_str("<Table/>\n");
@@ -547,6 +558,8 @@ fn push_gaps_table(out: &mut String, results: &[ScopedResult]) {
             result.control_id(),
             result.rule_id()
         );
+        let reference = gap_reference(controls, framework_id, result.control_id());
+        let source_url = framework_source_url(frameworks, framework_id);
         let evidence_ids = result.evidence_refs().join(", ");
         push_row(
             out,
@@ -555,8 +568,8 @@ fn push_gaps_table(out: &mut String, results: &[ScopedResult]) {
                 framework_id,
                 result.control_id(),
                 result.rule_id(),
-                "",
-                "",
+                reference,
+                source_url,
                 result.severity(),
                 result.status().label(),
                 &evidence_ids,
@@ -576,6 +589,29 @@ fn gap_of(scoped: &ScopedResult) -> Option<(&str, &ControlResult)> {
     let framework_id = scoped.framework_id.as_deref()?;
     matches!(scoped.result.status(), Status::Fail | Status::Warning)
         .then_some((framework_id, &scoped.result))
+}
+
+/// The framework reference a gap on `control_id` under `framework_id` renders — the
+/// catalogued control's own non-CWE reference, looked up by framework and control
+/// id so each gap shows its own reference rather than a shared constant. A gap whose
+/// control the corpus did not catalogue renders an empty reference, never a CWE
+/// fallback.
+fn gap_reference<'a>(controls: &'a [Control], framework_id: &str, control_id: &str) -> &'a str {
+    controls
+        .iter()
+        .find(|control| control.framework_id == framework_id && control.id == control_id)
+        .map_or("", |control| control.reference.as_str())
+}
+
+/// The source URL a gap under `framework_id` renders — the framework's own source
+/// URL, looked up by id so the Gaps row reuses the framework the corpus already
+/// holds instead of duplicating the URL. A gap whose framework the corpus does not
+/// list renders an empty source URL.
+fn framework_source_url<'a>(frameworks: &'a [Framework], framework_id: &str) -> &'a str {
+    frameworks
+        .iter()
+        .find(|framework| framework.id == framework_id)
+        .map_or("", |framework| framework.source_url.as_str())
 }
 
 /// Appends the Evidence sheet's `<Table>` — the documented header row, then one
