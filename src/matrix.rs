@@ -44,6 +44,10 @@ const FRAMEWORK_SCORE_LABEL: &str = "Framework score";
 /// Label naming the environment-score scope on the Summary sheet.
 const ENVIRONMENT_SCORE_LABEL: &str = "Environment score";
 
+/// Marker row text flagging the scores as incomplete because an errored control
+/// was excluded from them. Emitted when any framework saw an `ERROR`.
+const SCORES_INCOMPLETE_MARKER: &str = "Scores are incomplete: an ERROR result was excluded";
+
 /// The statuses the Summary sheet tallies, in a fixed order so the count rows
 /// stay deterministic across runs.
 const SUMMARY_STATUS_ORDER: [Status; 5] = [
@@ -297,6 +301,9 @@ fn push_summary_table(out: &mut String, results: &[ScopedResult]) {
         push_framework_score_row(out, framework);
     }
     push_environment_score_row(out, &environment);
+    if environment.incomplete() {
+        push_scores_incomplete_row(out);
+    }
     out.push_str("</Table>\n");
 }
 
@@ -401,6 +408,14 @@ fn push_environment_score_row(out: &mut String, environment: &EnvironmentScore) 
     out.push_str("<Row>");
     push_string_cell(out, ENVIRONMENT_SCORE_LABEL);
     push_string_cell(out, &environment.ratio().to_string());
+    out.push_str("</Row>\n");
+}
+
+/// Appends the marker `<Row>` that flags the scores as incomplete because an
+/// errored control was observed and excluded from them.
+fn push_scores_incomplete_row(out: &mut String) {
+    out.push_str("<Row>");
+    push_string_cell(out, SCORES_INCOMPLETE_MARKER);
     out.push_str("</Row>\n");
 }
 
