@@ -560,6 +560,21 @@ fn push_controls_table(out: &mut String, controls: &[Control]) {
     push_autofilter(out, controls.len() + 1, CONTROLS_HEADER.len());
 }
 
+/// The corpus results ordered for reporting — by control id, then rule id — so a
+/// results-derived sheet lays its data rows out in a stable, total order that does
+/// not depend on the order the results were supplied to the [`Corpus`]. The order
+/// is taken over references, so the corpus is never mutated.
+fn results_in_reporting_order(results: &[ScopedResult]) -> Vec<&ScopedResult> {
+    let mut ordered: Vec<&ScopedResult> = results.iter().collect();
+    ordered.sort_by(|a, b| {
+        a.result
+            .control_id()
+            .cmp(b.result.control_id())
+            .then_with(|| a.result.rule_id().cmp(b.result.rule_id()))
+    });
+    ordered
+}
+
 /// Appends the Results sheet's `<Table>` — the documented header row, then one
 /// `<Row>` per control result carrying a cell for each documented column: the
 /// framework it was scoped under (empty when unscoped), the control and rule ids
@@ -577,7 +592,7 @@ fn push_results_table(out: &mut String, results: &[ScopedResult]) {
     }
     out.push_str("<Table>\n");
     push_row(out, &RESULTS_HEADER);
-    for scoped in results {
+    for scoped in results_in_reporting_order(results) {
         let status = scoped.result.status();
         let framework_id = scoped.framework_id.as_deref().unwrap_or("");
         let evidence_ids = scoped.result.evidence_refs().join(", ");
@@ -616,7 +631,10 @@ fn push_gaps_table(
     controls: &[Control],
     frameworks: &[Framework],
 ) {
-    let gaps: Vec<(&str, &ControlResult)> = results.iter().filter_map(gap_of).collect();
+    let gaps: Vec<(&str, &ControlResult)> = results_in_reporting_order(results)
+        .into_iter()
+        .filter_map(gap_of)
+        .collect();
     if gaps.is_empty() {
         out.push_str("<Table/>\n");
         return;
