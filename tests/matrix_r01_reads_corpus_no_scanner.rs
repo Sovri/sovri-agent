@@ -56,10 +56,15 @@ fn export_reads_the_corpus_and_runs_no_scanner() {
     );
 
     // And the framework rendered is the one the corpus holds, nothing discovered.
+    // Count the data rows carrying the framework id; the documented header row
+    // names the columns but is not a framework the corpus holds.
     let frameworks = matrix_support::rows(matrix_support::worksheet(&workbook, "Frameworks"));
+    let framework_rows = frameworks
+        .iter()
+        .filter(|cells| cells.iter().any(|cell| cell == matrix_support::FRAMEWORK))
+        .count();
     assert_eq!(
-        frameworks.len(),
-        1,
+        framework_rows, 1,
         "the Frameworks sheet carries only the corpus's framework (rows: {frameworks:?})"
     );
     assert!(

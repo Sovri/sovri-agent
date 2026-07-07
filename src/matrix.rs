@@ -345,56 +345,163 @@ fn minimal_result(executed_at: &str, status: Status) -> ControlResult {
         .expect("the bare Results-sheet result validates")
 }
 
-/// Appends the Controls sheet's `<Table>` — one `<Row>` per catalogued control,
-/// each carrying the framework it belongs to, its control id, its catalogued
-/// title, and its severity and weight. A corpus with no catalogued control keeps
-/// the self-closing `<Table/>`, so no control absent from the corpus can appear.
+/// The Controls sheet's documented column headers, in their fixed order. The
+/// header row names these columns and each data row carries one cell per column.
+const CONTROLS_HEADER: [&str; 7] = [
+    "Framework",
+    "Control",
+    "Title",
+    "Severity",
+    "Weight",
+    "Applicability",
+    "Applicability reason",
+];
+
+/// The Results sheet's documented column headers, in their fixed order.
+const RESULTS_HEADER: [&str; 9] = [
+    "Framework",
+    "Control",
+    "Rule",
+    "Status",
+    "Severity",
+    "Score impact",
+    "Evidence ids",
+    "Remediation",
+    "Applicability",
+];
+
+/// The Gaps sheet's documented column headers, in their fixed order.
+const GAPS_HEADER: [&str; 10] = [
+    "Gap id",
+    "Framework",
+    "Control",
+    "Rule",
+    "Reference",
+    "Source URL",
+    "Severity",
+    "Gap type",
+    "Evidence ids",
+    "Remediation",
+];
+
+/// The Evidence sheet's documented column headers, in their fixed order.
+const EVIDENCE_HEADER: [&str; 6] = [
+    "Evidence id",
+    "Type",
+    "Location",
+    "Collector",
+    "Integrity",
+    "Redaction status",
+];
+
+/// The Frameworks sheet's documented column headers, in their fixed order.
+const FRAMEWORKS_HEADER: [&str; 3] = ["Framework", "Version", "Source URL"];
+
+/// The Summary sheet's documented column headers, in their fixed order. They name
+/// the per-framework status tally; the MAT-87 score-scope rows sit below it as
+/// labelled rows, not under this tabular header.
+const SUMMARY_HEADER: [&str; 3] = ["Framework", "Status", "Count"];
+
+/// Appends one `<Row>` carrying `cells` as XML-escaped string data — one `<Cell>`
+/// per value, in order — so a sheet's header row and its data rows stay aligned to
+/// the same documented columns.
+fn push_row(out: &mut String, cells: &[&str]) {
+    out.push_str("<Row>");
+    for cell in cells {
+        push_string_cell(out, cell);
+    }
+    out.push_str("</Row>\n");
+}
+
+/// The applicability a Results row records for `status`: a `SKIPPED` control was
+/// not applicable to the target, and any other status was applicable to it.
+fn applicability_for(status: Status) -> &'static str {
+    if status == Status::Skipped {
+        "not applicable"
+    } else {
+        "applicable"
+    }
+}
+
+/// Appends the Controls sheet's `<Table>` — the documented header row, then one
+/// `<Row>` per catalogued control carrying a cell for each documented column: the
+/// framework it belongs to, its control id, catalogued title, severity, and
+/// weight, then its applicability (`applicable` until a later rule models an
+/// exclusion) and an empty applicability reason. A corpus with no catalogued
+/// control keeps the self-closing `<Table/>`, so no control absent from the corpus
+/// can appear.
 fn push_controls_table(out: &mut String, controls: &[Control]) {
     if controls.is_empty() {
         out.push_str("<Table/>\n");
         return;
     }
     out.push_str("<Table>\n");
+    push_row(out, &CONTROLS_HEADER);
     for control in controls {
-        out.push_str("<Row>");
-        push_string_cell(out, &control.framework_id);
-        push_string_cell(out, &control.id);
-        push_string_cell(out, &control.title);
-        push_string_cell(out, &control.severity);
-        push_string_cell(out, &control.weight.to_string());
-        out.push_str("</Row>\n");
+        let weight = control.weight.to_string();
+        push_row(
+            out,
+            &[
+                &control.framework_id,
+                &control.id,
+                &control.title,
+                &control.severity,
+                &weight,
+                "applicable",
+                "",
+            ],
+        );
     }
     out.push_str("</Table>\n");
 }
 
-/// Appends the Results sheet's `<Table>` — one `<Row>` per control result,
-/// carrying the ids that trace it to the corpus (control id, rule id), the
-/// result's status label (`PASS`, `FAIL`, `WARNING`, `SKIPPED`, or `ERROR`), and
-/// the evidence ids it references. An empty corpus keeps the self-closing
-/// `<Table/>`, so the sheet stays present but carries no rows.
+/// Appends the Results sheet's `<Table>` — the documented header row, then one
+/// `<Row>` per control result carrying a cell for each documented column: the
+/// framework it was scoped under (empty when unscoped), the control and rule ids
+/// that trace it to the corpus, its status label (`PASS`, `FAIL`, `WARNING`,
+/// `SKIPPED`, or `ERROR`), its severity, an empty score impact, the evidence ids
+/// it references, an empty remediation, and its applicability (`not applicable`
+/// for a `SKIPPED` result, else `applicable`). The empty columns are filled by
+/// later rules. An empty corpus keeps the self-closing `<Table/>`, so the sheet
+/// stays present but carries no rows.
 fn push_results_table(out: &mut String, results: &[ScopedResult]) {
     if results.is_empty() {
         out.push_str("<Table/>\n");
         return;
     }
     out.push_str("<Table>\n");
+    push_row(out, &RESULTS_HEADER);
     for scoped in results {
-        out.push_str("<Row>");
-        push_string_cell(out, scoped.result.control_id());
-        push_string_cell(out, scoped.result.rule_id());
-        push_string_cell(out, scoped.result.status().label());
-        push_string_cell(out, &scoped.result.evidence_refs().join(", "));
-        out.push_str("</Row>\n");
+        let status = scoped.result.status();
+        let framework_id = scoped.framework_id.as_deref().unwrap_or("");
+        let evidence_ids = scoped.result.evidence_refs().join(", ");
+        push_row(
+            out,
+            &[
+                framework_id,
+                scoped.result.control_id(),
+                scoped.result.rule_id(),
+                status.label(),
+                scoped.result.severity(),
+                "",
+                &evidence_ids,
+                "",
+                applicability_for(status),
+            ],
+        );
     }
     out.push_str("</Table>\n");
 }
 
-/// Appends the Gaps sheet's `<Table>` — one `<Row>` per compliance gap, a
-/// framework-scoped result that failed or warned and so requires review. Each row
-/// carries the composed gap id (`framework:control:rule`) and the framework,
-/// control, rule, and evidence ids that trace the gap back to the corpus. A
-/// corpus with no failing or warning framework-scoped result keeps the
-/// self-closing `<Table/>`, so the sheet stays present but carries no rows.
+/// Appends the Gaps sheet's `<Table>` — the documented header row, then one
+/// `<Row>` per compliance gap (a framework-scoped result that failed or warned and
+/// so requires review) carrying a cell for each documented column: the composed
+/// gap id (`framework:control:rule`), the framework, control, and rule ids that
+/// trace it to the corpus, an empty reference and source URL, the severity, the
+/// gap type (the `FAIL`/`WARNING` status label), the evidence ids, and an empty
+/// remediation. The empty columns are filled by later rules. A corpus with no
+/// failing or warning framework-scoped result keeps the self-closing `<Table/>`,
+/// so the sheet stays present but carries no rows.
 fn push_gaps_table(out: &mut String, results: &[ScopedResult]) {
     let gaps: Vec<(&str, &ControlResult)> = results.iter().filter_map(gap_of).collect();
     if gaps.is_empty() {
@@ -402,19 +509,29 @@ fn push_gaps_table(out: &mut String, results: &[ScopedResult]) {
         return;
     }
     out.push_str("<Table>\n");
+    push_row(out, &GAPS_HEADER);
     for (framework_id, result) in gaps {
         let gap_id = format!(
             "{framework_id}:{}:{}",
             result.control_id(),
             result.rule_id()
         );
-        out.push_str("<Row>");
-        push_string_cell(out, &gap_id);
-        push_string_cell(out, framework_id);
-        push_string_cell(out, result.control_id());
-        push_string_cell(out, result.rule_id());
-        push_string_cell(out, &result.evidence_refs().join(", "));
-        out.push_str("</Row>\n");
+        let evidence_ids = result.evidence_refs().join(", ");
+        push_row(
+            out,
+            &[
+                &gap_id,
+                framework_id,
+                result.control_id(),
+                result.rule_id(),
+                "",
+                "",
+                result.severity(),
+                result.status().label(),
+                &evidence_ids,
+                "",
+            ],
+        );
     }
     out.push_str("</Table>\n");
 }
@@ -429,48 +546,51 @@ fn gap_of(scoped: &ScopedResult) -> Option<(&str, &ControlResult)> {
         .then_some((framework_id, &scoped.result))
 }
 
-/// Appends the Evidence sheet's `<Table>` — one `<Row>` per collected evidence
-/// record, carrying the stable evidence id it is filed under and the location it
-/// was collected from. A corpus with no evidence record keeps the self-closing
-/// `<Table/>`, so the sheet stays present but carries no rows.
+/// Appends the Evidence sheet's `<Table>` — the documented header row, then one
+/// `<Row>` per collected evidence record carrying a cell for each documented
+/// column: the stable evidence id it is filed under, an empty type, the location
+/// it was collected from, and an empty collector, integrity, and redaction status.
+/// The empty columns are filled by later rules. A corpus with no evidence record
+/// keeps the self-closing `<Table/>`, so the sheet stays present but carries no
+/// rows.
 fn push_evidence_table(out: &mut String, evidence: &[Evidence]) {
     if evidence.is_empty() {
         out.push_str("<Table/>\n");
         return;
     }
     out.push_str("<Table>\n");
+    push_row(out, &EVIDENCE_HEADER);
     for record in evidence {
-        out.push_str("<Row>");
-        push_string_cell(out, &record.id);
-        push_string_cell(out, &record.location);
-        out.push_str("</Row>\n");
+        push_row(out, &[&record.id, "", &record.location, "", "", ""]);
     }
     out.push_str("</Table>\n");
 }
 
-/// Appends the Frameworks sheet's `<Table>` — one `<Row>` per framework, with
-/// cells for its id, catalog version, and source URL. An empty corpus keeps the
-/// self-closing `<Table/>`.
+/// Appends the Frameworks sheet's `<Table>` — the documented header row, then one
+/// `<Row>` per framework with cells for its id, catalog version, and source URL.
+/// An empty corpus keeps the self-closing `<Table/>`.
 fn push_frameworks_table(out: &mut String, frameworks: &[Framework]) {
     if frameworks.is_empty() {
         out.push_str("<Table/>\n");
         return;
     }
     out.push_str("<Table>\n");
+    push_row(out, &FRAMEWORKS_HEADER);
     for framework in frameworks {
-        out.push_str("<Row>");
-        push_string_cell(out, &framework.id);
-        push_string_cell(out, &framework.version);
-        push_string_cell(out, &framework.source_url);
-        out.push_str("</Row>\n");
+        push_row(
+            out,
+            &[&framework.id, &framework.version, &framework.source_url],
+        );
     }
     out.push_str("</Table>\n");
 }
 
-/// Appends the Summary sheet's `<Table>` — the per-framework status tally and the
-/// MAT-87 score scopes (control, framework, environment) folded from the corpus's
-/// framework-scoped results. A corpus with no framework-scoped result keeps the
-/// self-closing `<Table/>`, so the sheet stays present but carries no rows.
+/// Appends the Summary sheet's `<Table>` — the documented header row naming the
+/// per-framework status tally, then that tally and the MAT-87 score scopes
+/// (control, framework, environment) folded from the corpus's framework-scoped
+/// results. The score-scope rows are labelled rows below the tally, not a second
+/// tabular header. A corpus with no framework-scoped result keeps the self-closing
+/// `<Table/>`, so the sheet stays present but carries no rows.
 fn push_summary_table(out: &mut String, results: &[ScopedResult]) {
     let environment = environment_score(results);
     if environment.frameworks().is_empty() {
@@ -478,6 +598,7 @@ fn push_summary_table(out: &mut String, results: &[ScopedResult]) {
         return;
     }
     out.push_str("<Table>\n");
+    push_row(out, &SUMMARY_HEADER);
     for framework in environment.frameworks() {
         push_status_count_rows(out, framework);
     }
