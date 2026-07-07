@@ -316,9 +316,10 @@ fn push_controls_table(out: &mut String, controls: &[Control]) {
     out.push_str("</Table>\n");
 }
 
-/// Appends the Results sheet's `<Table>` — one `<Row>` per control result, each
-/// a single string cell carrying the result's status label (`PASS`, `FAIL`,
-/// `WARNING`, `SKIPPED`, or `ERROR`). An empty corpus keeps the self-closing
+/// Appends the Results sheet's `<Table>` — one `<Row>` per control result,
+/// carrying the ids that trace it to the corpus (control id, rule id), the
+/// result's status label (`PASS`, `FAIL`, `WARNING`, `SKIPPED`, or `ERROR`), and
+/// the evidence ids it references. An empty corpus keeps the self-closing
 /// `<Table/>`, so the sheet stays present but carries no rows.
 fn push_results_table(out: &mut String, results: &[ScopedResult]) {
     if results.is_empty() {
@@ -328,7 +329,10 @@ fn push_results_table(out: &mut String, results: &[ScopedResult]) {
     out.push_str("<Table>\n");
     for scoped in results {
         out.push_str("<Row>");
+        push_string_cell(out, scoped.result.control_id());
+        push_string_cell(out, scoped.result.rule_id());
         push_string_cell(out, scoped.result.status().label());
+        push_string_cell(out, &scoped.result.evidence_refs().join(", "));
         out.push_str("</Row>\n");
     }
     out.push_str("</Table>\n");
