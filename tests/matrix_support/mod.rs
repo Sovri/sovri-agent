@@ -132,3 +132,15 @@ pub fn consent_corpus() -> Corpus {
         .with_control_result(FRAMEWORK, consent_result(CMP_RULE, Status::Pass))
         .with_evidence("ev-0001", "dist/main.js")
 }
+
+/// The consent corpus with its two control results supplied in the opposite
+/// order, for asserting the export's column layout is independent of input order.
+#[must_use]
+pub fn consent_corpus_results_shuffled() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_control(FRAMEWORK, CONTROL, CONTROL_TITLE, "major", 8)
+        .with_control_result(FRAMEWORK, consent_result(CMP_RULE, Status::Pass))
+        .with_control_result(FRAMEWORK, consent_result(TRACKER_RULE, Status::Fail))
+        .with_evidence("ev-0001", "dist/main.js")
+}
