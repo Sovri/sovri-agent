@@ -73,6 +73,10 @@ const NO_GAPS_PLACEHOLDER: &str = "No potential gaps observed";
 /// record, so an empty Evidence section reads as "none collected" rather than blank.
 const NO_EVIDENCE_PLACEHOLDER: &str = "No evidence records were collected";
 
+/// Integrity cell text for a record the store held without a digest, so the sheet
+/// reads as a collection limitation rather than a blank cell.
+const INTEGRITY_UNAVAILABLE: &str = "integrity metadata not available";
+
 /// Explanatory row the Summary sheet shows when the corpus has no framework-scoped
 /// result to score, so an empty Summary section reads as "no scores for this run".
 const NO_SCORES_PLACEHOLDER: &str = "Scores are not available for this run";
@@ -781,6 +785,11 @@ fn push_evidence_table(out: &mut String, evidence: &[Evidence]) {
     out.push_str("<Table>\n");
     push_row(out, &EVIDENCE_HEADER);
     for record in evidence {
+        let integrity = if record.integrity.is_empty() {
+            INTEGRITY_UNAVAILABLE
+        } else {
+            record.integrity.as_str()
+        };
         push_row(
             out,
             &[
@@ -788,7 +797,7 @@ fn push_evidence_table(out: &mut String, evidence: &[Evidence]) {
                 &record.kind,
                 &record.location,
                 "",
-                &record.integrity,
+                integrity,
                 redaction_status(record.classification),
             ],
         );
