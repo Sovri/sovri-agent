@@ -24,6 +24,10 @@ const SPREADSHEET_NAMESPACE: &str = "urn:schemas-microsoft-com:office:spreadshee
 /// Office namespace the workbook's document properties are qualified with.
 const OFFICE_NAMESPACE: &str = "urn:schemas-microsoft-com:office:office";
 
+/// The Controls worksheet's name — the sheet that lists one row per catalogued
+/// control the corpus evaluated. Named once so the emission loop can single it out.
+const CONTROLS_WORKSHEET: &str = "Controls";
+
 /// The Results worksheet's name — the sheet that carries one row per control
 /// result. Named once so the emission loop can single it out from its siblings.
 const RESULTS_WORKSHEET: &str = "Results";
@@ -197,7 +201,9 @@ pub fn export(corpus: &Corpus) -> String {
         worksheets.push_str("<Worksheet ss:Name=\"");
         worksheets.push_str(name);
         worksheets.push_str("\">\n");
-        if name == RESULTS_WORKSHEET {
+        if name == CONTROLS_WORKSHEET {
+            push_controls_table(&mut worksheets, &corpus.results);
+        } else if name == RESULTS_WORKSHEET {
             push_results_table(&mut worksheets, &corpus.results);
         } else if name == FRAMEWORKS_WORKSHEET {
             push_frameworks_table(&mut worksheets, &corpus.frameworks);
@@ -241,6 +247,31 @@ fn minimal_result(executed_at: &str, status: Status) -> ControlResult {
     builder
         .build()
         .expect("the bare Results-sheet result validates")
+}
+
+/// Appends the Controls sheet's `<Table>` — one `<Row>` per distinct control the
+/// corpus evaluated, in first-seen order, each carrying the control's id. A corpus
+/// with no results keeps the self-closing `<Table/>`, so no control absent from
+/// the corpus can appear.
+fn push_controls_table(out: &mut String, results: &[ScopedResult]) {
+    let mut control_ids: Vec<&str> = Vec::new();
+    for scoped in results {
+        let control_id = scoped.result.control_id();
+        if !control_ids.contains(&control_id) {
+            control_ids.push(control_id);
+        }
+    }
+    if control_ids.is_empty() {
+        out.push_str("<Table/>\n");
+        return;
+    }
+    out.push_str("<Table>\n");
+    for control_id in control_ids {
+        out.push_str("<Row>");
+        push_string_cell(out, control_id);
+        out.push_str("</Row>\n");
+    }
+    out.push_str("</Table>\n");
 }
 
 /// Appends the Results sheet's `<Table>` — one `<Row>` per control result, each
