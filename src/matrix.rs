@@ -37,6 +37,11 @@ const RESULTS_WORKSHEET: &str = "Results";
 /// once so the emission loop can single it out from its siblings.
 const GAPS_WORKSHEET: &str = "Gaps";
 
+/// The Evidence worksheet's name — the sheet that carries one row per collected
+/// evidence record, keyed by the stable evidence id a result or gap references.
+/// Named once so the emission loop can single it out from its siblings.
+const EVIDENCE_WORKSHEET: &str = "Evidence";
+
 /// The Frameworks worksheet's name — the sheet that lists each framework's
 /// version and source URL. Named once so the emission loop can single it out.
 const FRAMEWORKS_WORKSHEET: &str = "Frameworks";
@@ -87,12 +92,14 @@ const WORKSHEET_NAMES: [&str; 6] = [
 /// The corpus is the already-derived, hashed output of a scan run, read from the
 /// persisted store and never recomputed here. It carries the run's fixed
 /// generated date, the catalogued controls the Controls sheet lists, the control
-/// results the Results sheet renders, and the frameworks the Frameworks sheet
-/// lists; later sheets read their rows from the same corpus.
+/// results the Results sheet renders, the collected evidence the Evidence sheet
+/// renders, and the frameworks the Frameworks sheet lists; later sheets read
+/// their rows from the same corpus.
 pub struct Corpus {
     executed_at: String,
     controls: Vec<Control>,
     results: Vec<ScopedResult>,
+    evidence: Vec<Evidence>,
     frameworks: Vec<Framework>,
 }
 
@@ -131,19 +138,34 @@ struct Control {
     weight: u32,
 }
 
+/// A collected evidence record the corpus holds, carrying the stable id it is
+/// filed under and the location it was collected from.
+///
+/// The Evidence sheet lays out one row per record: its evidence id, so a Results
+/// or Gaps row's evidence reference traces back to the record here, and the
+/// location the evidence was collected at — a built asset, a config file, or
+/// another artifact a finding was anchored to. The record is read from the
+/// persisted store, never recollected here.
+struct Evidence {
+    id: String,
+    location: String,
+}
+
 impl Corpus {
     /// Builds a corpus for a run with the given fixed executed-at timestamp.
     ///
     /// The timestamp becomes the workbook's generated date, so the export stays
     /// deterministic and never reads the wall clock. The corpus starts empty; add
     /// catalogued controls with [`Corpus::with_control`], control results with
-    /// [`Corpus::with_result`], and frameworks with [`Corpus::with_framework`].
+    /// [`Corpus::with_result`], collected evidence with [`Corpus::with_evidence`],
+    /// and frameworks with [`Corpus::with_framework`].
     #[must_use]
     pub fn new(executed_at: impl Into<String>) -> Self {
         Self {
             executed_at: executed_at.into(),
             controls: Vec::new(),
             results: Vec::new(),
+            evidence: Vec::new(),
             frameworks: Vec::new(),
         }
     }
@@ -213,6 +235,26 @@ impl Corpus {
         self
     }
 
+    /// Adds a collected evidence record the corpus holds, rendered as one row on
+    /// the Evidence sheet.
+    ///
+    /// The Evidence sheet lays out each record's stable evidence id — the id a
+    /// Results or Gaps row references to trace a finding back to its evidence —
+    /// and the location the evidence was collected from, as read from the
+    /// persisted store and never recollected here. The builder is chainable.
+    #[must_use]
+    pub fn with_evidence(
+        mut self,
+        evidence_id: impl Into<String>,
+        location: impl Into<String>,
+    ) -> Self {
+        self.evidence.push(Evidence {
+            id: evidence_id.into(),
+            location: location.into(),
+        });
+        self
+    }
+
     /// Adds a framework the corpus covers, rendered as one row on the Frameworks
     /// sheet.
     ///
@@ -257,6 +299,8 @@ pub fn export(corpus: &Corpus) -> String {
             push_results_table(&mut worksheets, &corpus.results);
         } else if name == GAPS_WORKSHEET {
             push_gaps_table(&mut worksheets, &corpus.results);
+        } else if name == EVIDENCE_WORKSHEET {
+            push_evidence_table(&mut worksheets, &corpus.evidence);
         } else if name == FRAMEWORKS_WORKSHEET {
             push_frameworks_table(&mut worksheets, &corpus.frameworks);
         } else if name == SUMMARY_WORKSHEET {
@@ -383,6 +427,25 @@ fn gap_of(scoped: &ScopedResult) -> Option<(&str, &ControlResult)> {
     let framework_id = scoped.framework_id.as_deref()?;
     matches!(scoped.result.status(), Status::Fail | Status::Warning)
         .then_some((framework_id, &scoped.result))
+}
+
+/// Appends the Evidence sheet's `<Table>` — one `<Row>` per collected evidence
+/// record, carrying the stable evidence id it is filed under and the location it
+/// was collected from. A corpus with no evidence record keeps the self-closing
+/// `<Table/>`, so the sheet stays present but carries no rows.
+fn push_evidence_table(out: &mut String, evidence: &[Evidence]) {
+    if evidence.is_empty() {
+        out.push_str("<Table/>\n");
+        return;
+    }
+    out.push_str("<Table>\n");
+    for record in evidence {
+        out.push_str("<Row>");
+        push_string_cell(out, &record.id);
+        push_string_cell(out, &record.location);
+        out.push_str("</Row>\n");
+    }
+    out.push_str("</Table>\n");
 }
 
 /// Appends the Frameworks sheet's `<Table>` — one `<Row>` per framework, with

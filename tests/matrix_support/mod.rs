@@ -120,8 +120,9 @@ pub fn consent_result(rule_id: &str, status: Status) -> ControlResult {
 }
 
 /// The canonical "shopfront-2026-06-24" consent corpus: the gdpr-eprivacy
-/// framework, its catalogued `consent.tracker.prior-consent` control, and that
-/// control's FAIL + PASS results.
+/// framework, its catalogued `consent.tracker.prior-consent` control, that
+/// control's FAIL + PASS results, and the `ev-0001` evidence record those
+/// results reference, collected from the built asset `dist/main.js`.
 #[must_use]
 pub fn consent_corpus() -> Corpus {
     Corpus::new(EXECUTED_AT)
@@ -129,4 +130,5 @@ pub fn consent_corpus() -> Corpus {
         .with_control(FRAMEWORK, CONTROL, CONTROL_TITLE, "major", 8)
         .with_control_result(FRAMEWORK, consent_result(TRACKER_RULE, Status::Fail))
         .with_control_result(FRAMEWORK, consent_result(CMP_RULE, Status::Pass))
+        .with_evidence("ev-0001", "dist/main.js")
 }
