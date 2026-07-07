@@ -10,6 +10,12 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   --evidence-store <dir> --executed-at <timestamp>` reads a persisted evidence
   store and emits deterministic PDF bytes using a minimal built-in writer, with
   no third-party runtime dependency.
+- Excel compliance matrix export (MAT-96): a `matrix` module exports the
+  persisted compliance corpus as a hand-emitted SpreadsheetML 2003 flat
+  `<Workbook>` XML string, so auditors can open the controls, results, gaps,
+  evidence, framework references, and scores as a filterable spreadsheet. The
+  export reads the derived corpus and its fixed generated date; it re-runs no
+  scanner, recomputes no score, and links no third-party runtime dependency.
 
 ## [0.5.0] - 2026-07-06
 

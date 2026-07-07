@@ -1,7 +1,7 @@
 // Copyright 2026 Sovri contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! R-01 — a SpreadsheetML compliance-matrix workbook is exported from the
+//! R-01 — a `SpreadsheetML` compliance-matrix workbook is exported from the
 //! persisted consent corpus, without re-running a scanner. Covers issue #164.
 
 use sovri_agent::matrix::{self, Corpus};
