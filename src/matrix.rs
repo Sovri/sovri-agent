@@ -317,6 +317,34 @@ impl Corpus {
         self
     }
 
+    /// Adds an unclassified evidence record that carries an integrity digest,
+    /// rendered as one row on the Evidence sheet.
+    ///
+    /// Like [`Corpus::with_evidence`] the record is unclassified — the store kept
+    /// its value, so its redaction status renders `none` — but it also carries the
+    /// `kind` the store recorded and the `sha256:…` `integrity` digest the
+    /// content-addressed store filed it under, so its Evidence row shows the digest
+    /// read from the store rather than an empty cell. No raw value is taken or held
+    /// here. Use [`Corpus::with_classified_evidence`] for a record the store
+    /// classified and reduced to metadata. The builder is chainable.
+    #[must_use]
+    pub fn with_evidence_digest(
+        mut self,
+        evidence_id: impl Into<String>,
+        kind: impl Into<String>,
+        location: impl Into<String>,
+        integrity: impl Into<String>,
+    ) -> Self {
+        self.evidence.push(Evidence {
+            id: evidence_id.into(),
+            kind: kind.into(),
+            location: location.into(),
+            integrity: integrity.into(),
+            classification: Classification::Unclassified,
+        });
+        self
+    }
+
     /// Adds a classified evidence record the store reduced to metadata, rendered
     /// as one row on the Evidence sheet.
     ///
