@@ -13,6 +13,8 @@
 //!   seam end to end.
 //! - [`evidence`] — a relay re-exporting the `sovri-sdk` evidence contract.
 //! - [`report`] — the deterministic PDF report renderer over persisted evidence.
+//! - [`matrix`] — the deterministic `SpreadsheetML` compliance-matrix export over
+//!   the persisted compliance corpus.
 //! - [`scan`] — the `sovri-agent scan` command that runs a catalog's controls
 //!   against the host scanners and reports the outcome.
 //!
@@ -20,6 +22,7 @@
 
 pub mod controls;
 pub mod evidence;
+pub mod matrix;
 pub mod report;
 pub mod scan;
 pub mod scanners;
