@@ -103,12 +103,12 @@ const SUMMARY_STATUS_ORDER: [Status; 5] = [
 /// its section of the corpus is empty. The order is fixed so the output stays
 /// deterministic.
 const WORKSHEET_NAMES: [&str; 6] = [
-    "Controls",
+    CONTROLS_WORKSHEET,
     RESULTS_WORKSHEET,
-    "Gaps",
-    "Evidence",
+    GAPS_WORKSHEET,
+    EVIDENCE_WORKSHEET,
     FRAMEWORKS_WORKSHEET,
-    "Summary",
+    SUMMARY_WORKSHEET,
 ];
 
 /// A persisted compliance corpus a workbook is exported from.
@@ -409,7 +409,7 @@ impl Corpus {
 /// across.
 #[must_use]
 pub fn export(corpus: &Corpus) -> String {
-    let created = &corpus.executed_at;
+    let created = xml_escape(&corpus.executed_at);
     let mut worksheets = String::new();
     for name in WORKSHEET_NAMES {
         worksheets.push_str("<Worksheet ss:Name=\"");
