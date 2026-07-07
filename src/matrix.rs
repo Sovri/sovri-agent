@@ -132,13 +132,17 @@ struct Framework {
 /// belongs to, its stable id, its catalogued title, and its severity and weight.
 /// The title is catalog metadata a control result never carries, so the corpus
 /// records the control here rather than deriving the Controls row from the run's
-/// results.
+/// results. The control also carries its framework reference — the non-CWE
+/// compliance reference (such as an article of the regulation) the Gaps sheet
+/// renders for a gap on this control, so each gap shows its own reference rather
+/// than a shared constant.
 struct Control {
     framework_id: String,
     id: String,
     title: String,
     severity: String,
     weight: u32,
+    reference: String,
 }
 
 /// A collected evidence record the corpus holds, carrying the stable id it is
@@ -180,7 +184,9 @@ impl Corpus {
     /// the framework it belongs to, its stable id, its title, severity, and
     /// weight — as read from the persisted catalog, never recomputed here. The
     /// title is catalog metadata a control result does not carry, so the corpus
-    /// records it here. The builder is chainable.
+    /// records it here. The control's framework `reference` — its non-CWE
+    /// compliance reference — is recorded too, so a gap on this control renders
+    /// its own reference on the Gaps sheet. The builder is chainable.
     #[must_use]
     pub fn with_control(
         mut self,
@@ -189,6 +195,7 @@ impl Corpus {
         title: impl Into<String>,
         severity: impl Into<String>,
         weight: u32,
+        reference: impl Into<String>,
     ) -> Self {
         self.controls.push(Control {
             framework_id: framework_id.into(),
@@ -196,6 +203,7 @@ impl Corpus {
             title: title.into(),
             severity: severity.into(),
             weight,
+            reference: reference.into(),
         });
         self
     }
