@@ -19,6 +19,21 @@ const SPREADSHEET_NAMESPACE: &str = "urn:schemas-microsoft-com:office:spreadshee
 /// Office namespace the workbook's document properties are qualified with.
 const OFFICE_NAMESPACE: &str = "urn:schemas-microsoft-com:office:office";
 
+/// The worksheets the workbook always carries, in their fixed emission order.
+///
+/// Every export lays out these six sheets so a reader can filter the compliance
+/// matrix section by section. Later scenarios fill each sheet's rows; the sheet
+/// itself is always present with an empty `<Table>`, even when its section of
+/// the corpus is empty. The order is fixed so the output stays deterministic.
+const WORKSHEET_NAMES: [&str; 6] = [
+    "Controls",
+    "Results",
+    "Gaps",
+    "Evidence",
+    "Frameworks",
+    "Summary",
+];
+
 /// A persisted compliance corpus a workbook is exported from.
 ///
 /// The corpus is the already-derived, hashed output of a scan run, read from the
@@ -45,18 +60,27 @@ impl Corpus {
 ///
 /// The returned string is a self-contained `SpreadsheetML` document: the XML
 /// declaration, the `mso-application` processing instruction that opens it in a
-/// spreadsheet application, and a `<Workbook>` root whose document properties
-/// record the corpus's fixed generated date.
+/// spreadsheet application, and a `<Workbook>` root that records the corpus's
+/// fixed generated date and carries the six named worksheets (Controls,
+/// Results, Gaps, Evidence, Frameworks, Summary) the compliance matrix is laid
+/// out across.
 #[must_use]
 pub fn export(corpus: &Corpus) -> String {
+    let created = &corpus.executed_at;
+    let mut worksheets = String::new();
+    for name in WORKSHEET_NAMES {
+        worksheets.push_str("<Worksheet ss:Name=\"");
+        worksheets.push_str(name);
+        worksheets.push_str("\">\n<Table/>\n</Worksheet>\n");
+    }
     format!(
         "{XML_DECLARATION}\n\
          {MSO_APPLICATION_PROCESSING_INSTRUCTION}\n\
-         <Workbook xmlns=\"{SPREADSHEET_NAMESPACE}\">\n\
+         <Workbook xmlns=\"{SPREADSHEET_NAMESPACE}\" xmlns:ss=\"{SPREADSHEET_NAMESPACE}\">\n\
          <DocumentProperties xmlns=\"{OFFICE_NAMESPACE}\">\n\
-         <Created>{}</Created>\n\
+         <Created>{created}</Created>\n\
          </DocumentProperties>\n\
-         </Workbook>\n",
-        corpus.executed_at
+         {worksheets}\
+         </Workbook>\n"
     )
 }
