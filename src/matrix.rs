@@ -65,6 +65,18 @@ const ENVIRONMENT_SCORE_LABEL: &str = "Environment score";
 /// was excluded from them. Emitted when any framework saw an `ERROR`.
 const SCORES_INCOMPLETE_MARKER: &str = "Scores are incomplete: an ERROR result was excluded";
 
+/// Explanatory row the Gaps sheet shows when the corpus recorded no gap, so an
+/// empty Gaps section reads as "none observed" rather than a blank sheet.
+const NO_GAPS_PLACEHOLDER: &str = "No potential gaps observed";
+
+/// Explanatory row the Evidence sheet shows when the corpus collected no evidence
+/// record, so an empty Evidence section reads as "none collected" rather than blank.
+const NO_EVIDENCE_PLACEHOLDER: &str = "No evidence records were collected";
+
+/// Explanatory row the Summary sheet shows when the corpus has no framework-scoped
+/// result to score, so an empty Summary section reads as "no scores for this run".
+const NO_SCORES_PLACEHOLDER: &str = "Scores are not available for this run";
+
 /// The statuses the Summary sheet tallies, in a fixed order so the count rows
 /// stay deterministic across runs.
 const SUMMARY_STATUS_ORDER: [Status; 5] = [
@@ -79,8 +91,9 @@ const SUMMARY_STATUS_ORDER: [Status; 5] = [
 ///
 /// Every export lays out these six sheets so a reader can filter the compliance
 /// matrix section by section. Later scenarios fill each sheet's rows; the sheet
-/// itself is always present with an empty `<Table>`, even when its section of
-/// the corpus is empty. The order is fixed so the output stays deterministic.
+/// itself is always present, carrying at least its documented header row even when
+/// its section of the corpus is empty. The order is fixed so the output stays
+/// deterministic.
 const WORKSHEET_NAMES: [&str; 6] = [
     "Controls",
     RESULTS_WORKSHEET,
@@ -491,6 +504,20 @@ fn push_row(out: &mut String, cells: &[&str]) {
     out.push_str("</Row>\n");
 }
 
+/// Appends an empty section's `<Table>` — its documented `header` row so a reader
+/// still sees the section's columns, then, when the section names one, a single
+/// explanatory `placeholder` row that says why the section is empty. This keeps an
+/// absent section a present sheet with its header, never a bare self-closing
+/// `<Table/>` a reader could mistake for a missing or broken sheet.
+fn push_empty_table(out: &mut String, header: &[&str], placeholder: Option<&str>) {
+    out.push_str("<Table>\n");
+    push_row(out, header);
+    if let Some(text) = placeholder {
+        push_row(out, &[text]);
+    }
+    out.push_str("</Table>\n");
+}
+
 /// Appends an `<AutoFilter>` element whose range spans the header row (row 1)
 /// across every documented column and down to the last data row, so a spreadsheet
 /// application shows a filter dropdown on each column when it opens the sheet. The
@@ -532,11 +559,11 @@ fn redaction_status(classification: Classification) -> &'static str {
 /// weight, then its applicability (`applicable` until a later rule models an
 /// exclusion) and an empty applicability reason. The populated table is followed
 /// by an `<AutoFilter>` spanning its header row so the sheet opens filterable. A
-/// corpus with no catalogued control keeps the self-closing `<Table/>`, so no
-/// control absent from the corpus can appear.
+/// corpus with no catalogued control emits the documented header row alone, so the
+/// sheet stays present with its columns and never invents a control.
 fn push_controls_table(out: &mut String, controls: &[Control]) {
     if controls.is_empty() {
-        out.push_str("<Table/>\n");
+        push_empty_table(out, &CONTROLS_HEADER, None);
         return;
     }
     out.push_str("<Table>\n");
@@ -583,11 +610,11 @@ fn results_in_reporting_order(results: &[ScopedResult]) -> Vec<&ScopedResult> {
 /// it references, an empty remediation, and its applicability (`not applicable`
 /// for a `SKIPPED` result, else `applicable`). The empty columns are filled by
 /// later rules. The populated table is followed by an `<AutoFilter>` spanning its
-/// header row. An empty corpus keeps the self-closing `<Table/>`, so the sheet
-/// stays present but carries no rows.
+/// header row. An empty corpus emits the documented header row alone, so the sheet
+/// stays present with its columns but no data row.
 fn push_results_table(out: &mut String, results: &[ScopedResult]) {
     if results.is_empty() {
-        out.push_str("<Table/>\n");
+        push_empty_table(out, &RESULTS_HEADER, None);
         return;
     }
     out.push_str("<Table>\n");
@@ -623,8 +650,9 @@ fn push_results_table(out: &mut String, results: &[ScopedResult]) {
 /// its framework's source URL, the severity, the gap type (the `FAIL`/`WARNING`
 /// status label), the evidence ids, and an empty remediation. The populated table
 /// is followed by an `<AutoFilter>` spanning its header row. A corpus with no
-/// failing or warning framework-scoped result keeps the self-closing `<Table/>`,
-/// so the sheet stays present but carries no rows.
+/// failing or warning framework-scoped result emits the documented header row and
+/// an explanatory placeholder row, so the sheet stays present and says no potential
+/// gap was observed.
 fn push_gaps_table(
     out: &mut String,
     results: &[ScopedResult],
@@ -636,7 +664,7 @@ fn push_gaps_table(
         .filter_map(gap_of)
         .collect();
     if gaps.is_empty() {
-        out.push_str("<Table/>\n");
+        push_empty_table(out, &GAPS_HEADER, Some(NO_GAPS_PLACEHOLDER));
         return;
     }
     let row_count = gaps.len() + 1;
@@ -710,11 +738,12 @@ fn framework_source_url<'a>(frameworks: &'a [Framework], framework_id: &str) -> 
 /// collected from, an empty collector, its `sha256:…` integrity digest, and the
 /// redaction status its classification yields. A classified record contributes
 /// only this metadata — the store dropped its raw value, so no raw value reaches a
-/// cell. A corpus with no evidence record keeps the self-closing `<Table/>`, so the
-/// sheet stays present but carries no rows.
+/// cell. A corpus with no evidence record emits the documented header row and an
+/// explanatory placeholder row, so the sheet stays present and says no evidence
+/// record was collected.
 fn push_evidence_table(out: &mut String, evidence: &[Evidence]) {
     if evidence.is_empty() {
-        out.push_str("<Table/>\n");
+        push_empty_table(out, &EVIDENCE_HEADER, Some(NO_EVIDENCE_PLACEHOLDER));
         return;
     }
     out.push_str("<Table>\n");
@@ -737,10 +766,11 @@ fn push_evidence_table(out: &mut String, evidence: &[Evidence]) {
 
 /// Appends the Frameworks sheet's `<Table>` — the documented header row, then one
 /// `<Row>` per framework with cells for its id, catalog version, and source URL.
-/// An empty corpus keeps the self-closing `<Table/>`.
+/// An empty corpus emits the documented header row alone, so the sheet stays
+/// present with its columns.
 fn push_frameworks_table(out: &mut String, frameworks: &[Framework]) {
     if frameworks.is_empty() {
-        out.push_str("<Table/>\n");
+        push_empty_table(out, &FRAMEWORKS_HEADER, None);
         return;
     }
     out.push_str("<Table>\n");
@@ -758,12 +788,13 @@ fn push_frameworks_table(out: &mut String, frameworks: &[Framework]) {
 /// per-framework status tally, then that tally and the MAT-87 score scopes
 /// (control, framework, environment) folded from the corpus's framework-scoped
 /// results. The score-scope rows are labelled rows below the tally, not a second
-/// tabular header. A corpus with no framework-scoped result keeps the self-closing
-/// `<Table/>`, so the sheet stays present but carries no rows.
+/// tabular header. A corpus with no framework-scoped result emits the documented
+/// header row and an explanatory placeholder row, so the sheet stays present and
+/// says no scores are available for the run.
 fn push_summary_table(out: &mut String, results: &[ScopedResult]) {
     let environment = environment_score(results);
     if environment.frameworks().is_empty() {
-        out.push_str("<Table/>\n");
+        push_empty_table(out, &SUMMARY_HEADER, Some(NO_SCORES_PLACEHOLDER));
         return;
     }
     out.push_str("<Table>\n");
