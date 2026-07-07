@@ -77,3 +77,52 @@ pub fn cell_values(row: &str) -> Vec<String> {
 pub fn row_containing<'a>(rows: &'a [Vec<String>], value: &str) -> Option<&'a Vec<String>> {
     rows.iter().find(|cells| cells.iter().any(|c| c == value))
 }
+
+use sovri_agent::matrix::Corpus;
+use sovri_sdk::{ControlResult, Status};
+
+/// The fixed executed-at the consent corpus records, reused as the generated date.
+pub const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
+/// The framework the consent corpus covers.
+pub const FRAMEWORK: &str = "gdpr-eprivacy";
+/// The consent framework's catalog version.
+pub const FRAMEWORK_VERSION: &str = "2016-679";
+/// The consent framework's source URL.
+pub const FRAMEWORK_URL: &str = "https://eur-lex.europa.eu/eli/reg/2016/679/oj";
+/// The single control both consent results evaluate.
+pub const CONTROL: &str = "consent.tracker.prior-consent";
+/// The rule that fails: a non-essential tracker with no consent evidence.
+pub const TRACKER_RULE: &str = "consent.detect-trackers-without-consent-evidence";
+/// The rule that passes: the consent-management platform is configured.
+pub const CMP_RULE: &str = "consent.detect-cmp-misconfiguration";
+
+/// Builds one consent `ControlResult` for `rule_id` at `status`, carrying the
+/// control's catalogued severity, weight, and evidence id from the Background.
+#[must_use]
+pub fn consent_result(rule_id: &str, status: Status) -> ControlResult {
+    let mut builder = ControlResult::builder()
+        .control_id(CONTROL)
+        .rule_id(rule_id)
+        .status(status)
+        .severity("major")
+        .weight(8)
+        .evidence_refs(["ev-0001"])
+        .executed_at(EXECUTED_AT)
+        .execution_metadata("engine_version=0.3.0");
+    if status != Status::Pass {
+        builder = builder.reason("Non-essential tracker loaded without recorded consent.");
+    }
+    builder
+        .build()
+        .expect("the consent fixture result validates")
+}
+
+/// The canonical "shopfront-2026-06-24" consent corpus: the gdpr-eprivacy
+/// framework and its FAIL + PASS results over `consent.tracker.prior-consent`.
+#[must_use]
+pub fn consent_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_control_result(FRAMEWORK, consent_result(TRACKER_RULE, Status::Fail))
+        .with_control_result(FRAMEWORK, consent_result(CMP_RULE, Status::Pass))
+}
