@@ -295,6 +295,57 @@ pub fn classified_evidence_corpus() -> Corpus {
         )
 }
 
+/// The "all-pass-2026-06-24" corpus: the consent control's two rules both PASS
+/// under the gdpr-eprivacy framework, so the run records no FAIL or WARNING and the
+/// Gaps sheet has no gap to list. The Summary tallies two PASS results, so a
+/// sibling scenario can assert the count "2" for status PASS. Only the Gaps section
+/// is absent; every other section is populated.
+#[must_use]
+pub fn all_pass_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_control(
+            FRAMEWORK,
+            CONTROL,
+            CONTROL_TITLE,
+            "major",
+            8,
+            CONTROL_REFERENCE,
+        )
+        .with_control_result(FRAMEWORK, consent_result(TRACKER_RULE, Status::Pass))
+        .with_control_result(FRAMEWORK, consent_result(CMP_RULE, Status::Pass))
+        .with_evidence("ev-0001", "dist/main.js")
+}
+
+/// The "no-evidence-2026-06-24" corpus: a gdpr-eprivacy control result that fails,
+/// but the run collected no evidence record, so the Evidence sheet has no record to
+/// list. Only the evidence section is absent; every other section is populated.
+#[must_use]
+pub fn no_evidence_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_control(
+            FRAMEWORK,
+            CONTROL,
+            CONTROL_TITLE,
+            "major",
+            8,
+            CONTROL_REFERENCE,
+        )
+        .with_control_result(FRAMEWORK, consent_result(TRACKER_RULE, Status::Fail))
+}
+
+/// The "no-scores-2026-06-24" corpus: the gdpr-eprivacy framework is listed and a
+/// bare result is recorded, but no result is scoped to a framework, so the MAT-87
+/// environment score has no framework to fold and the Summary has no score to show.
+/// Only the scores are absent; the Frameworks and Results sections are populated.
+#[must_use]
+pub fn no_scores_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_result(Status::Pass)
+}
+
 /// A large corpus of 120 control results under the consent framework, each with a
 /// distinct control and rule id and a status cycling through the five outcomes,
 /// for asserting the export stays deterministic at scale.
