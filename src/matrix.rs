@@ -32,6 +32,11 @@ const CONTROLS_WORKSHEET: &str = "Controls";
 /// result. Named once so the emission loop can single it out from its siblings.
 const RESULTS_WORKSHEET: &str = "Results";
 
+/// The Gaps worksheet's name — the sheet that carries one row per compliance
+/// gap, a control result that failed or warned and so requires review. Named
+/// once so the emission loop can single it out from its siblings.
+const GAPS_WORKSHEET: &str = "Gaps";
+
 /// The Frameworks worksheet's name — the sheet that lists each framework's
 /// version and source URL. Named once so the emission loop can single it out.
 const FRAMEWORKS_WORKSHEET: &str = "Frameworks";
@@ -250,6 +255,8 @@ pub fn export(corpus: &Corpus) -> String {
             push_controls_table(&mut worksheets, &corpus.controls);
         } else if name == RESULTS_WORKSHEET {
             push_results_table(&mut worksheets, &corpus.results);
+        } else if name == GAPS_WORKSHEET {
+            push_gaps_table(&mut worksheets, &corpus.results);
         } else if name == FRAMEWORKS_WORKSHEET {
             push_frameworks_table(&mut worksheets, &corpus.frameworks);
         } else if name == SUMMARY_WORKSHEET {
@@ -336,6 +343,46 @@ fn push_results_table(out: &mut String, results: &[ScopedResult]) {
         out.push_str("</Row>\n");
     }
     out.push_str("</Table>\n");
+}
+
+/// Appends the Gaps sheet's `<Table>` — one `<Row>` per compliance gap, a
+/// framework-scoped result that failed or warned and so requires review. Each row
+/// carries the composed gap id (`framework:control:rule`) and the framework,
+/// control, rule, and evidence ids that trace the gap back to the corpus. A
+/// corpus with no failing or warning framework-scoped result keeps the
+/// self-closing `<Table/>`, so the sheet stays present but carries no rows.
+fn push_gaps_table(out: &mut String, results: &[ScopedResult]) {
+    let gaps: Vec<(&str, &ControlResult)> = results.iter().filter_map(gap_of).collect();
+    if gaps.is_empty() {
+        out.push_str("<Table/>\n");
+        return;
+    }
+    out.push_str("<Table>\n");
+    for (framework_id, result) in gaps {
+        let gap_id = format!(
+            "{framework_id}:{}:{}",
+            result.control_id(),
+            result.rule_id()
+        );
+        out.push_str("<Row>");
+        push_string_cell(out, &gap_id);
+        push_string_cell(out, framework_id);
+        push_string_cell(out, result.control_id());
+        push_string_cell(out, result.rule_id());
+        push_string_cell(out, &result.evidence_refs().join(", "));
+        out.push_str("</Row>\n");
+    }
+    out.push_str("</Table>\n");
+}
+
+/// Returns the framework a gap was found under and the result that records it,
+/// when `scoped` is a compliance gap: a framework-scoped result whose status is
+/// `FAIL` or `WARNING`. A passed, skipped, or errored result — or one carrying no
+/// framework — is not a gap and yields `None`, so it never reaches the Gaps sheet.
+fn gap_of(scoped: &ScopedResult) -> Option<(&str, &ControlResult)> {
+    let framework_id = scoped.framework_id.as_deref()?;
+    matches!(scoped.result.status(), Status::Fail | Status::Warning)
+        .then_some((framework_id, &scoped.result))
 }
 
 /// Appends the Frameworks sheet's `<Table>` — one `<Row>` per framework, with
