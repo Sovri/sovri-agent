@@ -93,10 +93,29 @@ pub const FRAMEWORK_URL: &str = "https://eur-lex.europa.eu/eli/reg/2016/679/oj";
 pub const CONTROL: &str = "consent.tracker.prior-consent";
 /// The catalogued title of that control, as read from the persisted catalog.
 pub const CONTROL_TITLE: &str = "Prior consent for tracker access";
+/// The non-CWE framework reference the consent control maps to, rendered verbatim
+/// on its Gaps row.
+pub const CONTROL_REFERENCE: &str = "gdpr-eprivacy:2016-679:Art.7";
 /// The rule that fails: a non-essential tracker with no consent evidence.
 pub const TRACKER_RULE: &str = "consent.detect-trackers-without-consent-evidence";
 /// The rule that passes: the consent-management platform is configured.
 pub const CMP_RULE: &str = "consent.detect-cmp-misconfiguration";
+
+/// The SSH root-login control the reference corpus adds as a second gap, under a
+/// second framework, so the Gaps sheet renders two distinct framework references.
+pub const SSH_CONTROL: &str = "host.ssh.permit-root-login";
+/// The catalogued title of the SSH root-login control.
+pub const SSH_CONTROL_TITLE: &str = "Disallow SSH root login";
+/// The rule whose FAIL records the SSH root-login gap.
+pub const SSH_RULE: &str = "host.ssh.detect-permit-root-login";
+/// The framework the SSH root-login control belongs to.
+pub const SSH_FRAMEWORK: &str = "iso-27001";
+/// The SSH framework's catalog version.
+pub const SSH_FRAMEWORK_VERSION: &str = "2022";
+/// The SSH framework's source URL, rendered on its gap's Gaps row.
+pub const SSH_FRAMEWORK_URL: &str = "https://www.iso.org/standard/27001";
+/// The non-CWE framework reference the SSH root-login control maps to.
+pub const SSH_CONTROL_REFERENCE: &str = "iso-27001:2022:A.8.2";
 
 /// Builds one consent `ControlResult` for `rule_id` at `status`, carrying the
 /// control's catalogued severity, weight, and evidence id from the Background.
@@ -185,7 +204,14 @@ pub fn mixed_corpus() -> Corpus {
 pub fn consent_corpus() -> Corpus {
     Corpus::new(EXECUTED_AT)
         .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
-        .with_control(FRAMEWORK, CONTROL, CONTROL_TITLE, "major", 8)
+        .with_control(
+            FRAMEWORK,
+            CONTROL,
+            CONTROL_TITLE,
+            "major",
+            8,
+            CONTROL_REFERENCE,
+        )
         .with_control_result(FRAMEWORK, consent_result(TRACKER_RULE, Status::Fail))
         .with_control_result(FRAMEWORK, consent_result(CMP_RULE, Status::Pass))
         .with_evidence("ev-0001", "dist/main.js")
@@ -197,8 +223,49 @@ pub fn consent_corpus() -> Corpus {
 pub fn consent_corpus_results_shuffled() -> Corpus {
     Corpus::new(EXECUTED_AT)
         .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
-        .with_control(FRAMEWORK, CONTROL, CONTROL_TITLE, "major", 8)
+        .with_control(
+            FRAMEWORK,
+            CONTROL,
+            CONTROL_TITLE,
+            "major",
+            8,
+            CONTROL_REFERENCE,
+        )
         .with_control_result(FRAMEWORK, consent_result(CMP_RULE, Status::Pass))
         .with_control_result(FRAMEWORK, consent_result(TRACKER_RULE, Status::Fail))
         .with_evidence("ev-0001", "dist/main.js")
+}
+
+/// The "gap-reference-2026-06-24" corpus: two catalogued controls that each fail,
+/// under two different frameworks, so the Gaps sheet renders each gap's own
+/// framework reference and source URL. The consent control maps to reference
+/// `gdpr-eprivacy:2016-679:Art.7` under the gdpr-eprivacy framework, and the SSH
+/// root-login control to `iso-27001:2022:A.8.2` under iso-27001 — two distinct
+/// non-CWE references, neither a shared constant nor a CWE fallback.
+#[must_use]
+pub fn gap_references_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_framework(SSH_FRAMEWORK, SSH_FRAMEWORK_VERSION, SSH_FRAMEWORK_URL)
+        .with_control(
+            FRAMEWORK,
+            CONTROL,
+            CONTROL_TITLE,
+            "major",
+            8,
+            CONTROL_REFERENCE,
+        )
+        .with_control(
+            SSH_FRAMEWORK,
+            SSH_CONTROL,
+            SSH_CONTROL_TITLE,
+            "major",
+            8,
+            SSH_CONTROL_REFERENCE,
+        )
+        .with_control_result(FRAMEWORK, consent_result(TRACKER_RULE, Status::Fail))
+        .with_control_result(
+            SSH_FRAMEWORK,
+            control_result(SSH_CONTROL, SSH_RULE, "major", Status::Fail),
+        )
 }

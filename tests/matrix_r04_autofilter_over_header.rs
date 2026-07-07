@@ -33,6 +33,7 @@ fn mixed_corpus() -> Corpus {
             "Prior consent for tracker access",
             "major",
             8,
+            "gdpr-eprivacy:2016-679:Art.7",
         )
         .with_control(
             "iso-27001",
@@ -40,6 +41,7 @@ fn mixed_corpus() -> Corpus {
             "Strong SSH cryptography enforced",
             "minor",
             3,
+            "iso-27001:2022:A.8.24",
         )
         .with_control(
             "iso-27001",
@@ -47,6 +49,7 @@ fn mixed_corpus() -> Corpus {
             "SSH protocol version 1 disabled",
             "major",
             5,
+            "iso-27001:2022:A.8.20",
         )
         .with_control_result(
             "gdpr-eprivacy",
