@@ -119,6 +119,64 @@ pub fn consent_result(rule_id: &str, status: Status) -> ControlResult {
         .expect("the consent fixture result validates")
 }
 
+/// Builds a `ControlResult` for an arbitrary control/rule at `status` with the
+/// given severity, for corpora that span more than the single consent control.
+#[must_use]
+pub fn control_result(
+    control_id: &str,
+    rule_id: &str,
+    severity: &str,
+    status: Status,
+) -> ControlResult {
+    let mut builder = ControlResult::builder()
+        .control_id(control_id)
+        .rule_id(rule_id)
+        .status(status)
+        .severity(severity)
+        .weight(8)
+        .evidence_refs(["ev-0001"])
+        .executed_at(EXECUTED_AT)
+        .execution_metadata("engine_version=0.3.0");
+    if status != Status::Pass {
+        builder = builder.reason("Observed during the mixed compliance run.");
+    }
+    builder.build().expect("the mixed fixture result validates")
+}
+
+/// The "mixed-2026-06-24" run: gdpr-eprivacy and iso-27001 control results that
+/// span two values of every filter dimension — framework (`gdpr-eprivacy` /
+/// `iso-27001`), status (`FAIL` / `WARNING` / `SKIPPED`), severity (`major` /
+/// `minor`), and applicability (`applicable` / `not applicable`, the latter from
+/// the SKIPPED control). Its Gaps are the FAIL and WARNING results.
+#[must_use]
+pub fn mixed_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_framework("iso-27001", "2022", "https://www.iso.org/standard/27001")
+        .with_control_result(
+            FRAMEWORK,
+            control_result(CONTROL, TRACKER_RULE, "major", Status::Fail),
+        )
+        .with_control_result(
+            "iso-27001",
+            control_result(
+                "host.ssh.weak-crypto",
+                "host.ssh.detect-weak-crypto",
+                "minor",
+                Status::Warning,
+            ),
+        )
+        .with_control_result(
+            "iso-27001",
+            control_result(
+                "host.ssh.protocol-v1",
+                "host.ssh.detect-protocol-v1",
+                "major",
+                Status::Skipped,
+            ),
+        )
+}
+
 /// The canonical "shopfront-2026-06-24" consent corpus: the gdpr-eprivacy
 /// framework, its catalogued `consent.tracker.prior-consent` control, that
 /// control's FAIL + PASS results, and the `ev-0001` evidence record those
