@@ -10,8 +10,8 @@
 //! it links no third-party runtime dependency — the XML is emitted by hand.
 
 use sovri_sdk::{
-    Catalog, Control, ControlResult, ControlScore, EnvironmentScore, FrameworkScore, Mapping,
-    Status, StatusCounts,
+    Catalog, ControlResult, ControlScore, EnvironmentScore, FrameworkScore, Mapping, Status,
+    StatusCounts,
 };
 
 /// XML declaration that opens the workbook document.
@@ -81,11 +81,12 @@ const WORKSHEET_NAMES: [&str; 6] = [
 ///
 /// The corpus is the already-derived, hashed output of a scan run, read from the
 /// persisted store and never recomputed here. It carries the run's fixed
-/// generated date, the control results the Results sheet renders, and the
-/// frameworks the Frameworks sheet lists; later sheets read their rows from the
-/// same corpus.
+/// generated date, the catalogued controls the Controls sheet lists, the control
+/// results the Results sheet renders, and the frameworks the Frameworks sheet
+/// lists; later sheets read their rows from the same corpus.
 pub struct Corpus {
     executed_at: String,
+    controls: Vec<Control>,
     results: Vec<ScopedResult>,
     frameworks: Vec<Framework>,
 }
@@ -109,20 +110,64 @@ struct Framework {
     source_url: String,
 }
 
+/// A catalogued control the corpus evaluated, carrying the fields that describe
+/// it independent of any single result.
+///
+/// The Controls sheet lays out one row per catalogued control: the framework it
+/// belongs to, its stable id, its catalogued title, and its severity and weight.
+/// The title is catalog metadata a control result never carries, so the corpus
+/// records the control here rather than deriving the Controls row from the run's
+/// results.
+struct Control {
+    framework_id: String,
+    id: String,
+    title: String,
+    severity: String,
+    weight: u32,
+}
+
 impl Corpus {
     /// Builds a corpus for a run with the given fixed executed-at timestamp.
     ///
     /// The timestamp becomes the workbook's generated date, so the export stays
-    /// deterministic and never reads the wall clock. The corpus starts empty;
-    /// add control results with [`Corpus::with_result`] and frameworks with
-    /// [`Corpus::with_framework`].
+    /// deterministic and never reads the wall clock. The corpus starts empty; add
+    /// catalogued controls with [`Corpus::with_control`], control results with
+    /// [`Corpus::with_result`], and frameworks with [`Corpus::with_framework`].
     #[must_use]
     pub fn new(executed_at: impl Into<String>) -> Self {
         Self {
             executed_at: executed_at.into(),
+            controls: Vec::new(),
             results: Vec::new(),
             frameworks: Vec::new(),
         }
+    }
+
+    /// Adds a catalogued control the corpus evaluated, rendered as one row on the
+    /// Controls sheet.
+    ///
+    /// The Controls sheet lays out the catalogued fields that describe a control —
+    /// the framework it belongs to, its stable id, its title, severity, and
+    /// weight — as read from the persisted catalog, never recomputed here. The
+    /// title is catalog metadata a control result does not carry, so the corpus
+    /// records it here. The builder is chainable.
+    #[must_use]
+    pub fn with_control(
+        mut self,
+        framework_id: impl Into<String>,
+        control_id: impl Into<String>,
+        title: impl Into<String>,
+        severity: impl Into<String>,
+        weight: u32,
+    ) -> Self {
+        self.controls.push(Control {
+            framework_id: framework_id.into(),
+            id: control_id.into(),
+            title: title.into(),
+            severity: severity.into(),
+            weight,
+        });
+        self
     }
 
     /// Adds a bare control result carrying the given status to the corpus.
@@ -202,7 +247,7 @@ pub fn export(corpus: &Corpus) -> String {
         worksheets.push_str(name);
         worksheets.push_str("\">\n");
         if name == CONTROLS_WORKSHEET {
-            push_controls_table(&mut worksheets, &corpus.results);
+            push_controls_table(&mut worksheets, &corpus.controls);
         } else if name == RESULTS_WORKSHEET {
             push_results_table(&mut worksheets, &corpus.results);
         } else if name == FRAMEWORKS_WORKSHEET {
@@ -249,26 +294,23 @@ fn minimal_result(executed_at: &str, status: Status) -> ControlResult {
         .expect("the bare Results-sheet result validates")
 }
 
-/// Appends the Controls sheet's `<Table>` — one `<Row>` per distinct control the
-/// corpus evaluated, in first-seen order, each carrying the control's id. A corpus
-/// with no results keeps the self-closing `<Table/>`, so no control absent from
-/// the corpus can appear.
-fn push_controls_table(out: &mut String, results: &[ScopedResult]) {
-    let mut control_ids: Vec<&str> = Vec::new();
-    for scoped in results {
-        let control_id = scoped.result.control_id();
-        if !control_ids.contains(&control_id) {
-            control_ids.push(control_id);
-        }
-    }
-    if control_ids.is_empty() {
+/// Appends the Controls sheet's `<Table>` — one `<Row>` per catalogued control,
+/// each carrying the framework it belongs to, its control id, its catalogued
+/// title, and its severity and weight. A corpus with no catalogued control keeps
+/// the self-closing `<Table/>`, so no control absent from the corpus can appear.
+fn push_controls_table(out: &mut String, controls: &[Control]) {
+    if controls.is_empty() {
         out.push_str("<Table/>\n");
         return;
     }
     out.push_str("<Table>\n");
-    for control_id in control_ids {
+    for control in controls {
         out.push_str("<Row>");
-        push_string_cell(out, control_id);
+        push_string_cell(out, &control.framework_id);
+        push_string_cell(out, &control.id);
+        push_string_cell(out, &control.title);
+        push_string_cell(out, &control.severity);
+        push_string_cell(out, &control.weight.to_string());
         out.push_str("</Row>\n");
     }
     out.push_str("</Table>\n");
@@ -355,7 +397,7 @@ fn environment_score(results: &[ScopedResult]) -> EnvironmentScore {
 /// control carrying the severity and weight its result recorded.
 fn scoring_catalog(results: &[ScopedResult]) -> Catalog {
     let mut frameworks: Vec<sovri_sdk::Framework> = Vec::new();
-    let mut controls: Vec<Control> = Vec::new();
+    let mut controls: Vec<sovri_sdk::Control> = Vec::new();
     let mut mappings: Vec<Mapping> = Vec::new();
     for scoped in results {
         let Some(framework_id) = scoped.framework_id.as_deref() else {
@@ -369,7 +411,7 @@ fn scoring_catalog(results: &[ScopedResult]) -> Catalog {
             frameworks.push(sovri_sdk::Framework::new(framework_id, ""));
         }
         if !controls.iter().any(|control| control.id() == control_id) {
-            controls.push(Control::new(
+            controls.push(sovri_sdk::Control::new(
                 control_id,
                 scoped.result.severity(),
                 scoped.result.weight(),

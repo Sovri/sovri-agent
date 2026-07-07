@@ -91,6 +91,8 @@ pub const FRAMEWORK_VERSION: &str = "2016-679";
 pub const FRAMEWORK_URL: &str = "https://eur-lex.europa.eu/eli/reg/2016/679/oj";
 /// The single control both consent results evaluate.
 pub const CONTROL: &str = "consent.tracker.prior-consent";
+/// The catalogued title of that control, as read from the persisted catalog.
+pub const CONTROL_TITLE: &str = "Prior consent for tracker access";
 /// The rule that fails: a non-essential tracker with no consent evidence.
 pub const TRACKER_RULE: &str = "consent.detect-trackers-without-consent-evidence";
 /// The rule that passes: the consent-management platform is configured.
@@ -118,11 +120,13 @@ pub fn consent_result(rule_id: &str, status: Status) -> ControlResult {
 }
 
 /// The canonical "shopfront-2026-06-24" consent corpus: the gdpr-eprivacy
-/// framework and its FAIL + PASS results over `consent.tracker.prior-consent`.
+/// framework, its catalogued `consent.tracker.prior-consent` control, and that
+/// control's FAIL + PASS results.
 #[must_use]
 pub fn consent_corpus() -> Corpus {
     Corpus::new(EXECUTED_AT)
         .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_control(FRAMEWORK, CONTROL, CONTROL_TITLE, "major", 8)
         .with_control_result(FRAMEWORK, consent_result(TRACKER_RULE, Status::Fail))
         .with_control_result(FRAMEWORK, consent_result(CMP_RULE, Status::Pass))
 }
