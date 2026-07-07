@@ -9,7 +9,10 @@
 //! already-derived corpus; it never re-runs a scanner or recomputes a score, and
 //! it links no third-party runtime dependency — the XML is emitted by hand.
 
-use sovri_sdk::Status;
+use sovri_sdk::{
+    Catalog, Control, ControlResult, ControlScore, EnvironmentScore, FrameworkScore, Mapping,
+    Status, StatusCounts,
+};
 
 /// XML declaration that opens the workbook document.
 const XML_DECLARATION: &str = r#"<?xml version="1.0"?>"#;
@@ -28,6 +31,28 @@ const RESULTS_WORKSHEET: &str = "Results";
 /// The Frameworks worksheet's name — the sheet that lists each framework's
 /// version and source URL. Named once so the emission loop can single it out.
 const FRAMEWORKS_WORKSHEET: &str = "Frameworks";
+
+/// The Summary worksheet's name — the sheet that tallies results by framework and
+/// status and names the MAT-87 score scopes. Named once so the emission loop can
+/// single it out from its siblings.
+const SUMMARY_WORKSHEET: &str = "Summary";
+
+/// Label naming the control-score scope on the Summary sheet.
+const CONTROL_SCORE_LABEL: &str = "Control score";
+/// Label naming the framework-score scope on the Summary sheet.
+const FRAMEWORK_SCORE_LABEL: &str = "Framework score";
+/// Label naming the environment-score scope on the Summary sheet.
+const ENVIRONMENT_SCORE_LABEL: &str = "Environment score";
+
+/// The statuses the Summary sheet tallies, in a fixed order so the count rows
+/// stay deterministic across runs.
+const SUMMARY_STATUS_ORDER: [Status; 5] = [
+    Status::Pass,
+    Status::Fail,
+    Status::Warning,
+    Status::Skipped,
+    Status::Error,
+];
 
 /// The worksheets the workbook always carries, in their fixed emission order.
 ///
@@ -53,8 +78,19 @@ const WORKSHEET_NAMES: [&str; 6] = [
 /// same corpus.
 pub struct Corpus {
     executed_at: String,
-    results: Vec<Status>,
+    results: Vec<ScopedResult>,
     frameworks: Vec<Framework>,
+}
+
+/// A control result together with the framework it was evaluated under.
+///
+/// The Summary sheet tallies and scores results per framework, so each result the
+/// corpus holds records which framework produced it. A result added through
+/// [`Corpus::with_result`] carries no framework: it is laid out on the Results
+/// sheet but never counted or scored per framework.
+struct ScopedResult {
+    framework_id: Option<String>,
+    result: ControlResult,
 }
 
 /// A compliance framework the corpus covers — its id, catalog version, and the
@@ -81,15 +117,41 @@ impl Corpus {
         }
     }
 
-    /// Adds a control result carrying the given status to the corpus.
+    /// Adds a bare control result carrying the given status to the corpus.
     ///
     /// Every result the corpus holds renders as one row on the Results sheet, so
     /// the export lays out the run's outcomes read from the persisted corpus,
-    /// never re-run. The builder is chainable so a corpus can be assembled
-    /// inline.
+    /// never re-run. A bare result carries no framework, so it is laid out on the
+    /// Results sheet but not counted or scored per framework on the Summary sheet;
+    /// use [`Corpus::with_control_result`] to add a framework-scoped result. The
+    /// builder is chainable so a corpus can be assembled inline.
     #[must_use]
     pub fn with_result(mut self, status: Status) -> Self {
-        self.results.push(status);
+        let result = minimal_result(&self.executed_at, status);
+        self.results.push(ScopedResult {
+            framework_id: None,
+            result,
+        });
+        self
+    }
+
+    /// Adds a control result evaluated under `framework_id` to the corpus.
+    ///
+    /// The result renders as one row on the Results sheet and feeds the Summary
+    /// sheet, where it is counted by status and folded into the MAT-87 control,
+    /// framework, and environment scores, grouped by the framework it was
+    /// evaluated under. Those scores are consumed from the SDK, never recomputed
+    /// here. The builder is chainable.
+    #[must_use]
+    pub fn with_control_result(
+        mut self,
+        framework_id: impl Into<String>,
+        result: ControlResult,
+    ) -> Self {
+        self.results.push(ScopedResult {
+            framework_id: Some(framework_id.into()),
+            result,
+        });
         self
     }
 
@@ -135,6 +197,8 @@ pub fn export(corpus: &Corpus) -> String {
             push_results_table(&mut worksheets, &corpus.results);
         } else if name == FRAMEWORKS_WORKSHEET {
             push_frameworks_table(&mut worksheets, &corpus.frameworks);
+        } else if name == SUMMARY_WORKSHEET {
+            push_summary_table(&mut worksheets, &corpus.results);
         } else {
             worksheets.push_str("<Table/>\n");
         }
@@ -152,19 +216,42 @@ pub fn export(corpus: &Corpus) -> String {
     )
 }
 
+/// Builds a bare control result carrying `status`, with placeholder identity
+/// fields, so a [`Corpus::with_result`] status can be laid out on the Results
+/// sheet through the same `ControlResult` the framework-scoped path uses. The
+/// placeholder control leaves the result unmapped, so it never joins a
+/// per-framework tally or score.
+fn minimal_result(executed_at: &str, status: Status) -> ControlResult {
+    let mut builder = ControlResult::builder()
+        .control_id("")
+        .rule_id("")
+        .status(status)
+        .severity("")
+        .weight(0)
+        .evidence_refs(std::iter::empty::<&str>())
+        .executed_at(executed_at)
+        .execution_metadata("");
+    if status != Status::Pass {
+        builder = builder.reason("status recorded for the Results sheet");
+    }
+    builder
+        .build()
+        .expect("the bare Results-sheet result validates")
+}
+
 /// Appends the Results sheet's `<Table>` — one `<Row>` per control result, each
 /// a single string cell carrying the result's status label (`PASS`, `FAIL`,
 /// `WARNING`, `SKIPPED`, or `ERROR`). An empty corpus keeps the self-closing
 /// `<Table/>`, so the sheet stays present but carries no rows.
-fn push_results_table(out: &mut String, results: &[Status]) {
+fn push_results_table(out: &mut String, results: &[ScopedResult]) {
     if results.is_empty() {
         out.push_str("<Table/>\n");
         return;
     }
     out.push_str("<Table>\n");
-    for status in results {
+    for scoped in results {
         out.push_str("<Row>");
-        push_string_cell(out, status.label());
+        push_string_cell(out, scoped.result.status().label());
         out.push_str("</Row>\n");
     }
     out.push_str("</Table>\n");
@@ -187,6 +274,134 @@ fn push_frameworks_table(out: &mut String, frameworks: &[Framework]) {
         out.push_str("</Row>\n");
     }
     out.push_str("</Table>\n");
+}
+
+/// Appends the Summary sheet's `<Table>` — the per-framework status tally and the
+/// MAT-87 score scopes (control, framework, environment) folded from the corpus's
+/// framework-scoped results. A corpus with no framework-scoped result keeps the
+/// self-closing `<Table/>`, so the sheet stays present but carries no rows.
+fn push_summary_table(out: &mut String, results: &[ScopedResult]) {
+    let environment = environment_score(results);
+    if environment.frameworks().is_empty() {
+        out.push_str("<Table/>\n");
+        return;
+    }
+    out.push_str("<Table>\n");
+    for framework in environment.frameworks() {
+        push_status_count_rows(out, framework);
+    }
+    for framework in environment.frameworks() {
+        for control in framework.controls() {
+            push_control_score_row(out, control);
+        }
+        push_framework_score_row(out, framework);
+    }
+    push_environment_score_row(out, &environment);
+    out.push_str("</Table>\n");
+}
+
+/// Folds the corpus's framework-scoped results into a MAT-87 environment score.
+///
+/// The results are grouped into a minimal catalog by the framework each was
+/// evaluated under, then scored by the SDK; the exporter consumes the score and
+/// never recomputes it. A result with no framework is left unmapped and excluded.
+fn environment_score(results: &[ScopedResult]) -> EnvironmentScore {
+    let catalog = scoring_catalog(results);
+    let control_results: Vec<ControlResult> =
+        results.iter().map(|scoped| scoped.result.clone()).collect();
+    EnvironmentScore::compute(&catalog, &control_results)
+}
+
+/// Builds the minimal catalog the SDK needs to partition results by framework:
+/// one framework, control, and mapping per distinct framework-scoped result, each
+/// control carrying the severity and weight its result recorded.
+fn scoring_catalog(results: &[ScopedResult]) -> Catalog {
+    let mut frameworks: Vec<sovri_sdk::Framework> = Vec::new();
+    let mut controls: Vec<Control> = Vec::new();
+    let mut mappings: Vec<Mapping> = Vec::new();
+    for scoped in results {
+        let Some(framework_id) = scoped.framework_id.as_deref() else {
+            continue;
+        };
+        let control_id = scoped.result.control_id();
+        if !frameworks
+            .iter()
+            .any(|framework| framework.id() == framework_id)
+        {
+            frameworks.push(sovri_sdk::Framework::new(framework_id, ""));
+        }
+        if !controls.iter().any(|control| control.id() == control_id) {
+            controls.push(Control::new(
+                control_id,
+                scoped.result.severity(),
+                scoped.result.weight(),
+                "",
+            ));
+        }
+        if !mappings.iter().any(|mapping| {
+            mapping.control_id() == control_id && mapping.framework_id() == framework_id
+        }) {
+            mappings.push(Mapping::new(control_id, framework_id));
+        }
+    }
+    Catalog::new(frameworks, controls, Vec::new(), mappings)
+}
+
+/// Appends one status-tally `<Row>` per non-zero status for `framework` — its
+/// framework id, the status label, and the count — in the fixed status order.
+fn push_status_count_rows(out: &mut String, framework: &FrameworkScore) {
+    let counts = framework.counts();
+    for status in SUMMARY_STATUS_ORDER {
+        let count = status_count(counts, status);
+        if count > 0 {
+            out.push_str("<Row>");
+            push_string_cell(out, framework.framework_id());
+            push_string_cell(out, status.label());
+            push_string_cell(out, &count.to_string());
+            out.push_str("</Row>\n");
+        }
+    }
+}
+
+/// The number of results `counts` tallied for `status`.
+fn status_count(counts: StatusCounts, status: Status) -> u32 {
+    match status {
+        Status::Pass => counts.pass(),
+        Status::Fail => counts.fail(),
+        Status::Warning => counts.warning(),
+        Status::Skipped => counts.skipped(),
+        Status::Error => counts.error(),
+    }
+}
+
+/// Appends the control-score `<Row>` naming the control scope — its label, the
+/// scored control id, its rule id, and the result status the score folds.
+fn push_control_score_row(out: &mut String, control: &ControlScore) {
+    out.push_str("<Row>");
+    push_string_cell(out, CONTROL_SCORE_LABEL);
+    push_string_cell(out, control.control_id());
+    push_string_cell(out, control.rule_id());
+    push_string_cell(out, control.status().label());
+    out.push_str("</Row>\n");
+}
+
+/// Appends the framework-score `<Row>` naming the framework scope — its label,
+/// the framework id, and the score ratio the SDK derived.
+fn push_framework_score_row(out: &mut String, framework: &FrameworkScore) {
+    out.push_str("<Row>");
+    push_string_cell(out, FRAMEWORK_SCORE_LABEL);
+    push_string_cell(out, framework.framework_id());
+    push_string_cell(out, &framework.ratio().to_string());
+    out.push_str("</Row>\n");
+}
+
+/// Appends the environment-score `<Row>` naming the environment scope — its label
+/// and the pooled score ratio the SDK derived across every framework.
+fn push_environment_score_row(out: &mut String, environment: &EnvironmentScore) {
+    out.push_str("<Row>");
+    push_string_cell(out, ENVIRONMENT_SCORE_LABEL);
+    push_string_cell(out, &environment.ratio().to_string());
+    out.push_str("</Row>\n");
 }
 
 /// Appends one `<Cell>` holding `value` as an XML-escaped string datum.
