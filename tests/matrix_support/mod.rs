@@ -294,3 +294,26 @@ pub fn classified_evidence_corpus() -> Corpus {
             "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         )
 }
+
+/// A large corpus of 120 control results under the consent framework, each with a
+/// distinct control and rule id and a status cycling through the five outcomes,
+/// for asserting the export stays deterministic at scale.
+#[must_use]
+pub fn large_corpus() -> Corpus {
+    let mut corpus =
+        Corpus::new(EXECUTED_AT).with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL);
+    for index in 0..120 {
+        let control = format!("control.{index:03}");
+        let rule = format!("rule.{index:03}");
+        let status = match index % 5 {
+            0 => Status::Pass,
+            1 => Status::Fail,
+            2 => Status::Warning,
+            3 => Status::Skipped,
+            _ => Status::Error,
+        };
+        corpus =
+            corpus.with_control_result(FRAMEWORK, control_result(&control, &rule, "major", status));
+    }
+    corpus
+}
