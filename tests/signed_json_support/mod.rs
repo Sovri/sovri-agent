@@ -9,6 +9,9 @@
 //! not every binary uses every helper.
 #![allow(dead_code)]
 
+use sovri_agent::matrix::Corpus;
+use sovri_sdk::{ControlResult, Status};
+
 /// A fixed, non-production Ed25519 signing seed.
 ///
 /// Committed only so the signed export is deterministic and snapshot-testable.
@@ -17,6 +20,59 @@ pub const FIXTURE_SIGNING_SEED: [u8; 32] = [
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
     0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
 ];
+
+const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
+const RUN_ID: &str = "shopfront-2026-06-24";
+const FRAMEWORK: &str = "gdpr-eprivacy";
+const FRAMEWORK_VERSION: &str = "2016-679";
+const FRAMEWORK_URL: &str = "https://eur-lex.europa.eu/eli/reg/2016/679/oj";
+const CONTROL: &str = "consent.tracker.prior-consent";
+const CONTROL_TITLE: &str = "Prior consent for tracker access";
+const CONTROL_REFERENCE: &str = "gdpr-eprivacy:2016-679:Art.7";
+const CONTROL_SEVERITY: &str = "major";
+const CONTROL_WEIGHT: u32 = 8;
+const TRACKER_RULE: &str = "consent.detect-trackers-without-consent-evidence";
+const CMP_RULE: &str = "consent.detect-cmp-misconfiguration";
+const EVIDENCE_ID: &str = "ev-0001";
+const EXECUTION_METADATA: &str = "engine_version=0.3.0";
+
+fn consent_result(rule_id: &str, status: Status) -> ControlResult {
+    let mut builder = ControlResult::builder()
+        .control_id(CONTROL)
+        .rule_id(rule_id)
+        .status(status)
+        .severity(CONTROL_SEVERITY)
+        .weight(CONTROL_WEIGHT)
+        .evidence_refs([EVIDENCE_ID])
+        .executed_at(EXECUTED_AT)
+        .execution_metadata(EXECUTION_METADATA);
+    if status != Status::Pass {
+        builder = builder.reason("Non-essential tracker loaded without recorded consent.");
+    }
+    builder
+        .build()
+        .expect("the consent fixture result validates")
+}
+
+/// Returns the fixed `shopfront-2026-06-24` consent corpus used by MAT-97 signed
+/// JSON acceptance tests.
+#[must_use]
+pub fn consent_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_run_id(RUN_ID)
+        .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_control(
+            FRAMEWORK,
+            CONTROL,
+            CONTROL_TITLE,
+            CONTROL_SEVERITY,
+            CONTROL_WEIGHT,
+            CONTROL_REFERENCE,
+        )
+        .with_control_result(FRAMEWORK, consent_result(TRACKER_RULE, Status::Fail))
+        .with_control_result(FRAMEWORK, consent_result(CMP_RULE, Status::Pass))
+        .with_evidence(EVIDENCE_ID, "dist/main.js")
+}
 
 /// Returns true when the compact JSON document carries a top-level-visible
 /// member named `name` (matched as `"name":`).
