@@ -121,6 +121,7 @@ const WORKSHEET_NAMES: [&str; 6] = [
 /// their rows from the same corpus.
 pub struct Corpus {
     executed_at: String,
+    run_id: String,
     controls: Vec<Control>,
     results: Vec<ScopedResult>,
     evidence: Vec<Evidence>,
@@ -219,6 +220,7 @@ impl Corpus {
     pub fn new(executed_at: impl Into<String>) -> Self {
         Self {
             executed_at: executed_at.into(),
+            run_id: String::new(),
             controls: Vec::new(),
             results: Vec::new(),
             evidence: Vec::new(),
@@ -232,6 +234,24 @@ impl Corpus {
     #[must_use]
     pub fn executed_at(&self) -> &str {
         &self.executed_at
+    }
+
+    /// Records the stable id of the compliance run, the value the signed export's
+    /// scan record carries so a downstream system can key off the run. A corpus
+    /// built without one carries an empty run id, so existing callers are
+    /// unaffected. The builder is chainable.
+    #[must_use]
+    pub fn with_run_id(mut self, run_id: impl Into<String>) -> Self {
+        self.run_id = run_id.into();
+        self
+    }
+
+    /// The stable id of the compliance run, carried on the signed export's scan
+    /// record so each export traces back to its run. Empty when the corpus was
+    /// built without one.
+    #[must_use]
+    pub fn run_id(&self) -> &str {
+        &self.run_id
     }
 
     /// The frameworks the corpus covers, each as its stable id, catalog version,
