@@ -22,6 +22,8 @@ const FRAMEWORK: &str = "gdpr-eprivacy";
 const CONTROL: &str = "consent.tracker.prior-consent";
 /// The rule the errored result records.
 const RULE: &str = "consent.detect-trackers-without-consent-evidence";
+/// The catalogued severity of the consent control.
+const SEVERITY: &str = "major";
 /// The stable id of the evidence record the result references.
 const EVIDENCE_ID: &str = "ev-0001";
 
@@ -32,7 +34,7 @@ fn error_result() -> ControlResult {
         .control_id(CONTROL)
         .rule_id(RULE)
         .status(Status::Error)
-        .severity("major")
+        .severity(SEVERITY)
         .weight(8)
         .evidence_refs([EVIDENCE_ID])
         .executed_at(EXECUTED_AT)
