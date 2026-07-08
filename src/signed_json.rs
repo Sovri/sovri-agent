@@ -97,27 +97,33 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
 /// Verification gates on the schema version first: the document must declare the
 /// supported `payload.schema.schema_version` (currently `1`). A version that is
 /// absent or unsupported is rejected before any further check, a distinct failure
-/// from a signature mismatch. It then checks the Ed25519 signature: it reconstructs
-/// the canonical `payload` + `verification` bytes the signature was computed over,
-/// recomputes their SHA-256 digest, and verifies the embedded signature against the
-/// embedded public key. Any change to the payload or the verification metadata
-/// after signing breaks the signature and is rejected.
+/// from a signature mismatch. It then gates on the declared
+/// `verification.algorithm` (currently `Ed25519`) before checking the signature:
+/// it reconstructs the canonical `payload` + `verification` bytes the signature
+/// was computed over, recomputes their SHA-256 digest, and verifies the embedded
+/// signature against the embedded public key. Any change to the payload or the
+/// verification metadata after signing breaks the signature and is rejected.
 ///
 /// # Errors
 ///
 /// Returns [`VerifyError::UnsupportedVersion`] when the document declares no
-/// supported `payload.schema.schema_version`, [`VerifyError::MissingVerificationKey`]
-/// when it embeds no verification public key, or [`VerifyError::InvalidSignature`]
-/// when the signature does not verify against the embedded public key over the
+/// supported `payload.schema.schema_version`,
+/// [`VerifyError::UnsupportedAlgorithm`] when it declares no supported
+/// `verification.algorithm`, [`VerifyError::MissingVerificationKey`] when it
+/// embeds no verification public key, or [`VerifyError::InvalidSignature`] when
+/// the signature does not verify against the embedded public key over the
 /// document's canonical payload and verification bytes.
 pub fn verify(document: &str) -> Result<(), VerifyError> {
     if declared_schema_version(document) != Some(SCHEMA_VERSION) {
         return Err(VerifyError::UnsupportedVersion);
     }
+    if declared_algorithm(document) != Some(ALGORITHM) {
+        return Err(VerifyError::UnsupportedAlgorithm);
+    }
     verify_signature(document)
 }
 
-/// Checks the Ed25519 signature of a schema-valid `document`.
+/// Checks the Ed25519 signature of a schema- and algorithm-valid `document`.
 ///
 /// Reconstructs the canonical `payload` + `verification` bytes the signature was
 /// computed over — the document with its `signature` member removed — recomputes
@@ -170,6 +176,15 @@ fn embedded_public_key(document: &str) -> Option<&str> {
     Some(&document[start..start + len])
 }
 
+/// Reads the signature algorithm a compact export `document` declares, or `None`
+/// when the member is absent.
+fn declared_algorithm(document: &str) -> Option<&str> {
+    let anchor = "\"algorithm\":\"";
+    let start = document.find(anchor)? + anchor.len();
+    let len = document[start..].find('"')?;
+    Some(&document[start..start + len])
+}
+
 /// Decodes an even-length lowercase-hex string into a fixed `N`-byte array, or
 /// `None` when the hex is malformed or decodes to a length other than `N`.
 fn decode_fixed<const N: usize>(hex: &str) -> Option<[u8; N]> {
@@ -211,6 +226,10 @@ pub enum VerifyError {
     /// `payload.schema.schema_version` member is absent or carries a value the
     /// verifier does not support — so it cannot be read as a known export.
     UnsupportedVersion,
+    /// The document declares no supported signature algorithm — its
+    /// `verification.algorithm` member is absent or carries a value the verifier
+    /// does not support.
+    UnsupportedAlgorithm,
     /// The signature does not verify against the embedded public key over the
     /// document's canonical payload and verification bytes — the document was
     /// altered after signing, its verification metadata was swapped, or its
@@ -228,6 +247,9 @@ impl fmt::Display for VerifyError {
         match self {
             Self::UnsupportedVersion => {
                 f.write_str("the export declares no supported schema version")
+            }
+            Self::UnsupportedAlgorithm => {
+                f.write_str("the export declares an unsupported signature algorithm")
             }
             Self::InvalidSignature => {
                 f.write_str("the signature does not verify the export's payload")
