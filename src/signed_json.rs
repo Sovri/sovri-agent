@@ -46,6 +46,8 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
     let public_key = signing_key.verifying_key().to_bytes();
 
     let scoped = corpus.scoped_results();
+    let frameworks = corpus.frameworks();
+    let controls = corpus.controls();
     let payload = Json::Object(vec![
         (
             "schema",
@@ -61,10 +63,10 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
                 ("id", Json::Str(corpus.run_id().to_owned())),
             ]),
         ),
-        ("frameworks", frameworks_array(&corpus.frameworks())),
+        ("frameworks", frameworks_array(&frameworks)),
         ("controls", id_array(&corpus.control_ids())),
         ("results", results_array(&scoped)),
-        ("gaps", gaps_array(&scoped)),
+        ("gaps", gaps_array(&scoped, &controls, &frameworks)),
         ("evidence", id_array(&corpus.evidence_ids())),
         ("scores", Json::Object(Vec::new())),
     ]);
@@ -292,31 +294,97 @@ fn results_array(scoped: &[(Option<&str>, &ControlResult)]) -> Json {
 /// Builds the `gaps` section — one record per compliance gap: a framework-scoped
 /// result that failed or warned and so requires review. A passing, skipped, or
 /// unscoped result is not a gap.
-fn gaps_array(scoped: &[(Option<&str>, &ControlResult)]) -> Json {
+fn gaps_array(
+    scoped: &[(Option<&str>, &ControlResult)],
+    controls: &[(&str, &str, &str, &str)],
+    frameworks: &[(&str, &str, &str)],
+) -> Json {
     Json::Array(
         scoped
             .iter()
-            .filter(|(framework, result)| framework.is_some() && is_gap(result.status()))
-            .map(|&(_, result)| result_member(result))
+            .filter_map(|&(framework, result)| {
+                let framework_id = framework?;
+                is_gap(result.status())
+                    .then(|| gap_member(result, framework_id, controls, frameworks))
+            })
             .collect(),
     )
 }
 
-/// Builds the JSON record the results and gaps sections share — a stable derived
-/// id (`{control_id}:{rule_id}`), the control and rule ids it is composed from, and
-/// the status label (`PASS`, `FAIL`, `WARNING`, `SKIPPED`, or `ERROR`), the same
-/// label the matrix export renders. The id is derived only from the record's own
-/// stable corpus keys, so re-exporting the same corpus yields the same id.
+/// The stable derived id of a control result — `{control_id}:{rule_id}`, composed
+/// only from the record's own stable corpus keys, so re-exporting the same corpus
+/// yields the same id. Shared by the result and gap records.
+fn derived_id(result: &ControlResult) -> String {
+    format!("{}:{}", result.control_id(), result.rule_id())
+}
+
+/// Builds the JSON record the results section carries — a stable derived id, the
+/// control and rule ids it is composed from, and the status label (`PASS`, `FAIL`,
+/// `WARNING`, `SKIPPED`, or `ERROR`), the same label the matrix export renders.
+/// Gaps use [`gap_member`], which adds the gap-specific reference, severity, and
+/// source URL.
 fn result_member(result: &ControlResult) -> Json {
     Json::Object(vec![
         ("control_id", Json::Str(result.control_id().to_owned())),
-        (
-            "id",
-            Json::Str(format!("{}:{}", result.control_id(), result.rule_id())),
-        ),
+        ("id", Json::Str(derived_id(result))),
         ("rule_id", Json::Str(result.rule_id().to_owned())),
         ("status", Json::Str(result.status().label().to_owned())),
     ])
+}
+
+/// Builds a gap record — the control and rule ids, the shared derived id, and the
+/// status, plus the gap-specific fields: the catalogued control's own non-CWE
+/// framework reference and its severity, and its framework's source URL. The
+/// reference and severity are resolved from the control by framework and control
+/// id, and the source URL from the framework by id, so each gap shows its own
+/// values, never a shared constant or a forced CWE field.
+fn gap_member(
+    result: &ControlResult,
+    framework_id: &str,
+    controls: &[(&str, &str, &str, &str)],
+    frameworks: &[(&str, &str, &str)],
+) -> Json {
+    let (severity, reference) = catalogued_control(controls, framework_id, result.control_id());
+    let source_url = framework_source_url(frameworks, framework_id);
+    Json::Object(vec![
+        ("control_id", Json::Str(result.control_id().to_owned())),
+        ("id", Json::Str(derived_id(result))),
+        ("reference", Json::Str(reference.to_owned())),
+        ("rule_id", Json::Str(result.rule_id().to_owned())),
+        ("severity", Json::Str(severity.to_owned())),
+        ("source_url", Json::Str(source_url.to_owned())),
+        ("status", Json::Str(result.status().label().to_owned())),
+    ])
+}
+
+/// The catalogued control's severity and non-CWE framework reference for a gap on
+/// `control_id` under `framework_id`, looked up by framework and control id so each
+/// gap shows its own values. An uncatalogued control yields empty strings, never a
+/// CWE fallback.
+fn catalogued_control<'a>(
+    controls: &[(&'a str, &'a str, &'a str, &'a str)],
+    framework_id: &str,
+    control_id: &str,
+) -> (&'a str, &'a str) {
+    controls
+        .iter()
+        .find(|&&(framework, control, _, _)| framework == framework_id && control == control_id)
+        .map_or(("", ""), |&(_, _, severity, reference)| {
+            (severity, reference)
+        })
+}
+
+/// The framework's source URL for a gap under `framework_id`, looked up by id so a
+/// gap reuses the framework the corpus already holds. An unlisted framework yields
+/// an empty source URL.
+fn framework_source_url<'a>(
+    frameworks: &[(&'a str, &'a str, &'a str)],
+    framework_id: &str,
+) -> &'a str {
+    frameworks
+        .iter()
+        .find(|&&(id, _, _)| id == framework_id)
+        .map_or("", |&(_, _, source_url)| source_url)
 }
 
 /// Whether a result of `status` is a compliance gap — a failed or warned outcome
