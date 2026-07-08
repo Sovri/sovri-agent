@@ -40,6 +40,39 @@ fn member_count(doc: &str, name: &str) -> usize {
     doc.match_indices(&format!("\"{name}\":")).count()
 }
 
+/// Returns direct member names of a compact JSON object.
+fn direct_members(object: &str) -> Vec<String> {
+    let bytes = object.as_bytes();
+    let mut members = Vec::new();
+    let mut depth: i32 = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => {
+                let start = index + 1;
+                let mut end = start;
+                while end < bytes.len() && bytes[end] != b'"' {
+                    end += if bytes[end] == b'\\' { 2 } else { 1 };
+                }
+                if depth == 1 && end + 1 < bytes.len() && bytes[end + 1] == b':' {
+                    members.push(String::from_utf8_lossy(&bytes[start..end]).into_owned());
+                }
+                index = end + 1;
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' | b']' => {
+                depth -= 1;
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    members
+}
+
 /// Asserts the payload does not carry an authoritative summary member.
 fn assert_payload_lacks_member(payload: &str, member: &str, description: &str) {
     assert!(
@@ -99,9 +132,10 @@ fn the_export_carries_no_authoritative_verdict_derived_from_scores() {
     assert_payload_lacks_member(payload, "risk_rating", "risk_rating");
 
     // And the scores appear only under "payload.scores" as a posture summary.
+    let payload_members = direct_members(payload);
     assert!(
-        has_member(payload, "scores"),
-        "the payload carries the scores posture summary (payload: {payload})"
+        payload_members.iter().any(|member| member == "scores"),
+        "the payload carries scores as a direct posture summary member (members: {payload_members:?})"
     );
     assert_eq!(
         member_count(&document, "scores"),
