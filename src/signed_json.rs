@@ -244,6 +244,8 @@ impl std::error::Error for VerifyError {}
 enum Json {
     /// A JSON string, escaped on output.
     Str(String),
+    /// A JSON boolean, emitted verbatim.
+    Bool(bool),
     /// A JSON integer, emitted verbatim.
     Int(i64),
     /// A JSON array; its elements are emitted in the order given.
@@ -406,6 +408,7 @@ fn scores_object(environment: &EnvironmentScore) -> Json {
         ("control", control_scores(environment)),
         ("environment", Json::Str(environment.ratio().to_string())),
         ("framework", framework_scores(environment)),
+        ("incomplete", Json::Bool(environment.incomplete())),
     ])
 }
 
@@ -499,6 +502,7 @@ fn write_object(out: &mut String, members: &[(&'static str, Json)]) {
 fn write_value(out: &mut String, value: &Json) {
     match value {
         Json::Str(text) => write_string(out, text),
+        Json::Bool(flag) => out.push_str(if *flag { "true" } else { "false" }),
         Json::Int(number) => out.push_str(&number.to_string()),
         Json::Array(items) => write_array(out, items),
         Json::Object(members) => write_object(out, members),
