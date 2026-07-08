@@ -51,3 +51,53 @@ pub fn string_member(doc: &str, name: &str) -> Option<String> {
     }
     None
 }
+
+/// Returns the JSON value of the member `name` — the balanced `{...}` object or
+/// `[...]` array that follows `"name":` in the compact document — so a test can
+/// scope an assertion to one section (a payload array, the verification object,
+/// and so on).
+///
+/// Nesting depth is tracked through string values, so the matching close
+/// delimiter, not a brace or bracket inside a string, ends the slice. Handles
+/// both object and array values, which is why no separate array scoper is needed.
+/// Standard-library only.
+///
+/// # Panics
+///
+/// Panics when the document carries no `"name":` member, so a test that scopes a
+/// missing section fails with a clear message.
+#[must_use]
+pub fn section_value<'a>(doc: &'a str, name: &str) -> &'a str {
+    let anchor = format!("\"{name}\":");
+    let start = doc
+        .find(&anchor)
+        .unwrap_or_else(|| panic!("the document has a {name:?} member"))
+        + anchor.len();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, ch) in doc[start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &doc[start..start + offset + ch.len_utf8()];
+                }
+            }
+            _ => {}
+        }
+    }
+    &doc[start..]
+}
