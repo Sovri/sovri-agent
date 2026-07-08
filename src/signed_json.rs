@@ -133,12 +133,14 @@ fn gaps_array(scoped: &[(Option<&str>, &ControlResult)]) -> Json {
     )
 }
 
-/// Builds the minimal JSON record the results and gaps sections share — the stable
-/// control and rule ids of a control result.
+/// Builds the JSON record the results and gaps sections share — the stable control
+/// and rule ids of a control result and its status label (`PASS`, `FAIL`,
+/// `WARNING`, `SKIPPED`, or `ERROR`), the same label the matrix export renders.
 fn result_member(result: &ControlResult) -> Json {
     Json::Object(vec![
         ("control_id", Json::Str(result.control_id().to_owned())),
         ("rule_id", Json::Str(result.rule_id().to_owned())),
+        ("status", Json::Str(result.status().label().to_owned())),
     ])
 }
 
