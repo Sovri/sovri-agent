@@ -157,3 +157,141 @@ pub fn section_value<'a>(doc: &'a str, name: &str) -> &'a str {
     }
     &doc[start..]
 }
+
+/// Asserts that every JSON object inside `json` emits its member keys in
+/// lexicographic order.
+///
+/// This walks the raw compact JSON text instead of parsing into a map, because a
+/// map would erase the key order the exporter actually emitted.
+///
+/// # Panics
+///
+/// Panics when `json` is malformed or when any object is not ordered.
+pub fn assert_object_keys_are_lexicographic(json: &str) {
+    let mut cursor = 0;
+    walk_json_value(json, &mut cursor);
+    skip_json_whitespace(json, &mut cursor);
+    assert_eq!(cursor, json.len(), "the full JSON value was consumed");
+}
+
+fn walk_json_value(json: &str, cursor: &mut usize) {
+    skip_json_whitespace(json, cursor);
+    match json.as_bytes().get(*cursor).copied() {
+        Some(b'{') => walk_json_object(json, cursor),
+        Some(b'[') => walk_json_array(json, cursor),
+        Some(b'"') => {
+            read_json_string(json, cursor);
+        }
+        Some(_) => skip_json_primitive(json, cursor),
+        None => panic!("expected a JSON value"),
+    }
+}
+
+fn walk_json_object(json: &str, cursor: &mut usize) {
+    let start = *cursor;
+    expect_json_byte(json, cursor, b'{');
+    let mut keys = Vec::new();
+    skip_json_whitespace(json, cursor);
+    if consume_json_byte(json, cursor, b'}') {
+        return;
+    }
+
+    loop {
+        let key = read_json_string(json, cursor);
+        keys.push(key);
+        expect_json_byte(json, cursor, b':');
+        walk_json_value(json, cursor);
+        skip_json_whitespace(json, cursor);
+        if consume_json_byte(json, cursor, b'}') {
+            break;
+        }
+        expect_json_byte(json, cursor, b',');
+    }
+
+    let mut sorted = keys.clone();
+    sorted.sort();
+    assert_eq!(
+        keys,
+        sorted,
+        "JSON object keys are lexicographic in {}",
+        &json[start..*cursor]
+    );
+}
+
+fn walk_json_array(json: &str, cursor: &mut usize) {
+    expect_json_byte(json, cursor, b'[');
+    skip_json_whitespace(json, cursor);
+    if consume_json_byte(json, cursor, b']') {
+        return;
+    }
+
+    loop {
+        walk_json_value(json, cursor);
+        skip_json_whitespace(json, cursor);
+        if consume_json_byte(json, cursor, b']') {
+            break;
+        }
+        expect_json_byte(json, cursor, b',');
+    }
+}
+
+fn read_json_string(json: &str, cursor: &mut usize) -> String {
+    expect_json_byte(json, cursor, b'"');
+    let mut value = String::new();
+    while let Some(ch) = json[*cursor..].chars().next() {
+        *cursor += ch.len_utf8();
+        match ch {
+            '"' => return value,
+            '\\' => {
+                let escaped = json[*cursor..]
+                    .chars()
+                    .next()
+                    .expect("escaped JSON string character");
+                *cursor += escaped.len_utf8();
+                value.push('\\');
+                value.push(escaped);
+            }
+            _ => value.push(ch),
+        }
+    }
+    panic!("unterminated JSON string");
+}
+
+fn skip_json_primitive(json: &str, cursor: &mut usize) {
+    while let Some(byte) = json.as_bytes().get(*cursor).copied() {
+        if matches!(byte, b',' | b']' | b'}') {
+            break;
+        }
+        *cursor += 1;
+    }
+}
+
+fn skip_json_whitespace(json: &str, cursor: &mut usize) {
+    while matches!(
+        json.as_bytes().get(*cursor),
+        Some(b' ' | b'\n' | b'\r' | b'\t')
+    ) {
+        *cursor += 1;
+    }
+}
+
+fn expect_json_byte(json: &str, cursor: &mut usize, expected: u8) {
+    skip_json_whitespace(json, cursor);
+    assert_eq!(
+        json.as_bytes().get(*cursor).copied(),
+        Some(expected),
+        "expected byte {:?}",
+        char::from(expected)
+    );
+    *cursor += 1;
+}
+
+fn consume_json_byte(json: &str, cursor: &mut usize, expected: u8) -> bool {
+    skip_json_whitespace(json, cursor);
+    if json.as_bytes().get(*cursor).copied() == Some(expected) {
+        *cursor += 1;
+        true
+    } else {
+        false
+    }
+}
