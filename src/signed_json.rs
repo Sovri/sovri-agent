@@ -24,6 +24,7 @@ use sovri_sdk::{
     content_digest, ControlResult, ControlScore, EnvironmentScore, FrameworkScore, ScoreRatio,
     Status,
 };
+use std::cmp::Ordering;
 use std::fmt;
 
 /// The self-describing schema format the export declares.
@@ -288,16 +289,10 @@ fn frameworks_array(frameworks: &[(&str, &str, &str)]) -> Json {
 /// Builds the `results` section — one record per control result, carrying the
 /// stable control and rule ids that trace it back to the corpus.
 fn results_array(scoped: &[(Option<&str>, &ControlResult)]) -> Json {
-    let mut results: Vec<&ControlResult> = scoped.iter().map(|&(_, result)| result).collect();
-    results.sort_by(|a, b| {
-        a.control_id()
-            .cmp(b.control_id())
-            .then_with(|| a.rule_id().cmp(b.rule_id()))
-    });
     Json::Array(
-        results
+        ordered_scoped_results(scoped)
             .iter()
-            .map(|&result| result_member(result))
+            .map(|&(_, result)| result_member(result))
             .collect(),
     )
 }
@@ -311,7 +306,7 @@ fn gaps_array(
     frameworks: &[(&str, &str, &str)],
 ) -> Json {
     Json::Array(
-        scoped
+        ordered_scoped_results(scoped)
             .iter()
             .filter_map(|&(framework, result)| {
                 let framework_id = framework?;
@@ -320,6 +315,22 @@ fn gaps_array(
             })
             .collect(),
     )
+}
+
+/// Returns framework-scoped results ordered by their stable control and rule ids,
+/// the array ordering the canonical JSON payload relies on.
+fn ordered_scoped_results<'a>(
+    scoped: &[(Option<&'a str>, &'a ControlResult)],
+) -> Vec<(Option<&'a str>, &'a ControlResult)> {
+    let mut results = scoped.to_vec();
+    results.sort_by(|(_, a), (_, b)| result_id_order(a, b));
+    results
+}
+
+fn result_id_order(a: &ControlResult, b: &ControlResult) -> Ordering {
+    a.control_id()
+        .cmp(b.control_id())
+        .then_with(|| a.rule_id().cmp(b.rule_id()))
 }
 
 /// The stable derived id of a control result — `{control_id}:{rule_id}`, composed
