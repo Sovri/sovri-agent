@@ -288,10 +288,16 @@ fn frameworks_array(frameworks: &[(&str, &str, &str)]) -> Json {
 /// Builds the `results` section — one record per control result, carrying the
 /// stable control and rule ids that trace it back to the corpus.
 fn results_array(scoped: &[(Option<&str>, &ControlResult)]) -> Json {
+    let mut results: Vec<&ControlResult> = scoped.iter().map(|&(_, result)| result).collect();
+    results.sort_by(|a, b| {
+        a.control_id()
+            .cmp(b.control_id())
+            .then_with(|| a.rule_id().cmp(b.rule_id()))
+    });
     Json::Array(
-        scoped
+        results
             .iter()
-            .map(|&(_, result)| result_member(result))
+            .map(|&result| result_member(result))
             .collect(),
     )
 }
