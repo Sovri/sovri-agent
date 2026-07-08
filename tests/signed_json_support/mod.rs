@@ -37,13 +37,25 @@ const EVIDENCE_ID: &str = "ev-0001";
 const EXECUTION_METADATA: &str = "engine_version=0.3.0";
 
 fn consent_result(rule_id: &str, status: Status) -> ControlResult {
+    consent_result_with_evidence_refs(rule_id, status, vec![EVIDENCE_ID])
+}
+
+fn consent_result_without_evidence(rule_id: &str, status: Status) -> ControlResult {
+    consent_result_with_evidence_refs(rule_id, status, Vec::new())
+}
+
+fn consent_result_with_evidence_refs(
+    rule_id: &str,
+    status: Status,
+    evidence_refs: Vec<&str>,
+) -> ControlResult {
     let mut builder = ControlResult::builder()
         .control_id(CONTROL)
         .rule_id(rule_id)
         .status(status)
         .severity(CONTROL_SEVERITY)
         .weight(CONTROL_WEIGHT)
-        .evidence_refs([EVIDENCE_ID])
+        .evidence_refs(evidence_refs)
         .executed_at(EXECUTED_AT)
         .execution_metadata(EXECUTION_METADATA);
     if status != Status::Pass {
@@ -66,6 +78,27 @@ pub fn consent_corpus() -> Corpus {
 #[must_use]
 pub fn shuffled_consent_corpus() -> Corpus {
     consent_corpus_with_results(&[(CMP_RULE, Status::Pass), (TRACKER_RULE, Status::Fail)])
+}
+
+/// Returns the fixed consent corpus with one passing result and no stored
+/// evidence record.
+#[must_use]
+pub fn all_pass_consent_corpus_without_evidence() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_run_id(RUN_ID)
+        .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_control(
+            FRAMEWORK,
+            CONTROL,
+            CONTROL_TITLE,
+            CONTROL_SEVERITY,
+            CONTROL_WEIGHT,
+            CONTROL_REFERENCE,
+        )
+        .with_control_result(
+            FRAMEWORK,
+            consent_result_without_evidence(TRACKER_RULE, Status::Pass),
+        )
 }
 
 fn consent_corpus_with_results(results: &[(&str, Status)]) -> Corpus {
