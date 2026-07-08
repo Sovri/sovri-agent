@@ -21,6 +21,7 @@
 use crate::matrix::Corpus;
 use ed25519_dalek::{Signer, SigningKey};
 use sovri_sdk::{content_digest, ControlResult, Status};
+use std::fmt;
 
 /// The self-describing schema format the export declares.
 const SCHEMA_FORMAT: &str = "sovri.compliance-export/v1";
@@ -83,6 +84,63 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
 
     canonical_object(&members)
 }
+
+/// Verifies a signed JSON `document`, returning `Ok(())` when it is a valid export
+/// and an error describing the first check that failed.
+///
+/// Verification gates on the schema version first: the document must declare the
+/// supported `payload.schema.schema_version` (currently `1`). A document whose
+/// version member is absent, or carries a value other than the supported one, is
+/// rejected before any further check, so an unknown schema is a distinct failure
+/// that a later signature check builds on rather than conflates with.
+///
+/// # Errors
+///
+/// Returns [`VerifyError::UnsupportedVersion`] when the document declares no
+/// `payload.schema.schema_version`, or one other than the supported version.
+pub fn verify(document: &str) -> Result<(), VerifyError> {
+    if declared_schema_version(document) != Some(SCHEMA_VERSION) {
+        return Err(VerifyError::UnsupportedVersion);
+    }
+    Ok(())
+}
+
+/// Reads the `schema_version` integer a compact export `document` declares, or
+/// `None` when the member is absent or not an unquoted integer.
+///
+/// Scans for the `"schema_version":` key and parses the unquoted digit run that
+/// follows, matching how the exporter emits the version; a quoted value is a
+/// string, not an integer version, and yields `None`.
+fn declared_schema_version(document: &str) -> Option<i64> {
+    let anchor = "\"schema_version\":";
+    let start = document.find(anchor)? + anchor.len();
+    let digits: String = document[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+/// Why a signed export failed verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyError {
+    /// The document declares no supported schema version — its
+    /// `payload.schema.schema_version` member is absent or carries a value the
+    /// verifier does not support — so it cannot be read as a known export.
+    UnsupportedVersion,
+}
+
+impl fmt::Display for VerifyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedVersion => {
+                f.write_str("the export declares no supported schema version")
+            }
+        }
+    }
+}
+
+impl std::error::Error for VerifyError {}
 
 /// A minimal JSON value the canonical serializer emits.
 enum Json {
