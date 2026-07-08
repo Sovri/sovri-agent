@@ -226,6 +226,14 @@ impl Corpus {
         }
     }
 
+    /// The run's fixed executed-at timestamp — the value the exports carry as
+    /// their generated date, so output stays deterministic and never reads the
+    /// wall clock.
+    #[must_use]
+    pub fn executed_at(&self) -> &str {
+        &self.executed_at
+    }
+
     /// Adds a catalogued control the corpus evaluated, rendered as one row on the
     /// Controls sheet.
     ///
