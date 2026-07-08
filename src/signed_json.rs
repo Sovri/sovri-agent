@@ -100,7 +100,8 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
 /// # Errors
 ///
 /// Returns [`VerifyError::UnsupportedVersion`] when the document declares no
-/// supported `payload.schema.schema_version`, or [`VerifyError::InvalidSignature`]
+/// supported `payload.schema.schema_version`, [`VerifyError::MissingVerificationKey`]
+/// when it embeds no verification public key, or [`VerifyError::InvalidSignature`]
 /// when the signature does not verify against the embedded public key over the
 /// document's canonical payload and verification bytes.
 pub fn verify(document: &str) -> Result<(), VerifyError> {
@@ -115,13 +116,15 @@ pub fn verify(document: &str) -> Result<(), VerifyError> {
 /// Reconstructs the canonical `payload` + `verification` bytes the signature was
 /// computed over — the document with its `signature` member removed — recomputes
 /// their MAT-93 SHA-256 digest, decodes the embedded public key and signature from
-/// hex, and verifies the signature over the digest. A malformed document, a
-/// mis-sized key or signature, or a digest that does not match the signature all
+/// hex, and verifies the signature over the digest. A document with no embedded
+/// public key yields [`VerifyError::MissingVerificationKey`]; a malformed document,
+/// a mis-sized key or signature, or a digest that does not match the signature all
 /// yield [`VerifyError::InvalidSignature`].
 fn verify_signature(document: &str) -> Result<(), VerifyError> {
     let (signed_bytes, signature_hex) =
         reconstruct_signed(document).ok_or(VerifyError::InvalidSignature)?;
-    let public_key_hex = embedded_public_key(document).ok_or(VerifyError::InvalidSignature)?;
+    let public_key_hex =
+        embedded_public_key(document).ok_or(VerifyError::MissingVerificationKey)?;
     let public_key: [u8; 32] = decode_fixed(public_key_hex).ok_or(VerifyError::InvalidSignature)?;
     let signature: [u8; 64] = decode_fixed(&signature_hex).ok_or(VerifyError::InvalidSignature)?;
 
@@ -207,6 +210,11 @@ pub enum VerifyError {
     /// altered after signing, its verification metadata was swapped, or its
     /// signature or key is malformed.
     InvalidSignature,
+    /// The document embeds no verification public key, so there is nothing to check
+    /// the signature against — its `verification.public_key` member is absent.
+    /// Rejected as a distinct failure so a stripped key is never mistaken for a
+    /// valid export or conflated with a signature mismatch.
+    MissingVerificationKey,
 }
 
 impl fmt::Display for VerifyError {
@@ -217,6 +225,9 @@ impl fmt::Display for VerifyError {
             }
             Self::InvalidSignature => {
                 f.write_str("the signature does not verify the export's payload")
+            }
+            Self::MissingVerificationKey => {
+                f.write_str("the export embeds no verification public key")
             }
         }
     }
