@@ -56,6 +56,6 @@ fn an_error_result_marks_the_scores_incomplete() {
     let scores = section_value(&document, "scores");
     assert!(
         scores.contains("\"incomplete\":true"),
-        "the scores object is marked incomplete after an ERROR result (scores: {scores})"
+        "expected scores to contain '\"incomplete\":true' after an ERROR result, got: {scores}"
     );
 }
