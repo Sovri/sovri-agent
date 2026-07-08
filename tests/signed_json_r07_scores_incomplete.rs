@@ -26,6 +26,8 @@ const RULE: &str = "consent.detect-trackers-without-consent-evidence";
 const SEVERITY: &str = "major";
 /// The stable id of the evidence record the result references.
 const EVIDENCE_ID: &str = "ev-0001";
+/// The fixed engine metadata attached to the fixture result.
+const EXECUTION_METADATA: &str = "engine_version=0.3.0";
 
 /// Builds the corpus's errored consent `ControlResult`, carrying the control's
 /// catalogued severity and weight so the SDK can mark the score incomplete.
@@ -38,7 +40,7 @@ fn error_result() -> ControlResult {
         .weight(8)
         .evidence_refs([EVIDENCE_ID])
         .executed_at(EXECUTED_AT)
-        .execution_metadata("engine_version=0.3.0")
+        .execution_metadata(EXECUTION_METADATA)
         .reason("Consent evidence collection errored.")
         .build()
         .expect("the consent fixture result validates")
