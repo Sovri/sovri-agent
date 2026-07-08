@@ -323,7 +323,8 @@ impl Corpus {
 
     /// The evidence metadata records the corpus holds, in the order they were
     /// collected. Each tuple carries stable id, kind, location, integrity, and
-    /// derived redaction status for downstream exports.
+    /// derived redaction status: `Secret` and `Sensitive` evidence is `redacted`;
+    /// `Unclassified` evidence is `none`.
     #[must_use]
     pub fn evidence_records(&self) -> Vec<(&str, &str, &str, &str, &str)> {
         self.evidence
@@ -705,9 +706,10 @@ fn applicability_for(status: Status) -> &'static str {
     }
 }
 
-/// The redaction status an evidence record of `classification` renders on its
-/// Evidence row: a `Secret` or `Sensitive` record was reduced to metadata, so its
-/// row is `redacted`; an unclassified record kept its value, so its row is `none`.
+/// The redaction status an evidence record of `classification` renders in corpus
+/// metadata exports. A `Secret` or `Sensitive` record was reduced to metadata, so
+/// its status is `redacted`; an unclassified record kept its value, so its status
+/// is `none`.
 fn redaction_status(classification: Classification) -> &'static str {
     match classification {
         Classification::Secret | Classification::Sensitive => "redacted",
