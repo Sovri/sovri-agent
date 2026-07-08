@@ -11,12 +11,10 @@ use signed_json_support::{consent_corpus, FIXTURE_SIGNING_SEED};
 use sovri_agent::signed_json;
 use std::fmt::Write as _;
 
-/// Forbidden member names from the R-09 scenario outline examples.
-///
-/// Keep this list in sync with
-/// `specs/mat-97-signed-json-export-offline-verifiable-compliance-results/r09-ed25519-no-private-key.feature`
-/// if the examples change.
-const FORBIDDEN_MEMBERS: [&str; 3] = ["private_key", "secret_key", "seed"];
+const R09_FEATURE: &str = include_str!(
+    "../specs/mat-97-signed-json-export-offline-verifiable-compliance-results/r09-ed25519-no-private-key.feature"
+);
+const FORBIDDEN_MEMBER_HEADER: &str = "| forbidden_member |";
 
 /// Returns true when a parsed JSON value contains an object member named
 /// `member` anywhere in the document.
@@ -59,6 +57,36 @@ fn to_hex(bytes: &[u8]) -> String {
     out
 }
 
+/// Returns the forbidden member examples from the R-09 feature file.
+fn forbidden_member_examples() -> Vec<&'static str> {
+    let mut in_table = false;
+    let mut members = Vec::new();
+    for line in R09_FEATURE.lines() {
+        let trimmed = line.trim();
+        if trimmed == FORBIDDEN_MEMBER_HEADER {
+            in_table = true;
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        if !trimmed.starts_with('|') {
+            break;
+        }
+        let mut cells = trimmed.trim_matches('|').split('|').map(str::trim);
+        if let Some(member) = cells.next() {
+            if !member.is_empty() {
+                members.push(member);
+            }
+        }
+    }
+    assert!(
+        !members.is_empty(),
+        "the R-09 feature file declares forbidden member examples"
+    );
+    members
+}
+
 #[test]
 fn no_private_key_material_appears_anywhere_in_the_document() {
     // Given a signed JSON export of the "shopfront-2026-06-24" consent corpus
@@ -67,7 +95,7 @@ fn no_private_key_material_appears_anywhere_in_the_document() {
     let parsed: Value = serde_json::from_str(&document).expect("the signed export parses as JSON");
 
     // Then the document contains no "<forbidden_member>" member.
-    for forbidden_member in FORBIDDEN_MEMBERS {
+    for forbidden_member in forbidden_member_examples() {
         assert!(
             !contains_member_named(&parsed, forbidden_member),
             "the document contains no {forbidden_member:?} member"
