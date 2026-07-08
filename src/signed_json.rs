@@ -33,6 +33,8 @@ const SCHEMA_FORMAT: &str = "sovri.compliance-export/v1";
 const SCHEMA_VERSION: i64 = 1;
 /// The signature algorithm the verification block names.
 const ALGORITHM: &str = "Ed25519";
+/// The top-level member that carries verification metadata.
+const VERIFICATION_MEMBER_KEY: &str = "verification";
 /// The verification-block member that carries the signature algorithm.
 const ALGORITHM_MEMBER_KEY: &str = "algorithm";
 /// The verification-block member that carries the embedded public key.
@@ -86,7 +88,10 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
 
     // The signature covers the canonical bytes of payload + verification, so the
     // embedded key and key id are authenticated and cannot be swapped silently.
-    let mut members = vec![("payload", payload), ("verification", verification)];
+    let mut members = vec![
+        ("payload", payload),
+        (VERIFICATION_MEMBER_KEY, verification),
+    ];
     let signed_bytes = canonical_object(&members);
     let digest = content_digest(signed_bytes.as_bytes());
     let signature = signing_key.sign(digest.as_bytes());
@@ -174,13 +179,28 @@ fn reconstruct_signed(document: &str) -> Option<(String, String)> {
 /// Returns the hex of the public key embedded in the document's `verification`
 /// block, or `None` when the member is absent.
 fn embedded_public_key(document: &str) -> Option<&str> {
-    compact_string_member(document, PUBLIC_KEY_MEMBER_KEY)
+    compact_string_member(verification_block(document)?, PUBLIC_KEY_MEMBER_KEY)
 }
 
 /// Reads the signature algorithm a compact export `document` declares, or `None`
 /// when the member is absent.
 fn declared_algorithm(document: &str) -> Option<&str> {
-    compact_string_member(document, ALGORITHM_MEMBER_KEY)
+    compact_string_member(verification_block(document)?, ALGORITHM_MEMBER_KEY)
+}
+
+/// Returns the compact top-level `verification` object slice, or `None` when it is
+/// absent or not a balanced object.
+fn verification_block(document: &str) -> Option<&str> {
+    compact_object_member(document, VERIFICATION_MEMBER_KEY)
+}
+
+/// Reads a compact JSON object member by key, or `None` when it is absent or
+/// unbalanced.
+fn compact_object_member<'a>(document: &'a str, member_key: &str) -> Option<&'a str> {
+    let anchor = format!("\"{member_key}\":{{");
+    let start = document.find(&anchor)? + anchor.len() - 1;
+    let end = compact_value_end(document, start)?;
+    Some(&document[start..=end])
 }
 
 /// Reads a compact JSON string member by key, or `None` when the member is absent.
@@ -189,6 +209,40 @@ fn compact_string_member<'a>(document: &'a str, member_key: &str) -> Option<&'a 
     let start = document.find(&anchor)? + anchor.len();
     let len = document[start..].find('"')?;
     Some(&document[start..start + len])
+}
+
+/// Returns the byte index where the compact JSON value starting at `start` ends.
+fn compact_value_end(document: &str, start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, ch) in document[start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(start + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 /// Decodes an even-length lowercase-hex string into a fixed `N`-byte array, or

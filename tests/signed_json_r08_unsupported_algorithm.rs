@@ -23,19 +23,31 @@ fn an_unsupported_signature_algorithm_is_rejected() {
     // Given a signed JSON export whose "verification.algorithm" is "RSA".
     let mut variant: Value =
         serde_json::from_str(&document).expect("the signed JSON export parses as JSON");
-    let verification = variant
-        .get_mut("verification")
-        .and_then(Value::as_object_mut)
-        .expect("the signed JSON export carries verification metadata");
-    verification.insert(
-        "algorithm".to_owned(),
-        Value::String(UNSUPPORTED_ALGORITHM.to_owned()),
-    );
-    assert_eq!(
-        verification.get("algorithm").and_then(Value::as_str),
-        Some(UNSUPPORTED_ALGORITHM),
-        "the variant declares RSA as its verification algorithm"
-    );
+    let supported_algorithm = variant
+        .get("verification")
+        .and_then(|verification| verification.get("algorithm"))
+        .and_then(Value::as_str)
+        .expect("the signed JSON export declares its supported algorithm")
+        .to_owned();
+    {
+        let verification = variant
+            .get_mut("verification")
+            .and_then(Value::as_object_mut)
+            .expect("the signed JSON export carries verification metadata");
+        verification.insert(
+            "algorithm".to_owned(),
+            Value::String(UNSUPPORTED_ALGORITHM.to_owned()),
+        );
+        assert_eq!(
+            verification.get("algorithm").and_then(Value::as_str),
+            Some(UNSUPPORTED_ALGORITHM),
+            "the variant declares RSA as its verification algorithm"
+        );
+    }
+    variant
+        .as_object_mut()
+        .expect("the signed JSON export is a top-level object")
+        .insert("algorithm".to_owned(), Value::String(supported_algorithm));
     let variant = serde_json::to_string(&variant).expect("the RSA variant serializes as JSON");
 
     // When the document is verified.
