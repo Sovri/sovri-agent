@@ -20,7 +20,10 @@
 
 use crate::matrix::Corpus;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use sovri_sdk::{content_digest, ControlResult, Status};
+use sovri_sdk::{
+    content_digest, ControlResult, ControlScore, EnvironmentScore, FrameworkScore, ScoreRatio,
+    Status,
+};
 use std::fmt;
 
 /// The self-describing schema format the export declares.
@@ -68,7 +71,7 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
         ("results", results_array(&scoped)),
         ("gaps", gaps_array(&scoped, &controls, &frameworks)),
         ("evidence", id_array(&corpus.evidence_ids())),
-        ("scores", Json::Object(Vec::new())),
+        ("scores", scores_object(&corpus.environment_score())),
     ]);
     let verification = Json::Object(vec![
         ("algorithm", Json::Str(ALGORITHM.to_owned())),
@@ -391,6 +394,81 @@ fn framework_source_url<'a>(
 /// the gaps section carries for review.
 fn is_gap(status: Status) -> bool {
     matches!(status, Status::Fail | Status::Warning)
+}
+
+/// Builds the `scores` section — the MAT-87 control, framework, and environment
+/// scores the SDK derived, carried as a traceable, non-authoritative posture
+/// summary. Each score value is a percentage string exactly as the score module
+/// renders it (half-up one decimal, or "no applicable controls" when undefined);
+/// the exporter never recomputes a score or emits an overall verdict.
+fn scores_object(environment: &EnvironmentScore) -> Json {
+    Json::Object(vec![
+        ("control", control_scores(environment)),
+        ("environment", Json::Str(environment.ratio().to_string())),
+        ("framework", framework_scores(environment)),
+    ])
+}
+
+/// Builds the framework-score array — one `{ framework_id, score }` record per
+/// framework, ordered by framework id, so each framework score is tied to its
+/// framework. The score is the framework's ratio rendered as a percentage string.
+fn framework_scores(environment: &EnvironmentScore) -> Json {
+    let mut frameworks: Vec<&FrameworkScore> = environment.frameworks().iter().collect();
+    frameworks.sort_by(|a, b| a.framework_id().cmp(b.framework_id()));
+    Json::Array(
+        frameworks
+            .iter()
+            .map(|&framework| {
+                Json::Object(vec![
+                    (
+                        "framework_id",
+                        Json::Str(framework.framework_id().to_owned()),
+                    ),
+                    ("score", Json::Str(framework.ratio().to_string())),
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// Builds the control-score array — one `{ control_id, score }` record per scored
+/// control across every framework, ordered by control id then rule id. The score is
+/// the control's earned-over-applicable ratio rendered as a percentage string.
+fn control_scores(environment: &EnvironmentScore) -> Json {
+    let mut controls: Vec<&ControlScore> = environment
+        .frameworks()
+        .iter()
+        .flat_map(FrameworkScore::controls)
+        .collect();
+    controls.sort_by(|a, b| {
+        a.control_id()
+            .cmp(b.control_id())
+            .then_with(|| a.rule_id().cmp(b.rule_id()))
+    });
+    Json::Array(
+        controls
+            .iter()
+            .map(|&control| {
+                Json::Object(vec![
+                    ("control_id", Json::Str(control.control_id().to_owned())),
+                    ("score", Json::Str(control_ratio(control).to_string())),
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// The ratio of a single control — its earned points over its applicable weight
+/// (its own weight when applicable, zero when not), rendered through the SDK so the
+/// exporter never derives the percentage itself. A not-applicable or errored
+/// control has no applicable weight, so its ratio is "no applicable controls".
+fn control_ratio(control: &ControlScore) -> ScoreRatio {
+    let applicable = if control.is_applicable() {
+        control.weight()
+    } else {
+        0
+    };
+    ScoreRatio::from_weights(control.earned(), applicable)
 }
 
 /// Serializes a set of object members as a canonical JSON object string.

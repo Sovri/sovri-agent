@@ -40,9 +40,9 @@ const EVIDENCE_ID: &str = "ev-0001";
 /// Each tamper vector: a description, the substring changed, and its replacement.
 ///
 /// The status-flip and control-id changes are the literal scenario fields. The
-/// evidence-integrity and scores changes target fields not yet populated in the
-/// export (the evidence integrity digest lands in R-08, the scores values in
-/// R-07), so they tamper the evidence record and the scores section instead — the
+/// evidence-integrity change targets the evidence integrity digest, which is not
+/// yet populated in the export (it lands in R-08), so it tampers the evidence
+/// record instead. The scores change injects a member into the scores object. The
 /// signature check is field-agnostic, so any payload change is detected.
 const TAMPER_VECTORS: [(&str, &str, &str); 4] = [
     (
@@ -58,8 +58,8 @@ const TAMPER_VECTORS: [(&str, &str, &str); 4] = [
     ),
     (
         "the scores section is altered",
-        "\"scores\":{}",
-        "\"scores\":{\"x\":0}",
+        "\"scores\":{",
+        "\"scores\":{\"x\":0,",
     ),
 ];
 
