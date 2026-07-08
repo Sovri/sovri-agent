@@ -234,13 +234,20 @@ impl Corpus {
         &self.executed_at
     }
 
-    /// The stable ids of the frameworks the corpus covers, in the order they were
-    /// added — the frameworks the signed JSON export lists, one record per id.
+    /// The frameworks the corpus covers, each as its stable id, catalog version,
+    /// and source URL, in the order they were added — the records the signed JSON
+    /// export's frameworks section lists so a consumer can pin the exact catalog.
     #[must_use]
-    pub fn framework_ids(&self) -> Vec<&str> {
+    pub fn frameworks(&self) -> Vec<(&str, &str, &str)> {
         self.frameworks
             .iter()
-            .map(|framework| framework.id.as_str())
+            .map(|framework| {
+                (
+                    framework.id.as_str(),
+                    framework.version.as_str(),
+                    framework.source_url.as_str(),
+                )
+            })
             .collect()
     }
 

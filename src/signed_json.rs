@@ -60,7 +60,7 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
                 Json::Str(corpus.executed_at().to_owned()),
             )]),
         ),
-        ("frameworks", id_array(&corpus.framework_ids())),
+        ("frameworks", frameworks_array(&corpus.frameworks())),
         ("controls", id_array(&corpus.control_ids())),
         ("results", results_array(&scoped)),
         ("gaps", gaps_array(&scoped)),
@@ -98,13 +98,31 @@ enum Json {
 
 /// Builds a JSON array of single-id records — one `{ "id": <id> }` per stable id.
 ///
-/// The frameworks, controls, and evidence sections each carry this minimal record
-/// so every entry traces back to the corpus by its stable id; later scenarios add
-/// the remaining per-record fields.
+/// The controls and evidence sections each carry this minimal record so every
+/// entry traces back to the corpus by its stable id; later scenarios add the
+/// remaining per-record fields.
 fn id_array(ids: &[&str]) -> Json {
     Json::Array(
         ids.iter()
             .map(|&id| Json::Object(vec![("id", Json::Str(id.to_owned()))]))
+            .collect(),
+    )
+}
+
+/// Builds the `frameworks` section — one record per framework carrying its stable
+/// id, catalog version, and source URL, so a consumer can pin the exact catalog
+/// version the results were derived against.
+fn frameworks_array(frameworks: &[(&str, &str, &str)]) -> Json {
+    Json::Array(
+        frameworks
+            .iter()
+            .map(|&(id, version, source_url)| {
+                Json::Object(vec![
+                    ("id", Json::Str(id.to_owned())),
+                    ("version", Json::Str(version.to_owned())),
+                    ("source_url", Json::Str(source_url.to_owned())),
+                ])
+            })
             .collect(),
     )
 }
