@@ -19,7 +19,7 @@
 //! and no private key material is ever emitted.
 
 use crate::matrix::Corpus;
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sovri_sdk::{content_digest, ControlResult, Status};
 use std::fmt;
 
@@ -89,20 +89,94 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
 /// and an error describing the first check that failed.
 ///
 /// Verification gates on the schema version first: the document must declare the
-/// supported `payload.schema.schema_version` (currently `1`). A document whose
-/// version member is absent, or carries a value other than the supported one, is
-/// rejected before any further check, so an unknown schema is a distinct failure
-/// that a later signature check builds on rather than conflates with.
+/// supported `payload.schema.schema_version` (currently `1`). A version that is
+/// absent or unsupported is rejected before any further check, a distinct failure
+/// from a signature mismatch. It then checks the Ed25519 signature: it reconstructs
+/// the canonical `payload` + `verification` bytes the signature was computed over,
+/// recomputes their SHA-256 digest, and verifies the embedded signature against the
+/// embedded public key. Any change to the payload or the verification metadata
+/// after signing breaks the signature and is rejected.
 ///
 /// # Errors
 ///
 /// Returns [`VerifyError::UnsupportedVersion`] when the document declares no
-/// `payload.schema.schema_version`, or one other than the supported version.
+/// supported `payload.schema.schema_version`, or [`VerifyError::InvalidSignature`]
+/// when the signature does not verify against the embedded public key over the
+/// document's canonical payload and verification bytes.
 pub fn verify(document: &str) -> Result<(), VerifyError> {
     if declared_schema_version(document) != Some(SCHEMA_VERSION) {
         return Err(VerifyError::UnsupportedVersion);
     }
-    Ok(())
+    verify_signature(document)
+}
+
+/// Checks the Ed25519 signature of a schema-valid `document`.
+///
+/// Reconstructs the canonical `payload` + `verification` bytes the signature was
+/// computed over — the document with its `signature` member removed — recomputes
+/// their MAT-93 SHA-256 digest, decodes the embedded public key and signature from
+/// hex, and verifies the signature over the digest. A malformed document, a
+/// mis-sized key or signature, or a digest that does not match the signature all
+/// yield [`VerifyError::InvalidSignature`].
+fn verify_signature(document: &str) -> Result<(), VerifyError> {
+    let (signed_bytes, signature_hex) =
+        reconstruct_signed(document).ok_or(VerifyError::InvalidSignature)?;
+    let public_key_hex = embedded_public_key(document).ok_or(VerifyError::InvalidSignature)?;
+    let public_key: [u8; 32] = decode_fixed(public_key_hex).ok_or(VerifyError::InvalidSignature)?;
+    let signature: [u8; 64] = decode_fixed(&signature_hex).ok_or(VerifyError::InvalidSignature)?;
+
+    let verifying_key =
+        VerifyingKey::from_bytes(&public_key).map_err(|_| VerifyError::InvalidSignature)?;
+    let signature = Signature::from_bytes(&signature);
+    let digest = content_digest(signed_bytes.as_bytes());
+    verifying_key
+        .verify_strict(digest.as_bytes(), &signature)
+        .map_err(|_| VerifyError::InvalidSignature)
+}
+
+/// Reconstructs the canonical bytes a signed export's signature was computed over —
+/// `{"payload":…,"verification":…}` — and returns them with the signature hex.
+///
+/// The signed bytes are the document with its `signature` member removed. In the
+/// canonical top-level object the keys sort `payload` < `signature` <
+/// `verification`, so the signature member is `,"signature":"<hex>"`; stripping
+/// that leading-comma member yields exactly the bytes that were signed. Returns
+/// `None` when the document carries no signature member.
+fn reconstruct_signed(document: &str) -> Option<(String, String)> {
+    let anchor = "\"signature\":\"";
+    let hex_start = document.find(anchor)? + anchor.len();
+    let hex_len = document[hex_start..].find('"')?;
+    let signature_hex = document[hex_start..hex_start + hex_len].to_owned();
+    let member = format!(",\"signature\":\"{signature_hex}\"");
+    let signed_bytes = document.replacen(&member, "", 1);
+    Some((signed_bytes, signature_hex))
+}
+
+/// Returns the hex of the public key embedded in the document's `verification`
+/// block, or `None` when the member is absent.
+fn embedded_public_key(document: &str) -> Option<&str> {
+    let anchor = "\"public_key\":\"";
+    let start = document.find(anchor)? + anchor.len();
+    let len = document[start..].find('"')?;
+    Some(&document[start..start + len])
+}
+
+/// Decodes an even-length lowercase-hex string into a fixed `N`-byte array, or
+/// `None` when the hex is malformed or decodes to a length other than `N`.
+fn decode_fixed<const N: usize>(hex: &str) -> Option<[u8; N]> {
+    from_hex(hex)?.try_into().ok()
+}
+
+/// Decodes a hex string into bytes — one byte per two hex digits — or `None` on an
+/// odd length or a non-hex digit.
+fn from_hex(hex: &str) -> Option<Vec<u8>> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(hex.get(index..index + 2)?, 16).ok())
+        .collect()
 }
 
 /// Reads the `schema_version` integer a compact export `document` declares, or
@@ -128,6 +202,11 @@ pub enum VerifyError {
     /// `payload.schema.schema_version` member is absent or carries a value the
     /// verifier does not support — so it cannot be read as a known export.
     UnsupportedVersion,
+    /// The signature does not verify against the embedded public key over the
+    /// document's canonical payload and verification bytes — the document was
+    /// altered after signing, its verification metadata was swapped, or its
+    /// signature or key is malformed.
+    InvalidSignature,
 }
 
 impl fmt::Display for VerifyError {
@@ -135,6 +214,9 @@ impl fmt::Display for VerifyError {
         match self {
             Self::UnsupportedVersion => {
                 f.write_str("the export declares no supported schema version")
+            }
+            Self::InvalidSignature => {
+                f.write_str("the signature does not verify the export's payload")
             }
         }
     }
