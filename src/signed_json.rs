@@ -56,10 +56,10 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
         ),
         (
             "scan",
-            Json::Object(vec![(
-                "executed_at",
-                Json::Str(corpus.executed_at().to_owned()),
-            )]),
+            Json::Object(vec![
+                ("executed_at", Json::Str(corpus.executed_at().to_owned())),
+                ("id", Json::Str(corpus.run_id().to_owned())),
+            ]),
         ),
         ("frameworks", frameworks_array(&corpus.frameworks())),
         ("controls", id_array(&corpus.control_ids())),
