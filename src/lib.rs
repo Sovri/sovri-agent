@@ -17,8 +17,11 @@
 //!   the persisted compliance corpus.
 //! - [`scan`] — the `sovri-agent scan` command that runs a catalog's controls
 //!   against the host scanners and reports the outcome.
+//! - [`signed_json`] — the signed, offline-verifiable JSON compliance export over
+//!   the persisted corpus, signed with Ed25519 (`ed25519-dalek`, ADR-031).
 //!
-//! Everything runs offline: the standard library only, no network.
+//! Everything runs offline with no network. The signed JSON export signs with
+//! `ed25519-dalek` (ADR-031); every other module is standard library only.
 
 pub mod controls;
 pub mod evidence;
@@ -26,6 +29,7 @@ pub mod matrix;
 pub mod report;
 pub mod scan;
 pub mod scanners;
+pub mod signed_json;
 
 /// Returns the version of the `sovri-sdk` contract the agent links against.
 ///

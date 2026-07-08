@@ -16,6 +16,13 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   evidence, framework references, and scores as a filterable spreadsheet. The
   export reads the derived corpus and its fixed generated date; it re-runs no
   scanner, recomputes no score, and links no third-party runtime dependency.
+- Signed JSON compliance export (MAT-97): a `signed_json` module serializes the
+  persisted compliance corpus into a versioned, canonical JSON document
+  (`payload` + `verification` + `signature`) and signs it with a deterministic,
+  offline-verifiable Ed25519 signature over the SHA-256 digest of the canonical
+  bytes. Signing uses `ed25519-dalek`, admitted by ADR-031 as the agent's first
+  third-party runtime crate; the SDK stays zero-dependency, the curve is not
+  hand-rolled, and only the public key travels — never private key material.
 
 ## [0.5.0] - 2026-07-06
 
