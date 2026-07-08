@@ -28,49 +28,22 @@ const CONTROL: &str = "consent.tracker.prior-consent";
 const CONTROL_TITLE: &str = "Prior consent for tracker access";
 /// The non-CWE framework reference the consent control maps to.
 const CONTROL_REFERENCE: &str = "gdpr-eprivacy:2016-679:Art.7";
+/// The catalogued severity of the consent control.
+const CONTROL_SEVERITY: &str = "major";
+/// The catalogued weight of the consent control.
+const CONTROL_WEIGHT: u32 = 8;
 /// The rule that fails: a non-essential tracker with no consent evidence.
 const TRACKER_RULE: &str = "consent.detect-trackers-without-consent-evidence";
 /// The rule that passes: the consent-management platform is configured.
 const CMP_RULE: &str = "consent.detect-cmp-misconfiguration";
 /// The stable id of the evidence record the run collected.
 const EVIDENCE_ID: &str = "ev-0001";
+/// The deterministic engine metadata carried by both consent results.
+const EXECUTION_METADATA: &str = "engine_version=0.3.0";
 
 /// Counts exact member-name occurrences in the compact canonical JSON text.
 fn member_count(doc: &str, name: &str) -> usize {
     doc.match_indices(&format!("\"{name}\":")).count()
-}
-
-/// Returns direct member names of a compact JSON object.
-fn direct_members(object: &str) -> Vec<String> {
-    let bytes = object.as_bytes();
-    let mut members = Vec::new();
-    let mut depth: i32 = 0;
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'"' => {
-                let start = index + 1;
-                let mut end = start;
-                while end < bytes.len() && bytes[end] != b'"' {
-                    end += if bytes[end] == b'\\' { 2 } else { 1 };
-                }
-                if depth == 1 && end + 1 < bytes.len() && bytes[end + 1] == b':' {
-                    members.push(String::from_utf8_lossy(&bytes[start..end]).into_owned());
-                }
-                index = end + 1;
-            }
-            b'{' | b'[' => {
-                depth += 1;
-                index += 1;
-            }
-            b'}' | b']' => {
-                depth -= 1;
-                index += 1;
-            }
-            _ => index += 1,
-        }
-    }
-    members
 }
 
 /// Asserts the payload does not carry an authoritative summary member.
@@ -88,11 +61,11 @@ fn consent_result(rule_id: &str, status: Status) -> ControlResult {
         .control_id(CONTROL)
         .rule_id(rule_id)
         .status(status)
-        .severity("major")
-        .weight(8)
+        .severity(CONTROL_SEVERITY)
+        .weight(CONTROL_WEIGHT)
         .evidence_refs([EVIDENCE_ID])
         .executed_at(EXECUTED_AT)
-        .execution_metadata("engine_version=0.3.0");
+        .execution_metadata(EXECUTION_METADATA);
     if status != Status::Pass {
         builder = builder.reason("Non-essential tracker loaded without recorded consent.");
     }
@@ -110,8 +83,8 @@ fn consent_corpus() -> Corpus {
             FRAMEWORK,
             CONTROL,
             CONTROL_TITLE,
-            "major",
-            8,
+            CONTROL_SEVERITY,
+            CONTROL_WEIGHT,
             CONTROL_REFERENCE,
         )
         .with_control_result(FRAMEWORK, consent_result(TRACKER_RULE, Status::Fail))
@@ -132,9 +105,15 @@ fn the_export_carries_no_authoritative_verdict_derived_from_scores() {
     assert_payload_lacks_member(payload, "risk_rating", "risk_rating");
 
     // And the scores appear only under "payload.scores" as a posture summary.
-    let payload_members = direct_members(payload);
+    let payload_json: serde_json::Value =
+        serde_json::from_str(payload).expect("payload is valid JSON");
+    let payload_object = payload_json.as_object().expect("payload is a JSON object");
+    let payload_members = payload_object
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
     assert!(
-        payload_members.iter().any(|member| member == "scores"),
+        payload_object.contains_key("scores"),
         "the payload carries scores as a direct posture summary member (members: {payload_members:?})"
     );
     assert_eq!(
