@@ -107,6 +107,48 @@ fn a_classified_evidence_record_is_reduced_to_metadata_in_the_json() {
     }
 }
 
+#[test]
+fn an_unclassified_evidence_record_is_marked_not_redacted_in_the_json() {
+    let corpus = matrix_support::stored_evidence_corpus();
+
+    let document = signed_json::export(&corpus, &FIXTURE_SIGNING_SEED);
+    let export: Value = serde_json::from_str(&document).expect("the signed export parses as JSON");
+    let evidence = export
+        .pointer("/payload/evidence")
+        .and_then(Value::as_array)
+        .expect("the signed export carries payload.evidence records");
+    let record = evidence
+        .iter()
+        .find(|record| string_member(record, "id") == Some(matrix_support::STORED_EVIDENCE_ID))
+        .unwrap_or_else(|| {
+            panic!(
+                "the signed export has unclassified evidence record {}",
+                matrix_support::STORED_EVIDENCE_ID
+            )
+        });
+
+    assert_eq!(
+        string_member(record, "type"),
+        Some(matrix_support::STORED_EVIDENCE_KIND),
+        "the unclassified evidence record shows its type (record: {record})"
+    );
+    assert_eq!(
+        string_member(record, "locator"),
+        Some(matrix_support::STORED_EVIDENCE_LOCATION),
+        "the unclassified evidence record shows its locator (record: {record})"
+    );
+    assert_eq!(
+        string_member(record, "integrity"),
+        Some(matrix_support::STORED_EVIDENCE_INTEGRITY),
+        "the unclassified evidence record shows its integrity (record: {record})"
+    );
+    assert_eq!(
+        string_member(record, "redaction_status"),
+        Some("none"),
+        "the unclassified evidence record shows redaction status none (record: {record})"
+    );
+}
+
 fn string_member<'a>(record: &'a Value, name: &str) -> Option<&'a str> {
     record.get(name).and_then(Value::as_str)
 }
