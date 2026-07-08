@@ -58,7 +58,18 @@ fn consent_result(rule_id: &str, status: Status) -> ControlResult {
 /// JSON acceptance tests.
 #[must_use]
 pub fn consent_corpus() -> Corpus {
-    Corpus::new(EXECUTED_AT)
+    consent_corpus_with_results(&[(TRACKER_RULE, Status::Fail), (CMP_RULE, Status::Pass)])
+}
+
+/// Returns the fixed consent corpus with the same results as [`consent_corpus`],
+/// supplied in the opposite order.
+#[must_use]
+pub fn shuffled_consent_corpus() -> Corpus {
+    consent_corpus_with_results(&[(CMP_RULE, Status::Pass), (TRACKER_RULE, Status::Fail)])
+}
+
+fn consent_corpus_with_results(results: &[(&str, Status)]) -> Corpus {
+    let mut corpus = Corpus::new(EXECUTED_AT)
         .with_run_id(RUN_ID)
         .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
         .with_control(
@@ -68,10 +79,11 @@ pub fn consent_corpus() -> Corpus {
             CONTROL_SEVERITY,
             CONTROL_WEIGHT,
             CONTROL_REFERENCE,
-        )
-        .with_control_result(FRAMEWORK, consent_result(TRACKER_RULE, Status::Fail))
-        .with_control_result(FRAMEWORK, consent_result(CMP_RULE, Status::Pass))
-        .with_evidence(EVIDENCE_ID, "dist/main.js")
+        );
+    for &(rule_id, status) in results {
+        corpus = corpus.with_control_result(FRAMEWORK, consent_result(rule_id, status));
+    }
+    corpus.with_evidence(EVIDENCE_ID, "dist/main.js")
 }
 
 /// Returns true when the compact JSON document carries a top-level-visible
