@@ -318,12 +318,15 @@ fn gaps_array(
 }
 
 /// Returns framework-scoped results ordered by their stable control and rule ids,
-/// the array ordering the canonical JSON payload relies on.
+/// then by framework id as a deterministic tie-breaker for scoped records. This
+/// is the array ordering the canonical JSON payload relies on.
 fn ordered_scoped_results<'a>(
     scoped: &[(Option<&'a str>, &'a ControlResult)],
 ) -> Vec<(Option<&'a str>, &'a ControlResult)> {
     let mut results = scoped.to_vec();
-    results.sort_by(|(_, a), (_, b)| result_id_order(a, b));
+    results.sort_by(|(framework_a, a), (framework_b, b)| {
+        result_id_order(a, b).then_with(|| framework_a.cmp(framework_b))
+    });
     results
 }
 
