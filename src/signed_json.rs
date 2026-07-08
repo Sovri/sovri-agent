@@ -18,7 +18,7 @@
 //! Ed25519 comes from `ed25519-dalek` (ADR-031); the curve is not hand-rolled
 //! and no private key material is ever emitted.
 
-use crate::matrix::Corpus;
+use crate::matrix::{Corpus, EvidenceRecord};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sovri_sdk::{
     content_digest, ControlResult, ControlScore, EnvironmentScore, FrameworkScore, ScoreRatio,
@@ -35,6 +35,12 @@ const SCHEMA_VERSION: i64 = 1;
 const ALGORITHM: &str = "Ed25519";
 /// Hex length of the truncated public-key fingerprint carried as the key id.
 const KEY_ID_HEX_LEN: usize = 16;
+/// Evidence object member names used in the canonical payload.
+const EVIDENCE_ID_MEMBER: &str = "id";
+const EVIDENCE_INTEGRITY_MEMBER: &str = "integrity";
+const EVIDENCE_LOCATOR_MEMBER: &str = "locator";
+const EVIDENCE_REDACTION_STATUS_MEMBER: &str = "redaction_status";
+const EVIDENCE_TYPE_MEMBER: &str = "type";
 
 /// Exports the compliance `corpus` as a signed JSON document, signed with the
 /// injected 32-byte Ed25519 seed.
@@ -52,6 +58,7 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
     let scoped = corpus.scoped_results();
     let frameworks = corpus.frameworks();
     let controls = corpus.controls();
+    let evidence = corpus.evidence_records();
     let payload = Json::Object(vec![
         (
             "schema",
@@ -71,7 +78,7 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
         ("controls", id_array(&corpus.control_ids())),
         ("results", results_array(&scoped)),
         ("gaps", gaps_array(&scoped, &controls, &frameworks)),
-        ("evidence", id_array(&corpus.evidence_ids())),
+        ("evidence", evidence_array(&evidence)),
         ("scores", scores_object(&corpus.environment_score())),
     ]);
     let verification = Json::Object(vec![
@@ -264,6 +271,36 @@ fn id_array(ids: &[&str]) -> Json {
     Json::Array(
         ids.iter()
             .map(|&id| Json::Object(vec![("id", Json::Str(id.to_owned()))]))
+            .collect(),
+    )
+}
+
+/// Builds the `evidence` section — one record per persisted evidence item,
+/// carrying metadata only. Classified records have already dropped their raw value
+/// before reaching the corpus, so the JSON emits redaction status but never the
+/// raw excerpt.
+fn evidence_array(records: &[EvidenceRecord<'_>]) -> Json {
+    Json::Array(
+        records
+            .iter()
+            .map(|record| {
+                Json::Object(vec![
+                    (EVIDENCE_ID_MEMBER, Json::Str(record.id.to_owned())),
+                    (
+                        EVIDENCE_INTEGRITY_MEMBER,
+                        Json::Str(record.integrity.to_owned()),
+                    ),
+                    (
+                        EVIDENCE_LOCATOR_MEMBER,
+                        Json::Str(record.locator.to_owned()),
+                    ),
+                    (
+                        EVIDENCE_REDACTION_STATUS_MEMBER,
+                        Json::Str(record.redaction_status.to_owned()),
+                    ),
+                    (EVIDENCE_TYPE_MEMBER, Json::Str(record.kind.to_owned())),
+                ])
+            })
             .collect(),
     )
 }

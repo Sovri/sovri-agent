@@ -208,6 +208,24 @@ struct Evidence {
     classification: Classification,
 }
 
+/// Borrowed evidence metadata exposed to downstream exporters.
+///
+/// The view carries only persisted metadata: stable id, evidence kind, locator,
+/// stored integrity value, and the redaction status derived from the record's
+/// classification. It never exposes raw evidence bytes.
+pub struct EvidenceRecord<'a> {
+    /// Stable evidence id used by results and gaps to reference this record.
+    pub id: &'a str,
+    /// Evidence kind recorded by the persisted store, such as `file` or `config`.
+    pub kind: &'a str,
+    /// Location the evidence was collected from.
+    pub locator: &'a str,
+    /// Integrity metadata read from the persisted store.
+    pub integrity: &'a str,
+    /// Redaction status derived from the record classification.
+    pub redaction_status: &'a str,
+}
+
 impl Corpus {
     /// Builds a corpus for a run with the given fixed executed-at timestamp.
     ///
@@ -318,6 +336,22 @@ impl Corpus {
         self.evidence
             .iter()
             .map(|record| record.id.as_str())
+            .collect()
+    }
+
+    /// The evidence metadata records the corpus holds, in the order they were
+    /// collected.
+    #[must_use]
+    pub fn evidence_records(&self) -> Vec<EvidenceRecord<'_>> {
+        self.evidence
+            .iter()
+            .map(|record| EvidenceRecord {
+                id: record.id.as_str(),
+                kind: record.kind.as_str(),
+                locator: record.location.as_str(),
+                integrity: record.integrity.as_str(),
+                redaction_status: redaction_status(record.classification),
+            })
             .collect()
     }
 
@@ -686,9 +720,10 @@ fn applicability_for(status: Status) -> &'static str {
     }
 }
 
-/// The redaction status an evidence record of `classification` renders on its
-/// Evidence row: a `Secret` or `Sensitive` record was reduced to metadata, so its
-/// row is `redacted`; an unclassified record kept its value, so its row is `none`.
+/// The redaction status an evidence record of `classification` renders in corpus
+/// metadata exports. A `Secret` or `Sensitive` record was reduced to metadata, so
+/// its status is `redacted`; an unclassified record kept its value, so its status
+/// is `none`.
 fn redaction_status(classification: Classification) -> &'static str {
     match classification {
         Classification::Secret | Classification::Sensitive => "redacted",
