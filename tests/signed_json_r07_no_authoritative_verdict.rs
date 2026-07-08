@@ -40,6 +40,14 @@ fn member_count(doc: &str, name: &str) -> usize {
     doc.match_indices(&format!("\"{name}\":")).count()
 }
 
+/// Asserts the payload does not carry an authoritative summary member.
+fn assert_payload_lacks_member(payload: &str, member: &str, description: &str) {
+    assert!(
+        !has_member(payload, member),
+        "the payload has no {description} member (payload: {payload})"
+    );
+}
+
 /// Builds one consent `ControlResult` for `rule_id` at `status`, carrying the
 /// control's catalogued severity, weight, and evidence id from the Background.
 fn consent_result(rule_id: &str, status: Status) -> ControlResult {
@@ -85,16 +93,10 @@ fn the_export_carries_no_authoritative_verdict_derived_from_scores() {
     let payload = section_value(&document, "payload");
 
     // Then the payload has no overall "compliant" verdict member.
-    assert!(
-        !has_member(payload, "compliant"),
-        "the payload has no compliant verdict member (payload: {payload})"
-    );
+    assert_payload_lacks_member(payload, "compliant", "overall compliant verdict");
 
     // And the payload has no "risk_rating" member.
-    assert!(
-        !has_member(payload, "risk_rating"),
-        "the payload has no risk_rating member (payload: {payload})"
-    );
+    assert_payload_lacks_member(payload, "risk_rating", "risk_rating");
 
     // And the scores appear only under "payload.scores" as a posture summary.
     assert!(
