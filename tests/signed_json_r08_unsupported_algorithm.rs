@@ -29,6 +29,12 @@ fn an_unsupported_signature_algorithm_is_rejected() {
         .and_then(Value::as_str)
         .expect("the signed JSON export declares its supported algorithm")
         .to_owned();
+    let supported_public_key = variant
+        .get("verification")
+        .and_then(|verification| verification.get("public_key"))
+        .and_then(Value::as_str)
+        .expect("the signed JSON export embeds its public key")
+        .to_owned();
     {
         let verification = variant
             .get_mut("verification")
@@ -47,8 +53,27 @@ fn an_unsupported_signature_algorithm_is_rejected() {
     variant
         .as_object_mut()
         .expect("the signed JSON export is a top-level object")
-        .insert("algorithm".to_owned(), Value::String(supported_algorithm));
+        .insert(
+            "algorithm".to_owned(),
+            Value::String(supported_algorithm.clone()),
+        );
     let variant = serde_json::to_string(&variant).expect("the RSA variant serializes as JSON");
+    let nested_decoy = format!(
+        "\"attacker\":{{\"algorithm\":{},\"public_key\":{}}},",
+        serde_json::to_string(&supported_algorithm)
+            .expect("the supported algorithm serializes as JSON"),
+        serde_json::to_string(&supported_public_key).expect("the public key serializes as JSON")
+    );
+    let direct_algorithm = format!(
+        "\"algorithm\":{}",
+        serde_json::to_string(UNSUPPORTED_ALGORITHM)
+            .expect("the unsupported algorithm serializes as JSON")
+    );
+    let variant = variant.replacen(
+        &direct_algorithm,
+        &format!("{nested_decoy}{direct_algorithm}"),
+        1,
+    );
 
     // When the document is verified.
     let rejection = signed_json::verify(&variant).expect_err("RSA is not a supported algorithm");

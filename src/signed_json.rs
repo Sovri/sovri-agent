@@ -179,13 +179,13 @@ fn reconstruct_signed(document: &str) -> Option<(String, String)> {
 /// Returns the hex of the public key embedded in the document's `verification`
 /// block, or `None` when the member is absent.
 fn embedded_public_key(document: &str) -> Option<&str> {
-    compact_string_member(verification_block(document)?, PUBLIC_KEY_MEMBER_KEY)
+    compact_object_string_member(verification_block(document)?, PUBLIC_KEY_MEMBER_KEY)
 }
 
 /// Reads the signature algorithm a compact export `document` declares, or `None`
 /// when the member is absent.
 fn declared_algorithm(document: &str) -> Option<&str> {
-    compact_string_member(verification_block(document)?, ALGORITHM_MEMBER_KEY)
+    compact_object_string_member(verification_block(document)?, ALGORITHM_MEMBER_KEY)
 }
 
 /// Returns the compact top-level `verification` object slice, or `None` when it is
@@ -203,16 +203,79 @@ fn compact_object_member<'a>(document: &'a str, member_key: &str) -> Option<&'a 
     Some(&document[start..=end])
 }
 
-/// Reads a compact JSON string member by key, or `None` when the member is absent.
-fn compact_string_member<'a>(document: &'a str, member_key: &str) -> Option<&'a str> {
-    let anchor = format!("\"{member_key}\":\"");
-    let start = document.find(&anchor)? + anchor.len();
-    let len = document[start..].find('"')?;
-    Some(&document[start..start + len])
+/// Reads a direct compact JSON object string member by key, or `None` when the
+/// direct member is absent or is not a string.
+fn compact_object_string_member<'a>(object: &'a str, member_key: &str) -> Option<&'a str> {
+    if object.as_bytes().first().copied()? != b'{' {
+        return None;
+    }
+
+    let mut cursor = 1usize;
+    while cursor < object.len() {
+        match object.as_bytes().get(cursor).copied()? {
+            b',' => {
+                cursor += 1;
+                continue;
+            }
+            b'"' => {}
+            _ => return None,
+        }
+
+        let (key, key_end) = compact_string_at(object, cursor)?;
+        if object.as_bytes().get(key_end + 1).copied()? != b':' {
+            return None;
+        }
+        let value_start = key_end + 2;
+        let value_end = compact_value_end(object, value_start)?;
+        if key == member_key {
+            let (value, string_end) = compact_string_at(object, value_start)?;
+            return (string_end == value_end).then_some(value);
+        }
+        cursor = value_end + 1;
+    }
+
+    None
+}
+
+/// Reads the compact JSON string starting at `start`, returning its raw value and
+/// closing quote byte index.
+fn compact_string_at(document: &str, start: usize) -> Option<(&str, usize)> {
+    if document.as_bytes().get(start).copied()? != b'"' {
+        return None;
+    }
+
+    let mut escaped = false;
+    for (offset, ch) in document[start + 1..].char_indices() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            let end = start + 1 + offset;
+            return Some((&document[start + 1..end], end));
+        }
+    }
+
+    None
 }
 
 /// Returns the byte index where the compact JSON value starting at `start` ends.
 fn compact_value_end(document: &str, start: usize) -> Option<usize> {
+    match document.as_bytes().get(start).copied()? {
+        b'{' | b'[' => return compact_container_end(document, start),
+        b'"' => return compact_string_at(document, start).map(|(_, end)| end),
+        _ => {}
+    }
+
+    let len = document[start..]
+        .find([',', '}', ']'])
+        .unwrap_or(document[start..].len());
+    (len > 0).then_some(start + len - 1)
+}
+
+/// Returns the byte index where the compact object or array starting at `start`
+/// ends.
+fn compact_container_end(document: &str, start: usize) -> Option<usize> {
     let mut depth = 0usize;
     let mut in_string = false;
     let mut escaped = false;
