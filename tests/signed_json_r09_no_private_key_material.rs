@@ -6,10 +6,12 @@
 
 mod signed_json_support;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use signed_json_support::{consent_corpus, FIXTURE_SIGNING_SEED};
 use sovri_agent::signed_json;
 use std::fmt::Write as _;
+
+const FORBIDDEN_MEMBERS: [&str; 3] = ["private_key", "secret_key", "seed"];
 
 /// Returns true when a parsed JSON value contains an object member named
 /// `member` anywhere in the document.
@@ -60,7 +62,7 @@ fn no_private_key_material_appears_anywhere_in_the_document() {
     let parsed: Value = serde_json::from_str(&document).expect("the signed export parses as JSON");
 
     // Then the document contains no "<forbidden_member>" member.
-    for forbidden_member in ["private_key", "secret_key", "seed"] {
+    for forbidden_member in FORBIDDEN_MEMBERS {
         assert!(
             !contains_member_named(&parsed, forbidden_member),
             "the document contains no {forbidden_member:?} member"
@@ -72,5 +74,23 @@ fn no_private_key_material_appears_anywhere_in_the_document() {
     assert!(
         !string_values_contain(&parsed, &fixture_private_key),
         "no string value contains the fixture private key"
+    );
+}
+
+#[test]
+fn string_value_scan_reaches_deeply_nested_arrays() {
+    let fixture_private_key = to_hex(&FIXTURE_SIGNING_SEED);
+    let nested = json!({
+        "payload": [
+            [
+                "metadata",
+                {"values": ["prefix", format!("leaked:{fixture_private_key}")]}
+            ]
+        ]
+    });
+
+    assert!(
+        string_values_contain(&nested, &fixture_private_key),
+        "nested array string values are included in private key leakage checks"
     );
 }
