@@ -33,6 +33,10 @@ const SCHEMA_FORMAT: &str = "sovri.compliance-export/v1";
 const SCHEMA_VERSION: i64 = 1;
 /// The signature algorithm the verification block names.
 const ALGORITHM: &str = "Ed25519";
+/// The verification-block member that carries the signature algorithm.
+const ALGORITHM_MEMBER_KEY: &str = "algorithm";
+/// The verification-block member that carries the embedded public key.
+const PUBLIC_KEY_MEMBER_KEY: &str = "public_key";
 /// Hex length of the truncated public-key fingerprint carried as the key id.
 const KEY_ID_HEX_LEN: usize = 16;
 
@@ -75,7 +79,7 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
         ("scores", scores_object(&corpus.environment_score())),
     ]);
     let verification = Json::Object(vec![
-        ("algorithm", Json::Str(ALGORITHM.to_owned())),
+        (ALGORITHM_MEMBER_KEY, Json::Str(ALGORITHM.to_owned())),
         ("key_id", Json::Str(key_fingerprint(&public_key))),
         ("public_key", Json::Str(to_hex(&public_key))),
     ]);
@@ -170,17 +174,19 @@ fn reconstruct_signed(document: &str) -> Option<(String, String)> {
 /// Returns the hex of the public key embedded in the document's `verification`
 /// block, or `None` when the member is absent.
 fn embedded_public_key(document: &str) -> Option<&str> {
-    let anchor = "\"public_key\":\"";
-    let start = document.find(anchor)? + anchor.len();
-    let len = document[start..].find('"')?;
-    Some(&document[start..start + len])
+    compact_string_member(document, PUBLIC_KEY_MEMBER_KEY)
 }
 
 /// Reads the signature algorithm a compact export `document` declares, or `None`
 /// when the member is absent.
 fn declared_algorithm(document: &str) -> Option<&str> {
-    let anchor = "\"algorithm\":\"";
-    let start = document.find(anchor)? + anchor.len();
+    compact_string_member(document, ALGORITHM_MEMBER_KEY)
+}
+
+/// Reads a compact JSON string member by key, or `None` when the member is absent.
+fn compact_string_member<'a>(document: &'a str, member_key: &str) -> Option<&'a str> {
+    let anchor = format!("\"{member_key}\":\"");
+    let start = document.find(&anchor)? + anchor.len();
     let len = document[start..].find('"')?;
     Some(&document[start..start + len])
 }
