@@ -1,17 +1,17 @@
 // Copyright 2026 Sovri contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! R-04 (violation) — tampering with the payload makes verification fail. Any
-//! change to the canonical payload of a signed export — a flipped result status,
-//! an altered evidence record, a changed control id, or a mutated scores section —
-//! breaks the Ed25519 signature, so `verify()` rejects the document as an invalid
-//! signature. Covers issue #260.
+//! R-07 — the scores section names every scope and ties the framework score to its
+//! framework. A signed export of the persisted "shopfront-2026-06-24" consent
+//! corpus carries a `payload.scores` object with a control score, a framework
+//! score, and an environment score, and the framework score is tied to framework
+//! "gdpr-eprivacy". Covers issue #269.
 
 mod signed_json_support;
 
-use signed_json_support::FIXTURE_SIGNING_SEED;
+use signed_json_support::{has_member, section_value, string_member, FIXTURE_SIGNING_SEED};
 use sovri_agent::matrix::Corpus;
-use sovri_agent::signed_json::{self, VerifyError};
+use sovri_agent::signed_json;
 use sovri_sdk::{ControlResult, Status};
 
 /// The run's fixed executed-at, carried verbatim from the Background.
@@ -37,31 +37,8 @@ const CMP_RULE: &str = "consent.detect-cmp-misconfiguration";
 /// The stable id of the evidence record the run collected.
 const EVIDENCE_ID: &str = "ev-0001";
 
-/// Each tamper vector: a description, the substring changed, and its replacement.
-///
-/// The status-flip and control-id changes are the literal scenario fields. The
-/// evidence-integrity change targets the evidence integrity digest, which is not
-/// yet populated in the export (it lands in R-08), so it tampers the evidence
-/// record instead. The scores change injects a member into the scores object. The
-/// signature check is field-agnostic, so any payload change is detected.
-const TAMPER_VECTORS: [(&str, &str, &str); 4] = [
-    (
-        "a result status is flipped from FAIL to PASS",
-        "\"status\":\"FAIL\"",
-        "\"status\":\"PASS\"",
-    ),
-    ("the evidence record is altered", "ev-0001", "ev-0002"),
-    (
-        "the control id is changed",
-        "consent.tracker.prior-consent",
-        "consent.tracker.other",
-    ),
-    (
-        "the scores section is altered",
-        "\"scores\":{",
-        "\"scores\":{\"x\":0,",
-    ),
-];
+/// The three score scopes the section names.
+const SCORE_SCOPES: [&str; 3] = ["control", "framework", "environment"];
 
 /// Builds one consent `ControlResult` for `rule_id` at `status`, carrying the
 /// control's catalogued severity, weight, and evidence id from the Background.
@@ -83,11 +60,11 @@ fn consent_result(rule_id: &str, status: Status) -> ControlResult {
         .expect("the consent fixture result validates")
 }
 
-#[test]
-fn tampering_with_the_payload_makes_verification_fail() {
-    // Given a signed JSON export of the "shopfront-2026-06-24" consent corpus
-    // produced with the fixture's test Ed25519 key.
-    let corpus = Corpus::new(EXECUTED_AT)
+/// The shopfront consent corpus: the gdpr-eprivacy framework, its
+/// consent.tracker.prior-consent control, that control's FAIL and PASS results,
+/// and the ev-0001 evidence — scored under the gdpr-eprivacy framework.
+fn consent_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
         .with_run_id(RUN_ID)
         .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
         .with_control(
@@ -100,21 +77,32 @@ fn tampering_with_the_payload_makes_verification_fail() {
         )
         .with_control_result(FRAMEWORK, consent_result(TRACKER_RULE, Status::Fail))
         .with_control_result(FRAMEWORK, consent_result(CMP_RULE, Status::Pass))
-        .with_evidence(EVIDENCE_ID, "dist/main.js");
-    let document = signed_json::export(&corpus, &FIXTURE_SIGNING_SEED);
+        .with_evidence(EVIDENCE_ID, "dist/main.js")
+}
 
-    // When the payload is changed and the document is verified, Then verification is
-    // rejected as "invalid signature", for each tamper vector.
-    for (change, from, to) in TAMPER_VECTORS {
-        let tampered = document.replace(from, to);
-        assert_ne!(
-            tampered, document,
-            "the tamper vector changes the document ({change})"
-        );
-        assert_eq!(
-            signed_json::verify(&tampered),
-            Err(VerifyError::InvalidSignature),
-            "verification is rejected as invalid signature after {change}"
+#[test]
+fn the_scores_section_names_every_scope_and_ties_the_framework_score_to_its_framework() {
+    // Given a signed JSON export of the "shopfront-2026-06-24" consent corpus.
+    let document = signed_json::export(&consent_corpus(), &FIXTURE_SIGNING_SEED);
+    let scores = section_value(&document, "scores");
+
+    // Then "payload.scores" carries a control score, a framework score, and an
+    // environment score.
+    for scope in SCORE_SCOPES {
+        assert!(
+            has_member(scores, scope),
+            "the scores section carries a {scope} score (scores: {scores})"
         );
     }
+
+    // And the framework score is tied to framework "gdpr-eprivacy".
+    let framework_scores = section_value(scores, "framework");
+    assert!(
+        framework_scores.contains(&format!("\"framework_id\":\"{FRAMEWORK}\"")),
+        "the framework score is tied to framework {FRAMEWORK} (framework scores: {framework_scores})"
+    );
+    assert!(
+        string_member(framework_scores, "score").is_some(),
+        "the framework score record carries a score value (framework scores: {framework_scores})"
+    );
 }

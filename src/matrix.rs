@@ -254,6 +254,15 @@ impl Corpus {
         &self.run_id
     }
 
+    /// The MAT-87 environment score for the corpus's framework-scoped results — the
+    /// pooled environment score plus the per-framework and per-control scores the
+    /// SDK derives, grouped by the framework each result was evaluated under. The
+    /// exporter carries this score; it never recomputes it here.
+    #[must_use]
+    pub fn environment_score(&self) -> EnvironmentScore {
+        environment_score(&self.results)
+    }
+
     /// The frameworks the corpus covers, each as its stable id, catalog version,
     /// and source URL, in the order they were added — the records the signed JSON
     /// export's frameworks section lists so a consumer can pin the exact catalog.
