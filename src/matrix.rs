@@ -282,6 +282,25 @@ impl Corpus {
             .collect()
     }
 
+    /// The catalogued controls, each as its framework id, control id, severity, and
+    /// non-CWE framework reference, in the order they were added — the details a gap
+    /// on a control resolves (its own reference and severity) by looking the control
+    /// up by framework and control id.
+    #[must_use]
+    pub fn controls(&self) -> Vec<(&str, &str, &str, &str)> {
+        self.controls
+            .iter()
+            .map(|control| {
+                (
+                    control.framework_id.as_str(),
+                    control.id.as_str(),
+                    control.severity.as_str(),
+                    control.reference.as_str(),
+                )
+            })
+            .collect()
+    }
+
     /// The stable ids of the evidence records the corpus holds, in the order they
     /// were collected — the evidence the signed JSON export lists, one record per
     /// id.
