@@ -234,6 +234,50 @@ impl Corpus {
         &self.executed_at
     }
 
+    /// The stable ids of the frameworks the corpus covers, in the order they were
+    /// added — the frameworks the signed JSON export lists, one record per id.
+    #[must_use]
+    pub fn framework_ids(&self) -> Vec<&str> {
+        self.frameworks
+            .iter()
+            .map(|framework| framework.id.as_str())
+            .collect()
+    }
+
+    /// The stable ids of the catalogued controls the corpus evaluated, in the
+    /// order they were added — the controls the signed JSON export lists, one
+    /// record per id.
+    #[must_use]
+    pub fn control_ids(&self) -> Vec<&str> {
+        self.controls
+            .iter()
+            .map(|control| control.id.as_str())
+            .collect()
+    }
+
+    /// The stable ids of the evidence records the corpus holds, in the order they
+    /// were collected — the evidence the signed JSON export lists, one record per
+    /// id.
+    #[must_use]
+    pub fn evidence_ids(&self) -> Vec<&str> {
+        self.evidence
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect()
+    }
+
+    /// The corpus's control results, each paired with the framework it was
+    /// evaluated under (`None` when it was added without one), in the order they
+    /// were added — the source of the signed JSON export's results and gaps
+    /// sections.
+    #[must_use]
+    pub fn scoped_results(&self) -> Vec<(Option<&str>, &ControlResult)> {
+        self.results
+            .iter()
+            .map(|scoped| (scoped.framework_id.as_deref(), &scoped.result))
+            .collect()
+    }
+
     /// Adds a catalogued control the corpus evaluated, rendered as one row on the
     /// Controls sheet.
     ///

@@ -20,7 +20,7 @@
 
 use crate::matrix::Corpus;
 use ed25519_dalek::{Signer, SigningKey};
-use sovri_sdk::content_digest;
+use sovri_sdk::{content_digest, ControlResult, Status};
 
 /// The self-describing schema format the export declares.
 const SCHEMA_FORMAT: &str = "sovri.compliance-export/v1";
@@ -44,6 +44,7 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
     let signing_key = SigningKey::from_bytes(signing_seed);
     let public_key = signing_key.verifying_key().to_bytes();
 
+    let scoped = corpus.scoped_results();
     let payload = Json::Object(vec![
         (
             "schema",
@@ -59,6 +60,12 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
                 Json::Str(corpus.executed_at().to_owned()),
             )]),
         ),
+        ("frameworks", id_array(&corpus.framework_ids())),
+        ("controls", id_array(&corpus.control_ids())),
+        ("results", results_array(&scoped)),
+        ("gaps", gaps_array(&scoped)),
+        ("evidence", id_array(&corpus.evidence_ids())),
+        ("scores", Json::Object(Vec::new())),
     ]);
     let verification = Json::Object(vec![
         ("algorithm", Json::Str(ALGORITHM.to_owned())),
@@ -83,8 +90,62 @@ enum Json {
     Str(String),
     /// A JSON integer, emitted verbatim.
     Int(i64),
+    /// A JSON array; its elements are emitted in the order given.
+    Array(Vec<Json>),
     /// A JSON object; its members are sorted by key on output.
     Object(Vec<(&'static str, Json)>),
+}
+
+/// Builds a JSON array of single-id records — one `{ "id": <id> }` per stable id.
+///
+/// The frameworks, controls, and evidence sections each carry this minimal record
+/// so every entry traces back to the corpus by its stable id; later scenarios add
+/// the remaining per-record fields.
+fn id_array(ids: &[&str]) -> Json {
+    Json::Array(
+        ids.iter()
+            .map(|&id| Json::Object(vec![("id", Json::Str(id.to_owned()))]))
+            .collect(),
+    )
+}
+
+/// Builds the `results` section — one record per control result, carrying the
+/// stable control and rule ids that trace it back to the corpus.
+fn results_array(scoped: &[(Option<&str>, &ControlResult)]) -> Json {
+    Json::Array(
+        scoped
+            .iter()
+            .map(|&(_, result)| result_member(result))
+            .collect(),
+    )
+}
+
+/// Builds the `gaps` section — one record per compliance gap: a framework-scoped
+/// result that failed or warned and so requires review. A passing, skipped, or
+/// unscoped result is not a gap.
+fn gaps_array(scoped: &[(Option<&str>, &ControlResult)]) -> Json {
+    Json::Array(
+        scoped
+            .iter()
+            .filter(|(framework, result)| framework.is_some() && is_gap(result.status()))
+            .map(|&(_, result)| result_member(result))
+            .collect(),
+    )
+}
+
+/// Builds the minimal JSON record the results and gaps sections share — the stable
+/// control and rule ids of a control result.
+fn result_member(result: &ControlResult) -> Json {
+    Json::Object(vec![
+        ("control_id", Json::Str(result.control_id().to_owned())),
+        ("rule_id", Json::Str(result.rule_id().to_owned())),
+    ])
+}
+
+/// Whether a result of `status` is a compliance gap — a failed or warned outcome
+/// the gaps section carries for review.
+fn is_gap(status: Status) -> bool {
+    matches!(status, Status::Fail | Status::Warning)
 }
 
 /// Serializes a set of object members as a canonical JSON object string.
@@ -116,8 +177,23 @@ fn write_value(out: &mut String, value: &Json) {
     match value {
         Json::Str(text) => write_string(out, text),
         Json::Int(number) => out.push_str(&number.to_string()),
+        Json::Array(items) => write_array(out, items),
         Json::Object(members) => write_object(out, members),
     }
+}
+
+/// Writes `items` as a canonical JSON array into `out`, emitting the elements in
+/// the order given — the caller supplies them in a stable, corpus-derived order,
+/// so the bytes depend only on the values.
+fn write_array(out: &mut String, items: &[Json]) {
+    out.push('[');
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write_value(out, item);
+    }
+    out.push(']');
 }
 
 /// Writes `text` as a quoted, escaped JSON string into `out`.
