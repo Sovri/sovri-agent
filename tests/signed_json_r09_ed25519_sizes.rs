@@ -9,6 +9,8 @@ mod signed_json_support;
 use signed_json_support::{consent_corpus, section_value, string_member, FIXTURE_SIGNING_SEED};
 use sovri_agent::signed_json;
 
+/// Returns the byte length of a hex-encoded string, or `None` when the input is
+/// odd-length or contains a non-hex character.
 fn hex_byte_len(value: &str) -> Option<usize> {
     if value.len() % 2 != 0 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
