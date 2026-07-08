@@ -149,6 +149,23 @@ fn an_unclassified_evidence_record_is_marked_not_redacted_in_the_json() {
     );
 }
 
+#[test]
+fn an_empty_evidence_store_is_an_empty_array_in_the_json() {
+    let corpus = matrix_support::no_evidence_corpus();
+
+    let document = signed_json::export(&corpus, &FIXTURE_SIGNING_SEED);
+    let export: Value = serde_json::from_str(&document).expect("the signed export parses as JSON");
+    let evidence = export
+        .pointer("/payload/evidence")
+        .and_then(Value::as_array)
+        .expect("the signed export carries payload.evidence records");
+
+    assert!(
+        evidence.is_empty(),
+        "an export with no evidence records carries an empty evidence array"
+    );
+}
+
 fn string_member<'a>(record: &'a Value, name: &str) -> Option<&'a str> {
     record.get(name).and_then(Value::as_str)
 }

@@ -208,6 +208,24 @@ struct Evidence {
     classification: Classification,
 }
 
+/// Borrowed evidence metadata exposed to downstream exporters.
+///
+/// The view carries only persisted metadata: stable id, evidence kind, locator,
+/// stored integrity value, and the redaction status derived from the record's
+/// classification. It never exposes raw evidence bytes.
+pub struct EvidenceRecord<'a> {
+    /// Stable evidence id used by results and gaps to reference this record.
+    pub id: &'a str,
+    /// Evidence kind recorded by the persisted store, such as `file` or `config`.
+    pub kind: &'a str,
+    /// Location the evidence was collected from.
+    pub locator: &'a str,
+    /// Integrity metadata read from the persisted store.
+    pub integrity: &'a str,
+    /// Redaction status derived from the record classification.
+    pub redaction_status: &'a str,
+}
+
 impl Corpus {
     /// Builds a corpus for a run with the given fixed executed-at timestamp.
     ///
@@ -322,21 +340,17 @@ impl Corpus {
     }
 
     /// The evidence metadata records the corpus holds, in the order they were
-    /// collected. Each tuple carries stable id, kind, location, integrity, and
-    /// derived redaction status: `Secret` and `Sensitive` evidence is `redacted`;
-    /// `Unclassified` evidence is `none`.
+    /// collected.
     #[must_use]
-    pub fn evidence_records(&self) -> Vec<(&str, &str, &str, &str, &str)> {
+    pub fn evidence_records(&self) -> Vec<EvidenceRecord<'_>> {
         self.evidence
             .iter()
-            .map(|record| {
-                (
-                    record.id.as_str(),
-                    record.kind.as_str(),
-                    record.location.as_str(),
-                    record.integrity.as_str(),
-                    redaction_status(record.classification),
-                )
+            .map(|record| EvidenceRecord {
+                id: record.id.as_str(),
+                kind: record.kind.as_str(),
+                locator: record.location.as_str(),
+                integrity: record.integrity.as_str(),
+                redaction_status: redaction_status(record.classification),
             })
             .collect()
     }

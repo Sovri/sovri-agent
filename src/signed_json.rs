@@ -18,7 +18,7 @@
 //! Ed25519 comes from `ed25519-dalek` (ADR-031); the curve is not hand-rolled
 //! and no private key material is ever emitted.
 
-use crate::matrix::Corpus;
+use crate::matrix::{Corpus, EvidenceRecord};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sovri_sdk::{
     content_digest, ControlResult, ControlScore, EnvironmentScore, FrameworkScore, ScoreRatio,
@@ -35,6 +35,12 @@ const SCHEMA_VERSION: i64 = 1;
 const ALGORITHM: &str = "Ed25519";
 /// Hex length of the truncated public-key fingerprint carried as the key id.
 const KEY_ID_HEX_LEN: usize = 16;
+/// Evidence object member names used in the canonical payload.
+const EVIDENCE_ID_MEMBER: &str = "id";
+const EVIDENCE_INTEGRITY_MEMBER: &str = "integrity";
+const EVIDENCE_LOCATOR_MEMBER: &str = "locator";
+const EVIDENCE_REDACTION_STATUS_MEMBER: &str = "redaction_status";
+const EVIDENCE_TYPE_MEMBER: &str = "type";
 
 /// Exports the compliance `corpus` as a signed JSON document, signed with the
 /// injected 32-byte Ed25519 seed.
@@ -273,17 +279,26 @@ fn id_array(ids: &[&str]) -> Json {
 /// carrying metadata only. Classified records have already dropped their raw value
 /// before reaching the corpus, so the JSON emits redaction status but never the
 /// raw excerpt.
-fn evidence_array(records: &[(&str, &str, &str, &str, &str)]) -> Json {
+fn evidence_array(records: &[EvidenceRecord<'_>]) -> Json {
     Json::Array(
         records
             .iter()
-            .map(|&(id, kind, locator, integrity, redaction_status)| {
+            .map(|record| {
                 Json::Object(vec![
-                    ("id", Json::Str(id.to_owned())),
-                    ("integrity", Json::Str(integrity.to_owned())),
-                    ("locator", Json::Str(locator.to_owned())),
-                    ("redaction_status", Json::Str(redaction_status.to_owned())),
-                    ("type", Json::Str(kind.to_owned())),
+                    (EVIDENCE_ID_MEMBER, Json::Str(record.id.to_owned())),
+                    (
+                        EVIDENCE_INTEGRITY_MEMBER,
+                        Json::Str(record.integrity.to_owned()),
+                    ),
+                    (
+                        EVIDENCE_LOCATOR_MEMBER,
+                        Json::Str(record.locator.to_owned()),
+                    ),
+                    (
+                        EVIDENCE_REDACTION_STATUS_MEMBER,
+                        Json::Str(record.redaction_status.to_owned()),
+                    ),
+                    (EVIDENCE_TYPE_MEMBER, Json::Str(record.kind.to_owned())),
                 ])
             })
             .collect(),
