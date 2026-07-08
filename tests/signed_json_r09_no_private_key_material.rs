@@ -11,6 +11,11 @@ use signed_json_support::{consent_corpus, FIXTURE_SIGNING_SEED};
 use sovri_agent::signed_json;
 use std::fmt::Write as _;
 
+/// Forbidden member names from the R-09 scenario outline examples.
+///
+/// Keep this list in sync with
+/// `specs/mat-97-signed-json-export-offline-verifiable-compliance-results/r09-ed25519-no-private-key.feature`
+/// if the examples change.
 const FORBIDDEN_MEMBERS: [&str; 3] = ["private_key", "secret_key", "seed"];
 
 /// Returns true when a parsed JSON value contains an object member named
