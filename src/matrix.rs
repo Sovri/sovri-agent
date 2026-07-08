@@ -321,6 +321,25 @@ impl Corpus {
             .collect()
     }
 
+    /// The evidence metadata records the corpus holds, in the order they were
+    /// collected. Each tuple carries stable id, kind, location, integrity, and
+    /// derived redaction status for downstream exports.
+    #[must_use]
+    pub fn evidence_records(&self) -> Vec<(&str, &str, &str, &str, &str)> {
+        self.evidence
+            .iter()
+            .map(|record| {
+                (
+                    record.id.as_str(),
+                    record.kind.as_str(),
+                    record.location.as_str(),
+                    record.integrity.as_str(),
+                    redaction_status(record.classification),
+                )
+            })
+            .collect()
+    }
+
     /// The corpus's control results, each paired with the framework it was
     /// evaluated under (`None` when it was added without one), in the order they
     /// were added — the source of the signed JSON export's results and gaps

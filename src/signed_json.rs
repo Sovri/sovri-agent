@@ -52,6 +52,7 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
     let scoped = corpus.scoped_results();
     let frameworks = corpus.frameworks();
     let controls = corpus.controls();
+    let evidence = corpus.evidence_records();
     let payload = Json::Object(vec![
         (
             "schema",
@@ -71,7 +72,7 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
         ("controls", id_array(&corpus.control_ids())),
         ("results", results_array(&scoped)),
         ("gaps", gaps_array(&scoped, &controls, &frameworks)),
-        ("evidence", id_array(&corpus.evidence_ids())),
+        ("evidence", evidence_array(&evidence)),
         ("scores", scores_object(&corpus.environment_score())),
     ]);
     let verification = Json::Object(vec![
@@ -264,6 +265,27 @@ fn id_array(ids: &[&str]) -> Json {
     Json::Array(
         ids.iter()
             .map(|&id| Json::Object(vec![("id", Json::Str(id.to_owned()))]))
+            .collect(),
+    )
+}
+
+/// Builds the `evidence` section — one record per persisted evidence item,
+/// carrying metadata only. Classified records have already dropped their raw value
+/// before reaching the corpus, so the JSON emits redaction status but never the
+/// raw excerpt.
+fn evidence_array(records: &[(&str, &str, &str, &str, &str)]) -> Json {
+    Json::Array(
+        records
+            .iter()
+            .map(|&(id, kind, locator, integrity, redaction_status)| {
+                Json::Object(vec![
+                    ("id", Json::Str(id.to_owned())),
+                    ("integrity", Json::Str(integrity.to_owned())),
+                    ("locator", Json::Str(locator.to_owned())),
+                    ("redaction_status", Json::Str(redaction_status.to_owned())),
+                    ("type", Json::Str(kind.to_owned())),
+                ])
+            })
             .collect(),
     )
 }
