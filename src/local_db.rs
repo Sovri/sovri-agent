@@ -43,6 +43,11 @@ const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[
         "0005-result-query-filters",
         RESULT_QUERY_FILTERS_SCHEMA_SQL,
     ),
+    PackagedMigration::new(
+        RUN_EVIDENCE_INDEX_SCHEMA_VERSION,
+        "0006-run-evidence-index",
+        RUN_EVIDENCE_INDEX_SCHEMA_SQL,
+    ),
 ];
 
 const INITIAL_SCHEMA_SQL: &str = "
@@ -72,6 +77,11 @@ const INITIAL_SCHEMA_SQL: &str = "
       id TEXT PRIMARY KEY,
       digest TEXT NOT NULL,
       locator TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS run_evidence_links (
+      run_id TEXT NOT NULL,
+      evidence_id TEXT NOT NULL,
+      PRIMARY KEY (run_id, evidence_id)
     );
     CREATE TABLE IF NOT EXISTS score_summaries (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY);
@@ -103,6 +113,25 @@ const EVIDENCE_LOCATORS_SCHEMA_SQL: &str = "";
 const RESULT_QUERY_FILTERS_SCHEMA_VERSION: u32 = 5;
 
 const RESULT_QUERY_FILTERS_SCHEMA_SQL: &str = "";
+
+const RUN_EVIDENCE_INDEX_SCHEMA_VERSION: u32 = 6;
+
+const RUN_EVIDENCE_INDEX_SCHEMA_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS run_evidence_links (
+      run_id TEXT NOT NULL,
+      evidence_id TEXT NOT NULL,
+      PRIMARY KEY (run_id, evidence_id)
+    );
+    INSERT OR IGNORE INTO run_evidence_links(run_id, evidence_id)
+    SELECT DISTINCT run_id, evidence_id
+    FROM control_results
+    WHERE run_id <> '' AND evidence_id <> '';
+    INSERT OR IGNORE INTO run_evidence_links(run_id, evidence_id)
+    SELECT scan_runs.id, evidence_metadata.id
+    FROM scan_runs
+    CROSS JOIN evidence_metadata
+    WHERE (SELECT COUNT(*) FROM scan_runs) = 1;
+";
 
 const MIGRATION_LEDGER_SQL: &str = "
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -156,6 +185,24 @@ const SCHEMA_VERSION_5_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
     RequiredSchemaColumn::new("compliance_gaps", "rule_id"),
 ];
 
+const SCHEMA_VERSION_6_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
+    RequiredSchemaColumn::new("frameworks", "version"),
+    RequiredSchemaColumn::new("control_results", "run_id"),
+    RequiredSchemaColumn::new("control_results", "control_id"),
+    RequiredSchemaColumn::new("control_results", "rule_id"),
+    RequiredSchemaColumn::new("control_results", "status"),
+    RequiredSchemaColumn::new("control_results", "evidence_id"),
+    RequiredSchemaColumn::new("evidence_metadata", "digest"),
+    RequiredSchemaColumn::new("evidence_metadata", "locator"),
+    RequiredSchemaColumn::new("compliance_gaps", "run_id"),
+    RequiredSchemaColumn::new("compliance_gaps", "status"),
+    RequiredSchemaColumn::new("compliance_gaps", "severity"),
+    RequiredSchemaColumn::new("compliance_gaps", "control_id"),
+    RequiredSchemaColumn::new("compliance_gaps", "rule_id"),
+    RequiredSchemaColumn::new("run_evidence_links", "run_id"),
+    RequiredSchemaColumn::new("run_evidence_links", "evidence_id"),
+];
+
 const NO_REQUIRED_SCHEMA_COLUMNS: &[RequiredSchemaColumn] = &[];
 
 const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
@@ -175,6 +222,10 @@ const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
     SchemaRequirements::new(
         RESULT_QUERY_FILTERS_SCHEMA_VERSION,
         SCHEMA_VERSION_5_REQUIRED_COLUMNS,
+    ),
+    SchemaRequirements::new(
+        RUN_EVIDENCE_INDEX_SCHEMA_VERSION,
+        SCHEMA_VERSION_6_REQUIRED_COLUMNS,
     ),
 ];
 
@@ -608,6 +659,38 @@ impl LocalDatabase {
         })
     }
 
+    /// Validates all evidence linked to a run before corpus reconstruction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot read the run links or linked metadata,
+    /// or if a backing-store digest differs from the persisted expected digest.
+    pub fn validate_corpus_reconstruction(
+        &self,
+        store: &EvidenceStore,
+        run_id: &str,
+    ) -> Result<(), LocalDatabaseError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT evidence_id
+                 FROM run_evidence_links
+                 WHERE run_id = ?1
+                 ORDER BY evidence_id",
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let evidence_ids = statement
+            .query_map(params![run_id], |row| row.get::<_, String>(0))
+            .map_err(LocalDatabaseError::Sqlite)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(LocalDatabaseError::Sqlite)?;
+
+        for evidence_id in evidence_ids {
+            self.read_linked_evidence(store, &evidence_id)?;
+        }
+        Ok(())
+    }
+
     /// Writes a completed scan corpus into the local database.
     ///
     /// # Errors
@@ -704,26 +787,42 @@ impl LocalDatabase {
 
         write_gap_rows(&transaction, run_id, &scoped_results)?;
 
-        for evidence in corpus.evidence_records() {
-            transaction
-                .execute(
-                    // Rewrites refresh content identity but preserve the first
-                    // non-empty locator.
-                    "INSERT INTO evidence_metadata(id, digest, locator)
-                     VALUES (?1, ?2, ?3)
-                     ON CONFLICT(id) DO UPDATE SET
-                       digest = COALESCE(NULLIF(excluded.digest, ''), evidence_metadata.digest),
-                       locator = CASE
-                         WHEN evidence_metadata.locator = '' THEN excluded.locator
-                         ELSE evidence_metadata.locator
-                       END",
-                    params![evidence.id, evidence.integrity, evidence.locator],
-                )
-                .map_err(LocalDatabaseError::Sqlite)?;
-        }
+        write_evidence_rows(&transaction, run_id, corpus).map_err(LocalDatabaseError::Sqlite)?;
 
         transaction.commit().map_err(LocalDatabaseError::Sqlite)
     }
+}
+
+fn write_evidence_rows(
+    transaction: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    corpus: &Corpus,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        "DELETE FROM run_evidence_links WHERE run_id = ?1",
+        params![run_id],
+    )?;
+    for evidence in corpus.evidence_records() {
+        transaction.execute(
+            // Rewrites refresh content identity but preserve the first non-empty locator.
+            "INSERT INTO evidence_metadata(id, digest, locator)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET
+               digest = COALESCE(NULLIF(excluded.digest, ''), evidence_metadata.digest),
+               locator = CASE
+                 WHEN evidence_metadata.locator = '' THEN excluded.locator
+                 ELSE evidence_metadata.locator
+               END",
+            params![evidence.id, evidence.integrity, evidence.locator],
+        )?;
+        transaction.execute(
+            "INSERT INTO run_evidence_links(run_id, evidence_id)
+             VALUES (?1, ?2)
+             ON CONFLICT(run_id, evidence_id) DO NOTHING",
+            params![run_id, evidence.id],
+        )?;
+    }
+    Ok(())
 }
 
 fn control_result_row_id(
@@ -1047,6 +1146,25 @@ fn migration_is_applicable(
                 || !schema_column_exists(connection, "control_results", "status")?));
     }
 
+    if migration.version == RUN_EVIDENCE_INDEX_SCHEMA_VERSION
+        && migration.name == "0006-run-evidence-index"
+        && migration.sql == RUN_EVIDENCE_INDEX_SCHEMA_SQL
+    {
+        let schema_version = connection_schema_version(connection)?;
+        let link_columns_missing =
+            !schema_column_exists(connection, "run_evidence_links", "run_id")?
+                || !schema_column_exists(connection, "run_evidence_links", "evidence_id")?;
+        let can_backfill = schema_column_exists(connection, "scan_runs", "id")?
+            && schema_column_exists(connection, "evidence_metadata", "id")?
+            && schema_column_exists(connection, "control_results", "run_id")?
+            && schema_column_exists(connection, "control_results", "evidence_id")?;
+        return Ok((INITIAL_SCHEMA_VERSION..RUN_EVIDENCE_INDEX_SCHEMA_VERSION)
+            .contains(&schema_version)
+            && migration_is_applied(connection, schema_version)?
+            && can_backfill
+            && (schema_version > INITIAL_SCHEMA_VERSION || link_columns_missing));
+    }
+
     Ok(true)
 }
 
@@ -1318,6 +1436,103 @@ impl Error for LocalDatabaseError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rewriting_a_run_replaces_its_evidence_links() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory SQLite");
+        apply_packaged_migrations(&mut connection, PACKAGED_MIGRATIONS)
+            .expect("apply packaged migrations");
+        let mut database = LocalDatabase { connection };
+        database
+            .write_completed_corpus(
+                &Corpus::new("2026-06-24T13:16:28Z")
+                    .with_run_id("rewritten-run")
+                    .with_evidence("old-evidence", "old.locator")
+                    .with_evidence("kept-evidence", "kept.locator"),
+            )
+            .expect("write the original run");
+
+        database
+            .write_completed_corpus(
+                &Corpus::new("2026-06-24T13:16:28Z")
+                    .with_run_id("rewritten-run")
+                    .with_evidence("kept-evidence", "kept.locator"),
+            )
+            .expect("rewrite the run");
+
+        let links = database
+            .connection
+            .prepare(
+                "SELECT evidence_id
+                 FROM run_evidence_links
+                 WHERE run_id = 'rewritten-run'
+                 ORDER BY evidence_id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(links, vec!["kept-evidence"]);
+    }
+
+    #[test]
+    fn run_evidence_index_migration_backfills_a_recognized_v5_database() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory SQLite");
+        connection
+            .execute_batch(INITIAL_SCHEMA_SQL)
+            .expect("create the current table shapes");
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                   version INTEGER PRIMARY KEY,
+                   name TEXT NOT NULL,
+                   applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                 );
+                 INSERT INTO schema_migrations(version, name) VALUES
+                   (1, '0001-initial'),
+                   (3, '0003-gap-query-filters'),
+                   (4, '0004-evidence-locators'),
+                   (5, '0005-result-query-filters');
+                 INSERT INTO scan_runs(id) VALUES ('existing-run');
+                 INSERT INTO evidence_metadata(id, digest, locator) VALUES
+                   ('result-evidence', 'sha256:result', 'result.locator'),
+                   ('standalone-evidence', 'sha256:standalone', 'standalone.locator');
+                 INSERT INTO control_results(
+                   id, run_id, control_id, rule_id, status, evidence_id
+                 ) VALUES (
+                   'existing-result', 'existing-run', 'control', 'rule', 'FAIL',
+                   'result-evidence'
+                 );
+                 PRAGMA user_version = 5;",
+            )
+            .expect("record a recognized v5 schema");
+
+        apply_packaged_migrations(&mut connection, PACKAGED_MIGRATIONS)
+            .expect("apply the run-evidence repair migration");
+
+        assert_eq!(connection_schema_version(&connection).unwrap(), 6);
+        assert!(schema_column_exists(&connection, "run_evidence_links", "run_id").unwrap());
+        assert!(schema_column_exists(&connection, "run_evidence_links", "evidence_id").unwrap());
+        let links: Vec<(String, String)> = connection
+            .prepare(
+                "SELECT run_id, evidence_id
+                 FROM run_evidence_links
+                 ORDER BY evidence_id",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            links,
+            vec![
+                ("existing-run".to_owned(), "result-evidence".to_owned()),
+                ("existing-run".to_owned(), "standalone-evidence".to_owned()),
+            ]
+        );
+    }
 
     #[test]
     fn evidence_lookup_parse_accepts_only_exact_names() {
