@@ -337,6 +337,7 @@ pub struct LocalDatabaseEvidence {
     id: String,
     digest: String,
     locator: String,
+    classification: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -409,6 +410,21 @@ impl LocalDatabaseEvidence {
     #[must_use]
     pub fn locator(&self) -> &str {
         &self.locator
+    }
+
+    /// Returns the persisted confidentiality classification.
+    #[must_use]
+    pub fn classification(&self) -> &str {
+        &self.classification
+    }
+
+    /// Returns the redaction status derived from the persisted classification.
+    #[must_use]
+    pub fn redaction_status(&self) -> &str {
+        match self.classification.as_str() {
+            "Unclassified" => "none",
+            _ => "redacted",
+        }
     }
 }
 
@@ -617,20 +633,31 @@ impl LocalDatabase {
         };
         let sql = match lookup {
             EvidenceLookup::Id => {
-                "SELECT id, digest, locator
+                "SELECT
+                   id,
+                   digest,
+                   locator,
+                   classification
                  FROM evidence_metadata
                  WHERE id = ?1
                  ORDER BY id"
             }
             EvidenceLookup::Digest => {
-                "SELECT id, digest, locator
+                "SELECT
+                   id,
+                   digest,
+                   locator,
+                   classification
                  FROM evidence_metadata
                  WHERE digest = ?1
                  ORDER BY id"
             }
             EvidenceLookup::Control => {
-                "SELECT DISTINCT evidence_metadata.id, evidence_metadata.digest,
-                                 evidence_metadata.locator
+                "SELECT DISTINCT
+                   evidence_metadata.id,
+                   evidence_metadata.digest,
+                   evidence_metadata.locator,
+                   evidence_metadata.classification
                  FROM evidence_metadata
                  INNER JOIN control_results
                    ON control_results.evidence_id = evidence_metadata.id
@@ -648,6 +675,7 @@ impl LocalDatabase {
                     id: row.get("id")?,
                     digest: row.get("digest")?,
                     locator: row.get("locator")?,
+                    classification: row.get("classification")?,
                 })
             })
             .map_err(LocalDatabaseError::Sqlite)?;
