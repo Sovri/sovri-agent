@@ -31,9 +31,19 @@ const CUSTOM_INITIAL_SCHEMA_SQL: &str = "
     );
 ";
 
+const CUSTOM_VERSION_1_SCHEMA_SQL: &str = "
+    CREATE TABLE custom_rows (id TEXT PRIMARY KEY);
+";
+
 const CUSTOM_SECOND_SCHEMA_SQL: &str = "
     CREATE TABLE custom_migration_marker (id TEXT PRIMARY KEY);
 ";
+
+const CUSTOM_VERSION_1_MIGRATIONS: &[PackagedMigration] = &[PackagedMigration::new(
+    1,
+    "0001-custom-only",
+    CUSTOM_VERSION_1_SCHEMA_SQL,
+)];
 
 const CUSTOM_VERSION_2_MIGRATIONS: &[PackagedMigration] = &[
     PackagedMigration::new(1, "0001-custom-initial", CUSTOM_INITIAL_SCHEMA_SQL),
@@ -281,6 +291,24 @@ fn reopening_a_future_schema_version_is_rejected() {
     assert!(
         !error_message.contains("missing required columns"),
         "a future-version failure should not be reported as a missing-column failure, got {error_message:?}"
+    );
+}
+
+#[test]
+fn supplied_packaged_migration_at_version_1_can_use_a_custom_schema() {
+    let database = TempDatabase::new();
+
+    let opened =
+        LocalDatabase::open_with_packaged_migrations(database.path(), CUSTOM_VERSION_1_MIGRATIONS)
+            .expect("caller-supplied version 1 migrations can use a custom schema");
+
+    assert_eq!(opened.schema_version(), 1);
+    assert!(
+        opened
+            .schema_tables()
+            .expect("schema tables can be inspected")
+            .contains(&"custom_rows".to_owned()),
+        "the caller-supplied version 1 schema was applied"
     );
 }
 

@@ -54,6 +54,8 @@ const SCHEMA_VERSION_1_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
     RequiredSchemaColumn::new("evidence_metadata", "digest"),
 ];
 
+const NO_REQUIRED_SCHEMA_COLUMNS: &[RequiredSchemaColumn] = &[];
+
 const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[SchemaRequirements::new(
     INITIAL_SCHEMA_VERSION,
     SCHEMA_VERSION_1_REQUIRED_COLUMNS,
@@ -259,6 +261,14 @@ fn required_schema_columns(
         ));
     }
 
+    if !uses_supported_schema_requirements(migrations) {
+        return if migration_version_is_supplied(schema_version, migrations) {
+            Ok(NO_REQUIRED_SCHEMA_COLUMNS)
+        } else {
+            Err(unsupported_schema_version(schema_version, migrations))
+        };
+    }
+
     if let Some(requirements) = SUPPORTED_SCHEMA_REQUIREMENTS
         .iter()
         .find(|requirements| requirements.version == schema_version)
@@ -268,17 +278,38 @@ fn required_schema_columns(
 
     let latest_requirements = latest_supported_schema_requirements();
     if schema_version > latest_requirements.version
-        && migrations
-            .iter()
-            .any(|migration| migration.version == schema_version)
+        && migration_version_is_supplied(schema_version, migrations)
     {
         return Ok(latest_requirements.required_columns);
     }
 
-    Err(LocalDatabaseError::Schema(format!(
+    Err(unsupported_schema_version(schema_version, migrations))
+}
+
+fn uses_supported_schema_requirements(migrations: &[PackagedMigration]) -> bool {
+    migrations.iter().any(|migration| {
+        PACKAGED_MIGRATIONS.iter().any(|packaged_migration| {
+            migration.version == packaged_migration.version
+                && migration.name == packaged_migration.name
+                && migration.sql == packaged_migration.sql
+        })
+    })
+}
+
+fn migration_version_is_supplied(schema_version: u32, migrations: &[PackagedMigration]) -> bool {
+    migrations
+        .iter()
+        .any(|migration| migration.version == schema_version)
+}
+
+fn unsupported_schema_version(
+    schema_version: u32,
+    migrations: &[PackagedMigration],
+) -> LocalDatabaseError {
+    LocalDatabaseError::Schema(format!(
         "unsupported schema version {schema_version}; supplied packaged migration versions: {}",
         packaged_migration_versions(migrations)
-    )))
+    ))
 }
 
 fn latest_supported_schema_requirements() -> &'static SchemaRequirements {
