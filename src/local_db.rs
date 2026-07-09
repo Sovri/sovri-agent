@@ -157,6 +157,7 @@ impl LocalDatabase {
             fs::create_dir_all(parent).map_err(LocalDatabaseError::Io)?;
         }
         let mut connection = Connection::open(path).map_err(LocalDatabaseError::Sqlite)?;
+        reject_newer_schema_version(&connection, migrations)?;
         apply_packaged_migrations(&mut connection, migrations)?;
         validate_current_schema(&connection, migrations)?;
         Ok(LocalDatabase { connection })
@@ -235,6 +236,29 @@ fn apply_packaged_migrations(
         }
     }
     Ok(())
+}
+
+fn reject_newer_schema_version(
+    connection: &Connection,
+    migrations: &[PackagedMigration],
+) -> Result<(), LocalDatabaseError> {
+    let schema_version = connection_schema_version(connection)?;
+    let packaged_schema_version = latest_packaged_migration_version(migrations);
+    if schema_version > packaged_schema_version {
+        return Err(LocalDatabaseError::Schema(format!(
+            "unsupported newer schema version {schema_version}; packaged current schema version is {packaged_schema_version}"
+        )));
+    }
+
+    Ok(())
+}
+
+fn latest_packaged_migration_version(migrations: &[PackagedMigration]) -> u32 {
+    migrations
+        .iter()
+        .map(|migration| migration.version)
+        .max()
+        .unwrap_or(0)
 }
 
 fn validate_current_schema(
