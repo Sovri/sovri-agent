@@ -26,11 +26,17 @@ const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[PackagedMigration::new(
 
 const INITIAL_SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS scan_runs (id TEXT PRIMARY KEY);
-    CREATE TABLE IF NOT EXISTS frameworks (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS frameworks (
+      id TEXT PRIMARY KEY,
+      version TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS controls (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS control_results (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS compliance_gaps (id TEXT PRIMARY KEY);
-    CREATE TABLE IF NOT EXISTS evidence_metadata (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS evidence_metadata (
+      id TEXT PRIMARY KEY,
+      digest TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS score_summaries (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY);
 ";
