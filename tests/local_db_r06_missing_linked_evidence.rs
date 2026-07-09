@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sovri_agent::local_db::LocalDatabase;
+use sovri_agent::local_db::{LocalDatabase, LocalDatabaseError};
 use sovri_agent::matrix::{Classification, Corpus};
 use sovri_sdk::EvidenceStore;
 
@@ -73,6 +73,7 @@ fn a_missing_linked_evidence_record_is_reported_as_an_integrity_error() {
         .as_ref()
         .expect_err("missing evidence must fail its integrity check");
     assert!(error.is_integrity_error());
+    assert!(matches!(error, LocalDatabaseError::MissingEvidence { .. }));
 
     // And the error reports missing evidence id "ev-0007".
     assert!(error.to_string().contains(EVIDENCE_ID));
