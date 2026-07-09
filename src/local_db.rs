@@ -558,9 +558,9 @@ impl LocalDatabase {
         let rows = statement
             .query_map(params![value], |row| {
                 Ok(LocalDatabaseEvidence {
-                    id: row.get(0)?,
-                    digest: row.get(1)?,
-                    locator: row.get(2)?,
+                    id: row.get("id")?,
+                    digest: row.get("digest")?,
+                    locator: row.get("locator")?,
                 })
             })
             .map_err(LocalDatabaseError::Sqlite)?;
