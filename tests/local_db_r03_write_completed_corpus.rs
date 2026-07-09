@@ -268,6 +268,75 @@ fn writing_a_completed_corpus_upgrades_legacy_section_tables() {
     assert_legacy_rows_are_preserved(database.path());
 }
 
+#[test]
+fn writing_a_completed_corpus_replaces_existing_run_sections() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+
+    local_database
+        .write_completed_corpus(&mixed_completed_corpus().with_run_id(MIXED_RUN))
+        .expect("the original completed corpus is written to SQLite");
+    assert_eq!(
+        local_database
+            .framework_records_for_run(MIXED_RUN)
+            .expect("original framework records can be retrieved")
+            .len(),
+        2
+    );
+    assert_eq!(
+        local_database
+            .evidence_metadata_records_for_run(MIXED_RUN)
+            .expect("original evidence metadata can be retrieved")
+            .len(),
+        2
+    );
+
+    local_database
+        .write_completed_corpus(&consent_corpus().with_run_id(MIXED_RUN))
+        .expect("the corrected completed corpus is written to SQLite");
+
+    assert_eq!(
+        local_database
+            .framework_records_for_run(MIXED_RUN)
+            .expect("replacement framework records can be retrieved"),
+        vec![FRAMEWORK.to_owned()]
+    );
+    assert_eq!(
+        local_database
+            .control_records_for_run(MIXED_RUN)
+            .expect("replacement control records can be retrieved"),
+        vec![CONTROL.to_owned()]
+    );
+    assert_eq!(
+        local_database
+            .control_result_records_for_run(MIXED_RUN)
+            .expect("replacement control results can be retrieved"),
+        vec![
+            format!("{FRAMEWORK}:{CONTROL}:{CMP_RULE}"),
+            format!("{FRAMEWORK}:{CONTROL}:{TRACKER_RULE}"),
+        ]
+    );
+    assert_eq!(
+        local_database
+            .compliance_gap_records_for_run(MIXED_RUN)
+            .expect("replacement compliance gaps can be retrieved"),
+        vec![format!("{FRAMEWORK}:{CONTROL}:{TRACKER_RULE}")]
+    );
+    assert_eq!(
+        local_database
+            .evidence_metadata_records_for_run(MIXED_RUN)
+            .expect("replacement evidence metadata can be retrieved"),
+        vec![PUBLIC_EVIDENCE_ID.to_owned()]
+    );
+    assert_eq!(
+        local_database
+            .score_summary_records_for_run(MIXED_RUN)
+            .expect("replacement score summaries can be retrieved"),
+        vec![FRAMEWORK.to_owned()]
+    );
+}
+
 fn completed_corpus_examples() -> Vec<CompletedCorpusCase> {
     vec![
         CompletedCorpusCase {

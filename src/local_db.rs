@@ -390,6 +390,12 @@ fn write_completed_corpus_rows(
 ) -> Result<(), LocalDatabaseError> {
     ensure_completed_corpus_schema(transaction)?;
     let run_id = corpus.run_id();
+    if run_id.is_empty() {
+        return Err(LocalDatabaseError::Schema(
+            "completed corpus run_id cannot be empty".to_owned(),
+        ));
+    }
+    clear_completed_corpus_rows(transaction, run_id)?;
 
     transaction
         .execute(
@@ -474,6 +480,25 @@ fn write_completed_corpus_rows(
     Ok(())
 }
 
+fn clear_completed_corpus_rows(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+) -> Result<(), LocalDatabaseError> {
+    for sql in [
+        "DELETE FROM frameworks WHERE run_id = ?1",
+        "DELETE FROM controls WHERE run_id = ?1",
+        "DELETE FROM control_results WHERE run_id = ?1",
+        "DELETE FROM compliance_gaps WHERE run_id = ?1",
+        "DELETE FROM run_evidence_links WHERE run_id = ?1",
+        "DELETE FROM score_summaries WHERE run_id = ?1",
+    ] {
+        transaction
+            .execute(sql, params![run_id])
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+    Ok(())
+}
+
 fn ensure_completed_corpus_schema(connection: &Connection) -> Result<(), LocalDatabaseError> {
     connection
         .execute(
@@ -491,7 +516,7 @@ fn ensure_completed_corpus_schema(connection: &Connection) -> Result<(), LocalDa
         connection,
         "ALTER TABLE controls RENAME TO controls_completed_corpus_upgrade",
         "CREATE TABLE controls (
-          run_id TEXT NOT NULL DEFAULT '',
+          run_id TEXT NOT NULL,
           id TEXT NOT NULL,
           PRIMARY KEY (run_id, id)
         )",
@@ -506,7 +531,7 @@ fn ensure_completed_corpus_schema(connection: &Connection) -> Result<(), LocalDa
         connection,
         "ALTER TABLE control_results RENAME TO control_results_completed_corpus_upgrade",
         "CREATE TABLE control_results (
-          run_id TEXT NOT NULL DEFAULT '',
+          run_id TEXT NOT NULL,
           id TEXT NOT NULL,
           PRIMARY KEY (run_id, id)
         )",
@@ -521,7 +546,7 @@ fn ensure_completed_corpus_schema(connection: &Connection) -> Result<(), LocalDa
         connection,
         "ALTER TABLE compliance_gaps RENAME TO compliance_gaps_completed_corpus_upgrade",
         "CREATE TABLE compliance_gaps (
-          run_id TEXT NOT NULL DEFAULT '',
+          run_id TEXT NOT NULL,
           id TEXT NOT NULL,
           PRIMARY KEY (run_id, id)
         )",
@@ -537,7 +562,7 @@ fn ensure_completed_corpus_schema(connection: &Connection) -> Result<(), LocalDa
         connection,
         "ALTER TABLE score_summaries RENAME TO score_summaries_completed_corpus_upgrade",
         "CREATE TABLE score_summaries (
-          run_id TEXT NOT NULL DEFAULT '',
+          run_id TEXT NOT NULL,
           id TEXT NOT NULL,
           PRIMARY KEY (run_id, id)
         )",
@@ -563,7 +588,7 @@ fn rebuild_scan_runs_table(connection: &Connection) -> Result<(), LocalDatabaseE
         .execute(
             "CREATE TABLE scan_runs (
               id TEXT PRIMARY KEY,
-              executed_at TEXT NOT NULL DEFAULT ''
+              executed_at TEXT NOT NULL
             )",
             [],
         )
@@ -595,7 +620,7 @@ fn rebuild_frameworks_table(connection: &Connection) -> Result<(), LocalDatabase
     connection
         .execute(
             "CREATE TABLE frameworks (
-              run_id TEXT NOT NULL DEFAULT '',
+              run_id TEXT NOT NULL,
               id TEXT NOT NULL,
               version TEXT NOT NULL,
               PRIMARY KEY (run_id, id)
