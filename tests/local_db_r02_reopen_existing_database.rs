@@ -73,6 +73,30 @@ fn seed_current_corpus(path: &Path) {
         .expect("evidence digest can be seeded");
 }
 
+fn create_legacy_v1_without_required_columns(path: &Path) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("legacy database parent can be created");
+    }
+    let connection = Connection::open(path).expect("legacy database can be created");
+    connection
+        .execute_batch(
+            "
+            CREATE TABLE scan_runs (id TEXT PRIMARY KEY);
+            CREATE TABLE frameworks (id TEXT PRIMARY KEY);
+            CREATE TABLE evidence_metadata (id TEXT PRIMARY KEY);
+            CREATE TABLE schema_migrations (
+              version INTEGER PRIMARY KEY,
+              name TEXT NOT NULL,
+              applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO schema_migrations(version, name)
+            VALUES (1, '0001-initial');
+            PRAGMA user_version = 1;
+            ",
+        )
+        .expect("legacy version 1 database can be seeded");
+}
+
 fn run_exists(path: &Path, run_id: &str) -> bool {
     let connection = Connection::open(path).expect("the reopened database can be inspected");
     let count: i64 = connection
@@ -137,5 +161,21 @@ fn reopening_a_current_database_validates_the_schema_and_preserves_rows() {
     assert_eq!(
         evidence_digest(database.path(), EVIDENCE_ID),
         EVIDENCE_DIGEST
+    );
+}
+
+#[test]
+fn reopening_a_version_1_database_missing_required_columns_is_rejected() {
+    let database = TempDatabase::new();
+    create_legacy_v1_without_required_columns(database.path());
+
+    let Err(error) = LocalDatabase::open(database.path()) else {
+        panic!("a version 1 database missing required columns should not open as current");
+    };
+
+    let error_message = error.to_string();
+    assert!(
+        error_message.contains("frameworks.version"),
+        "schema validation should name the missing required column, got {error_message:?}"
     );
 }

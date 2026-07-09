@@ -49,6 +49,9 @@ const MIGRATION_LEDGER_SQL: &str = "
     );
 ";
 
+const REQUIRED_SCHEMA_COLUMNS: &[(&str, &str)] =
+    &[("frameworks", "version"), ("evidence_metadata", "digest")];
+
 /// A packaged `SQLite` migration embedded in the agent binary.
 #[derive(Clone, Copy, Debug)]
 pub struct PackagedMigration {
@@ -97,6 +100,7 @@ impl LocalDatabase {
         }
         let mut connection = Connection::open(path).map_err(LocalDatabaseError::Sqlite)?;
         apply_packaged_migrations(&mut connection, migrations)?;
+        validate_current_schema(&connection)?;
         Ok(LocalDatabase { connection })
     }
 
@@ -173,6 +177,36 @@ fn apply_packaged_migrations(
     Ok(())
 }
 
+fn validate_current_schema(connection: &Connection) -> Result<(), LocalDatabaseError> {
+    for (table_name, column_name) in REQUIRED_SCHEMA_COLUMNS {
+        if !schema_column_exists(connection, table_name, column_name)? {
+            return Err(LocalDatabaseError::Schema(format!(
+                "missing required column {table_name}.{column_name}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn schema_column_exists(
+    connection: &Connection,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool, LocalDatabaseError> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table_name})"))
+        .map_err(LocalDatabaseError::Sqlite)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(LocalDatabaseError::Sqlite)?;
+    for column in columns {
+        if column.map_err(LocalDatabaseError::Sqlite)? == column_name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn migration_is_applied(connection: &Connection, version: u32) -> Result<bool, LocalDatabaseError> {
     if !migration_ledger_exists(connection)? {
         return Ok(false);
@@ -245,6 +279,9 @@ pub enum LocalDatabaseError {
     Io(std::io::Error),
     /// `SQLite` failed while opening, migrating, or reading the database.
     Sqlite(rusqlite::Error),
+    /// The database reports a current schema version but is missing required
+    /// current-schema objects.
+    Schema(String),
     /// A named packaged migration failed and its transaction was rolled back.
     Migration {
         /// Packaged migration name, for example `0001-initial`.
@@ -263,6 +300,9 @@ impl fmt::Display for LocalDatabaseError {
             LocalDatabaseError::Sqlite(error) => {
                 write!(formatter, "local database sqlite error: {error}")
             }
+            LocalDatabaseError::Schema(error) => {
+                write!(formatter, "local database schema error: {error}")
+            }
             LocalDatabaseError::Migration { name, source } => {
                 write!(
                     formatter,
@@ -278,6 +318,7 @@ impl Error for LocalDatabaseError {
         match self {
             LocalDatabaseError::Io(error) => Some(error),
             LocalDatabaseError::Sqlite(error) => Some(error),
+            LocalDatabaseError::Schema(_) => None,
             LocalDatabaseError::Migration { source, .. } => Some(source),
         }
     }
