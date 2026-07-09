@@ -246,6 +246,12 @@ fn validate_current_schema(connection: &Connection) -> Result<(), LocalDatabaseE
 fn required_schema_columns(
     schema_version: u32,
 ) -> Result<&'static [RequiredSchemaColumn], LocalDatabaseError> {
+    if schema_version == 0 {
+        return Err(LocalDatabaseError::Schema(
+            "schema version 0 is uninitialized; expected a migrated local database".to_owned(),
+        ));
+    }
+
     SUPPORTED_SCHEMA_REQUIREMENTS
         .iter()
         .find(|requirements| requirements.version == schema_version)

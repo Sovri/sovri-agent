@@ -241,3 +241,23 @@ fn reopening_a_future_schema_version_is_rejected() {
         "a future-version failure should not be reported as a missing-column failure, got {error_message:?}"
     );
 }
+
+#[test]
+fn reopening_an_uninitialized_schema_version_is_rejected() {
+    let database = TempDatabase::new();
+    create_database_with_schema_version(database.path(), 0, true, true);
+
+    let Err(error) = LocalDatabase::open(database.path()) else {
+        panic!("an uninitialized schema version should not open as current");
+    };
+
+    let error_message = error.to_string();
+    assert!(
+        error_message.contains("schema version 0 is uninitialized"),
+        "schema validation should reject version 0 explicitly, got {error_message:?}"
+    );
+    assert!(
+        !error_message.contains("missing required columns"),
+        "an uninitialized-version failure should not be reported as a missing-column failure, got {error_message:?}"
+    );
+}
