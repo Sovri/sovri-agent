@@ -33,6 +33,11 @@ const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[
         "0003-gap-query-filters",
         GAP_QUERY_FILTERS_SCHEMA_SQL,
     ),
+    PackagedMigration::new(
+        EVIDENCE_LOCATORS_SCHEMA_VERSION,
+        "0004-evidence-locators",
+        EVIDENCE_LOCATORS_SCHEMA_SQL,
+    ),
 ];
 
 const INITIAL_SCHEMA_SQL: &str = "
@@ -58,7 +63,8 @@ const INITIAL_SCHEMA_SQL: &str = "
     );
     CREATE TABLE IF NOT EXISTS evidence_metadata (
       id TEXT PRIMARY KEY,
-      digest TEXT NOT NULL
+      digest TEXT NOT NULL,
+      locator TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS score_summaries (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY);
@@ -83,6 +89,10 @@ const GAP_QUERY_FILTERS_SCHEMA_SQL: &str = "";
 const GAP_QUERY_FILTER_COLUMNS: &[&str] =
     &["run_id", "status", "severity", "control_id", "rule_id"];
 
+const EVIDENCE_LOCATORS_SCHEMA_VERSION: u32 = 4;
+
+const EVIDENCE_LOCATORS_SCHEMA_SQL: &str = "";
+
 const MIGRATION_LEDGER_SQL: &str = "
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
@@ -106,6 +116,14 @@ const SCHEMA_VERSION_3_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
     RequiredSchemaColumn::new("compliance_gaps", "rule_id"),
 ];
 
+const SCHEMA_VERSION_4_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
+    RequiredSchemaColumn::new("frameworks", "version"),
+    RequiredSchemaColumn::new("control_results", "control_id"),
+    RequiredSchemaColumn::new("control_results", "evidence_id"),
+    RequiredSchemaColumn::new("evidence_metadata", "digest"),
+    RequiredSchemaColumn::new("evidence_metadata", "locator"),
+];
+
 const NO_REQUIRED_SCHEMA_COLUMNS: &[RequiredSchemaColumn] = &[];
 
 const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
@@ -117,6 +135,10 @@ const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
     SchemaRequirements::new(
         GAP_QUERY_FILTERS_SCHEMA_VERSION,
         SCHEMA_VERSION_3_REQUIRED_COLUMNS,
+    ),
+    SchemaRequirements::new(
+        EVIDENCE_LOCATORS_SCHEMA_VERSION,
+        SCHEMA_VERSION_4_REQUIRED_COLUMNS,
     ),
 ];
 
@@ -179,6 +201,13 @@ pub struct LocalDatabaseGap {
     status: String,
 }
 
+/// Persisted evidence metadata returned by local database queries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalDatabaseEvidence {
+    id: String,
+    locator: String,
+}
+
 impl LocalDatabaseGap {
     /// Returns the control id for the compliance gap.
     #[must_use]
@@ -196,6 +225,20 @@ impl LocalDatabaseGap {
     #[must_use]
     pub fn status(&self) -> &str {
         &self.status
+    }
+}
+
+impl LocalDatabaseEvidence {
+    /// Returns the stable evidence id.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Returns the persisted evidence locator.
+    #[must_use]
+    pub fn locator(&self) -> &str {
+        &self.locator
     }
 }
 
@@ -340,6 +383,55 @@ impl LocalDatabase {
             .map_err(LocalDatabaseError::Sqlite)
     }
 
+    /// Queries persisted evidence metadata by id, digest, or control id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot prepare or run the evidence-list query.
+    pub fn query_evidence(
+        &self,
+        lookup: &str,
+        value: &str,
+    ) -> Result<Vec<LocalDatabaseEvidence>, LocalDatabaseError> {
+        let sql = match lookup {
+            "id" => {
+                "SELECT id, COALESCE(locator, '')
+                 FROM evidence_metadata
+                 WHERE id = ?1
+                 ORDER BY id"
+            }
+            "digest" => {
+                "SELECT id, COALESCE(locator, '')
+                 FROM evidence_metadata
+                 WHERE digest = ?1
+                 ORDER BY id"
+            }
+            "control" => {
+                "SELECT DISTINCT evidence_metadata.id, COALESCE(evidence_metadata.locator, '')
+                 FROM evidence_metadata
+                 INNER JOIN control_results
+                   ON control_results.evidence_id = evidence_metadata.id
+                 WHERE control_results.control_id = ?1
+                 ORDER BY evidence_metadata.id"
+            }
+            _ => return Ok(Vec::new()),
+        };
+        let mut statement = self
+            .connection
+            .prepare(sql)
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let rows = statement
+            .query_map(params![value], |row| {
+                Ok(LocalDatabaseEvidence {
+                    id: row.get(0)?,
+                    locator: row.get(1)?,
+                })
+            })
+            .map_err(LocalDatabaseError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(LocalDatabaseError::Sqlite)
+    }
+
     /// Writes a completed scan corpus into the local database.
     ///
     /// # Errors
@@ -423,9 +515,12 @@ impl LocalDatabase {
         for evidence in corpus.evidence_records() {
             transaction
                 .execute(
-                    "INSERT INTO evidence_metadata(id, digest) VALUES (?1, ?2)
-                     ON CONFLICT(id) DO NOTHING",
-                    params![evidence.id, evidence.integrity],
+                    "INSERT INTO evidence_metadata(id, digest, locator)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(id) DO UPDATE SET
+                       digest = excluded.digest,
+                       locator = excluded.locator",
+                    params![evidence.id, evidence.integrity, evidence.locator],
                 )
                 .map_err(LocalDatabaseError::Sqlite)?;
         }
@@ -733,6 +828,16 @@ fn migration_is_applicable(
             && !schema_column_exists(connection, "compliance_gaps", "run_id")?);
     }
 
+    if migration.version == EVIDENCE_LOCATORS_SCHEMA_VERSION
+        && migration.name == "0004-evidence-locators"
+        && migration.sql == EVIDENCE_LOCATORS_SCHEMA_SQL
+    {
+        return Ok(schema_column_exists(connection, "evidence_metadata", "id")?
+            && schema_column_exists(connection, "control_results", "control_id")?
+            && schema_column_exists(connection, "control_results", "evidence_id")?
+            && !schema_column_exists(connection, "evidence_metadata", "locator")?);
+    }
+
     Ok(true)
 }
 
@@ -751,6 +856,12 @@ fn apply_packaged_migration(
         && migration.sql == GAP_QUERY_FILTERS_SCHEMA_SQL
     {
         apply_gap_query_filters_migration(&transaction)
+            .map_err(|source| migration_error(migration, source))?;
+    } else if migration.version == EVIDENCE_LOCATORS_SCHEMA_VERSION
+        && migration.name == "0004-evidence-locators"
+        && migration.sql == EVIDENCE_LOCATORS_SCHEMA_SQL
+    {
+        apply_evidence_locators_migration(&transaction)
             .map_err(|source| migration_error(migration, source))?;
     } else {
         transaction
@@ -780,6 +891,19 @@ fn apply_gap_query_filters_migration(
             let sql = format!("ALTER TABLE compliance_gaps ADD COLUMN {column_name} TEXT");
             transaction.execute(&sql, [])?;
         }
+    }
+
+    Ok(())
+}
+
+fn apply_evidence_locators_migration(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<()> {
+    if !transaction_schema_column_exists(transaction, "evidence_metadata", "locator")? {
+        transaction.execute(
+            "ALTER TABLE evidence_metadata ADD COLUMN locator TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
     }
 
     Ok(())
