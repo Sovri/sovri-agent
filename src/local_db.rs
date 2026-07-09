@@ -584,17 +584,20 @@ impl LocalDatabase {
             return Ok(None);
         };
         let index = store.index();
+        if index
+            .resolve_digest(metadata.digest())
+            .is_some_and(|record| record.id() == metadata.id())
+        {
+            return Ok(Some(metadata));
+        }
         let Some(record) = index.resolve_id(metadata.id()) else {
             return Ok(None);
         };
-        if record.content_hash() != metadata.digest() {
-            return Err(LocalDatabaseError::IntegrityMismatch {
-                evidence_id: metadata.id().to_owned(),
-                expected: metadata.digest().to_owned(),
-                actual: record.content_hash().to_owned(),
-            });
-        }
-        Ok(Some(metadata))
+        Err(LocalDatabaseError::IntegrityMismatch {
+            evidence_id: metadata.id().to_owned(),
+            expected: metadata.digest().to_owned(),
+            actual: record.content_hash().to_owned(),
+        })
     }
 
     /// Writes a completed scan corpus into the local database.
@@ -696,11 +699,12 @@ impl LocalDatabase {
         for evidence in corpus.evidence_records() {
             transaction
                 .execute(
-                    // Rewrites only fill empty locators for rows created before
-                    // the locator migration existed.
+                    // Rewrites refresh content identity but preserve the first
+                    // non-empty locator.
                     "INSERT INTO evidence_metadata(id, digest, locator)
                      VALUES (?1, ?2, ?3)
                      ON CONFLICT(id) DO UPDATE SET
+                       digest = excluded.digest,
                        locator = CASE
                          WHEN evidence_metadata.locator = '' THEN excluded.locator
                          ELSE evidence_metadata.locator

@@ -85,27 +85,55 @@ fn a_mismatched_digest_is_rejected_as_an_integrity_error() {
     assert_eq!(error.actual_digest(), Some(ACTUAL_DIGEST));
 }
 
+#[test]
+fn rewriting_an_evidence_id_refreshes_its_expected_digest() {
+    let fixture = TempFixture::new();
+    let mut database =
+        LocalDatabase::open(fixture.database_path()).expect("the local database opens");
+    database
+        .write_completed_corpus(&classified_corpus())
+        .expect("the initial corpus write succeeds");
+    database
+        .write_completed_corpus(&classified_corpus_with_digest(
+            "classified-evidence-rewrite-2026-06-24",
+            ACTUAL_DIGEST,
+        ))
+        .expect("the rewritten corpus succeeds");
+
+    let mut store = EvidenceStore::open(fixture.store_path()).expect("the evidence store opens");
+    store
+        .write(&classified_evidence(b"abc".to_vec()))
+        .expect("the original evidence is persisted");
+    store
+        .write(&classified_evidence(Vec::new()))
+        .expect("the rewritten evidence is persisted");
+
+    let metadata = database
+        .read_linked_evidence(&store, EVIDENCE_ID)
+        .expect("the refreshed digest passes integrity validation")
+        .expect("the rewritten metadata is returned");
+
+    assert_eq!(metadata.digest(), ACTUAL_DIGEST);
+}
+
 fn classified_corpus() -> Corpus {
+    classified_corpus_with_digest(RUN_ID, EXPECTED_DIGEST)
+}
+
+fn classified_corpus_with_digest(run_id: &str, digest: &str) -> Corpus {
     Corpus::new(EXECUTED_AT)
-        .with_run_id(RUN_ID)
+        .with_run_id(run_id)
         .with_classified_evidence(
             EVIDENCE_ID,
             "config",
             EVIDENCE_LOCATOR,
             Classification::Secret,
-            EXPECTED_DIGEST,
+            digest,
         )
 }
 
 fn mismatched_store(path: &Path) -> EvidenceStore {
-    let evidence = Evidence::builder()
-        .id(EVIDENCE_ID)
-        .kind(EvidenceKind::Config)
-        .locator(EVIDENCE_LOCATOR)
-        .content(Vec::<u8>::new())
-        .classification(sovri_sdk::Classification::Secret)
-        .build()
-        .expect("the classified evidence validates");
+    let evidence = classified_evidence(Vec::new());
     assert_eq!(evidence.content_hash(), ACTUAL_DIGEST);
 
     let mut store = EvidenceStore::open(path).expect("the content-addressed store opens");
@@ -113,4 +141,15 @@ fn mismatched_store(path: &Path) -> EvidenceStore {
         .write(&evidence)
         .expect("the mismatched evidence is persisted");
     store
+}
+
+fn classified_evidence(content: Vec<u8>) -> Evidence {
+    Evidence::builder()
+        .id(EVIDENCE_ID)
+        .kind(EvidenceKind::Config)
+        .locator(EVIDENCE_LOCATOR)
+        .content(content)
+        .classification(sovri_sdk::Classification::Secret)
+        .build()
+        .expect("the classified evidence validates")
 }
