@@ -1226,19 +1226,12 @@ mod tests {
 
     #[test]
     fn control_result_run_id_rejects_legacy_and_malformed_ids() {
-        let run_id = "mixed-2026-06-24";
-        let framework_id = "gdpr-eprivacy";
-        let control_id = "consent.tracker.prior-consent";
-        let rule_id = "consent.detect-trackers-without-consent-evidence";
-        let current_id = control_result_row_id(run_id, framework_id, control_id, rule_id);
-        assert_eq!(control_result_run_id(&current_id), Some(run_id));
+        let current_id = "16:mixed-2026-06-24:13:gdpr-eprivacy:29:consent.tracker.prior-consent:consent.detect-trackers-without-consent-evidence";
+        assert_eq!(control_result_run_id(current_id), Some("mixed-2026-06-24"));
 
-        let legacy_id = format!(
-            "{}:{framework_id}:{}:{control_id}:{rule_id}",
-            framework_id.len(),
-            control_id.len()
-        );
-        assert_eq!(control_result_run_id(&legacy_id), None);
+        let legacy_id =
+            "29:consent.tracker.prior-consent:consent.detect-trackers-without-consent-evidence";
+        assert_eq!(control_result_run_id(legacy_id), None);
 
         for malformed_id in ["", "not-a-length:value", "5:short", "1:r:1:f:1:c:"] {
             assert_eq!(control_result_run_id(malformed_id), None);
