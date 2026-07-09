@@ -42,7 +42,14 @@ const INITIAL_SCHEMA_SQL: &str = "
       id TEXT PRIMARY KEY,
       digest TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS score_summaries (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS score_summaries (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      framework_id TEXT NOT NULL,
+      pass_count INTEGER NOT NULL,
+      fail_count INTEGER NOT NULL,
+      warning_count INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY);
 ";
 
@@ -288,6 +295,7 @@ impl LocalDatabase {
         &self,
         run_id: &str,
     ) -> Result<Vec<ScoreSummaryRecord>, LocalDatabaseError> {
+        ensure_score_summary_schema(&self.connection)?;
         let mut statement = self
             .connection
             .prepare(
@@ -367,7 +375,7 @@ fn ensure_score_summary_schema(connection: &Connection) -> Result<(), LocalDatab
         connection
             .execute(
                 "ALTER TABLE score_summaries
-                 ADD COLUMN run_id TEXT NOT NULL DEFAULT ''",
+                 ADD COLUMN run_id TEXT",
                 [],
             )
             .map_err(LocalDatabaseError::Sqlite)?;
@@ -376,7 +384,7 @@ fn ensure_score_summary_schema(connection: &Connection) -> Result<(), LocalDatab
         connection
             .execute(
                 "ALTER TABLE score_summaries
-                 ADD COLUMN framework_id TEXT NOT NULL DEFAULT ''",
+                 ADD COLUMN framework_id TEXT",
                 [],
             )
             .map_err(LocalDatabaseError::Sqlite)?;
@@ -385,7 +393,7 @@ fn ensure_score_summary_schema(connection: &Connection) -> Result<(), LocalDatab
         connection
             .execute(
                 "ALTER TABLE score_summaries
-                 ADD COLUMN pass_count INTEGER NOT NULL DEFAULT 0",
+                 ADD COLUMN pass_count INTEGER",
                 [],
             )
             .map_err(LocalDatabaseError::Sqlite)?;
@@ -394,7 +402,7 @@ fn ensure_score_summary_schema(connection: &Connection) -> Result<(), LocalDatab
         connection
             .execute(
                 "ALTER TABLE score_summaries
-                 ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0",
+                 ADD COLUMN fail_count INTEGER",
                 [],
             )
             .map_err(LocalDatabaseError::Sqlite)?;
@@ -403,7 +411,7 @@ fn ensure_score_summary_schema(connection: &Connection) -> Result<(), LocalDatab
         connection
             .execute(
                 "ALTER TABLE score_summaries
-                 ADD COLUMN warning_count INTEGER NOT NULL DEFAULT 0",
+                 ADD COLUMN warning_count INTEGER",
                 [],
             )
             .map_err(LocalDatabaseError::Sqlite)?;

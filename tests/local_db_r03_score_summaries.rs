@@ -62,6 +62,10 @@ impl TempDatabase {
     fn path(&self) -> &Path {
         &self.db_path
     }
+
+    fn root(&self) -> &Path {
+        &self.root
+    }
 }
 
 impl Drop for TempDatabase {
@@ -107,6 +111,30 @@ fn score_summaries_are_persisted_with_the_run() {
     assert_eq!(pass_count, 1, "PASS");
     assert_eq!(fail_count, 1, "FAIL");
     assert_eq!(warning_count, 1, "WARNING");
+}
+
+#[test]
+fn score_summaries_for_unwritten_run_are_empty() {
+    let database = TempDatabase::new();
+    let local_database = LocalDatabase::open(database.path()).expect("the local database opens");
+
+    let summaries = local_database
+        .score_summaries_for_run(MIXED_RUN)
+        .expect("score summaries can be queried before any write");
+
+    assert!(summaries.is_empty());
+}
+
+#[test]
+fn temp_database_removes_directory_on_drop() {
+    let database = TempDatabase::new();
+    let root = database.root().to_owned();
+    LocalDatabase::open(database.path()).expect("the local database opens");
+    assert!(root.exists());
+
+    drop(database);
+
+    assert!(!root.exists());
 }
 
 fn mixed_completed_corpus() -> Corpus {
