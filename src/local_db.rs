@@ -584,8 +584,8 @@ impl LocalDatabase {
         };
         let resolves_expected_digest = store
             .index()
-            .resolve_digest(metadata.digest())
-            .is_some_and(|record| record.id() == metadata.id());
+            .resolve_id(metadata.id())
+            .is_some_and(|record| record.content_hash() == metadata.digest());
         Ok(resolves_expected_digest.then_some(metadata))
     }
 
