@@ -92,9 +92,13 @@ impl LocalDatabase {
     ///
     /// # Errors
     ///
+    /// Returns `Ok(Vec::new())` when the migration ledger table exists but has
+    /// no rows.
+    ///
     /// Returns an error if `SQLite` cannot prepare or run the migration-ledger
-    /// query, including when the `schema_migrations` table or its `version` /
-    /// `name` columns are missing, corrupted, or unreadable.
+    /// query, including when the `schema_migrations` table is missing, the
+    /// expected `version` / `name` columns are missing or unreadable, or a row's
+    /// migration name cannot be decoded as text.
     pub fn applied_migrations(&self) -> Result<Vec<String>, LocalDatabaseError> {
         let mut statement = self
             .connection
