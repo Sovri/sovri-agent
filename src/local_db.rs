@@ -230,6 +230,23 @@ impl LocalDatabase {
             .map_err(LocalDatabaseError::Sqlite)
     }
 
+    /// Queries persisted scan run ids in stable order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot prepare or run the run-list query.
+    pub fn query_runs(&self) -> Result<Vec<String>, LocalDatabaseError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id FROM scan_runs ORDER BY id")
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(LocalDatabaseError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(LocalDatabaseError::Sqlite)
+    }
+
     /// Writes a completed scan corpus into the local database.
     ///
     /// # Errors
