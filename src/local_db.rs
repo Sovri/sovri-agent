@@ -289,12 +289,10 @@ fn latest_supported_schema_requirements() -> &'static SchemaRequirements {
 }
 
 fn packaged_migration_versions(migrations: &[PackagedMigration]) -> String {
-    let mut versions = migrations
+    let versions = migrations
         .iter()
         .map(|migration| migration.version)
-        .collect::<Vec<_>>();
-    versions.sort_unstable();
-    versions.dedup();
+        .collect::<std::collections::BTreeSet<_>>();
 
     if versions.is_empty() {
         return "none".to_owned();
@@ -447,5 +445,44 @@ impl Error for LocalDatabaseError {
             LocalDatabaseError::Schema(_) => None,
             LocalDatabaseError::Migration { source, .. } => Some(source),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_column_exists_is_false_for_missing_or_untrusted_names() {
+        let connection = Connection::open_in_memory().expect("in-memory database opens");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE frameworks (
+                  id TEXT PRIMARY KEY,
+                  version TEXT NOT NULL
+                );
+                ",
+            )
+            .expect("schema can be created");
+
+        assert!(schema_column_exists(&connection, "frameworks", "version")
+            .expect("existing column can be checked"));
+        assert!(
+            !schema_column_exists(&connection, "missing_table", "version")
+                .expect("missing table can be checked")
+        );
+        assert!(
+            !schema_column_exists(&connection, "frameworks", "missing_column")
+                .expect("missing column can be checked")
+        );
+        assert!(!schema_column_exists(
+            &connection,
+            "frameworks); DROP TABLE frameworks; --",
+            "version"
+        )
+        .expect("untrusted table name can be checked"));
+        assert!(schema_column_exists(&connection, "frameworks", "version")
+            .expect("untrusted table name was not executed as SQL"));
     }
 }

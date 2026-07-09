@@ -100,9 +100,8 @@ fn create_database_with_schema_version(
     include_framework_version: bool,
     include_evidence_digest: bool,
 ) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("legacy database parent can be created");
-    }
+    fs::create_dir_all(path.parent().expect("database path has a parent"))
+        .expect("legacy database parent can be created");
     let framework_version_column = if include_framework_version {
         ", version TEXT NOT NULL"
     } else {
