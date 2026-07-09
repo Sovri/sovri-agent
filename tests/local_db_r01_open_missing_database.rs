@@ -1,7 +1,7 @@
 // Copyright 2026 Sovri contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! R-01 — opening a missing SQLite database creates the file and applies the
+//! R-01 — opening a missing `SQLite` database creates the file and applies the
 //! initial local schema without relying on a network endpoint. Covers issue #333.
 
 use std::fs;
