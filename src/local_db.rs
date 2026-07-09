@@ -573,7 +573,8 @@ impl LocalDatabase {
     ///
     /// # Errors
     ///
-    /// Returns an error if `SQLite` cannot read the linked evidence metadata.
+    /// Returns an error if `SQLite` cannot read the linked evidence metadata or
+    /// the backing store resolves the evidence id to a different digest.
     pub fn read_linked_evidence(
         &self,
         store: &EvidenceStore,
@@ -582,11 +583,18 @@ impl LocalDatabase {
         let Some(metadata) = self.query_evidence("id", evidence_id)?.into_iter().next() else {
             return Ok(None);
         };
-        let resolves_expected_digest = store
-            .index()
-            .resolve_id(metadata.id())
-            .is_some_and(|record| record.content_hash() == metadata.digest());
-        Ok(resolves_expected_digest.then_some(metadata))
+        let index = store.index();
+        let Some(record) = index.resolve_id(metadata.id()) else {
+            return Ok(None);
+        };
+        if record.content_hash() != metadata.digest() {
+            return Err(LocalDatabaseError::IntegrityMismatch {
+                evidence_id: metadata.id().to_owned(),
+                expected: metadata.digest().to_owned(),
+                actual: record.content_hash().to_owned(),
+            });
+        }
+        Ok(Some(metadata))
     }
 
     /// Writes a completed scan corpus into the local database.
@@ -1209,6 +1217,16 @@ pub enum LocalDatabaseError {
     /// The database reports a current schema version but is missing required
     /// current-schema objects.
     Schema(String),
+    /// Linked evidence resolved to a digest different from the one persisted by
+    /// `SQLite`.
+    IntegrityMismatch {
+        /// Stable evidence id being resolved.
+        evidence_id: String,
+        /// Digest persisted by `SQLite`.
+        expected: String,
+        /// Digest resolved from the content-addressed store.
+        actual: String,
+    },
     /// A named packaged migration failed and its transaction was rolled back.
     Migration {
         /// Packaged migration name, for example `0001-initial`.
@@ -1216,6 +1234,32 @@ pub enum LocalDatabaseError {
         /// Underlying `SQLite` error that failed the migration.
         source: rusqlite::Error,
     },
+}
+
+impl LocalDatabaseError {
+    /// Whether this error reports a linked-evidence integrity mismatch.
+    #[must_use]
+    pub fn is_integrity_error(&self) -> bool {
+        matches!(self, LocalDatabaseError::IntegrityMismatch { .. })
+    }
+
+    /// Returns the expected digest for a linked-evidence integrity mismatch.
+    #[must_use]
+    pub fn expected_digest(&self) -> Option<&str> {
+        match self {
+            LocalDatabaseError::IntegrityMismatch { expected, .. } => Some(expected),
+            _ => None,
+        }
+    }
+
+    /// Returns the actual digest for a linked-evidence integrity mismatch.
+    #[must_use]
+    pub fn actual_digest(&self) -> Option<&str> {
+        match self {
+            LocalDatabaseError::IntegrityMismatch { actual, .. } => Some(actual),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for LocalDatabaseError {
@@ -1230,6 +1274,14 @@ impl fmt::Display for LocalDatabaseError {
             LocalDatabaseError::Schema(error) => {
                 write!(formatter, "local database schema error: {error}")
             }
+            LocalDatabaseError::IntegrityMismatch {
+                evidence_id,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "linked evidence {evidence_id} integrity mismatch: expected {expected}, actual {actual}"
+            ),
             LocalDatabaseError::Migration { name, source } => {
                 write!(
                     formatter,
@@ -1245,7 +1297,7 @@ impl Error for LocalDatabaseError {
         match self {
             LocalDatabaseError::Io(error) => Some(error),
             LocalDatabaseError::Sqlite(error) => Some(error),
-            LocalDatabaseError::Schema(_) => None,
+            LocalDatabaseError::Schema(_) | LocalDatabaseError::IntegrityMismatch { .. } => None,
             LocalDatabaseError::Migration { source, .. } => Some(source),
         }
     }

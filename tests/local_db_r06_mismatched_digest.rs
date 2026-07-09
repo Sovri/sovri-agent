@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sovri_agent::local_db::{LocalDatabase, LocalDatabaseError};
+use sovri_agent::local_db::LocalDatabase;
 use sovri_agent::matrix::{Classification, Corpus};
 use sovri_sdk::{Evidence, EvidenceKind, EvidenceStore};
 
@@ -54,23 +54,6 @@ impl Drop for TempFixture {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
-
-#[allow(dead_code)]
-trait IntegrityErrorDetails {
-    fn is_integrity_error(&self) -> bool {
-        false
-    }
-
-    fn expected_digest(&self) -> Option<&str> {
-        None
-    }
-
-    fn actual_digest(&self) -> Option<&str> {
-        None
-    }
-}
-
-impl IntegrityErrorDetails for LocalDatabaseError {}
 
 #[test]
 fn a_mismatched_digest_is_rejected_as_an_integrity_error() {
