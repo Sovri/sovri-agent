@@ -16,7 +16,7 @@ use std::path::Path;
 
 use crate::matrix::Corpus;
 use rusqlite::{params, Connection};
-use sovri_sdk::{ControlResult, Status};
+use sovri_sdk::{ControlResult, EvidenceStore, Status};
 
 /// The schema version created by the first packaged migration.
 pub const INITIAL_SCHEMA_VERSION: u32 = 1;
@@ -248,6 +248,7 @@ pub struct LocalDatabaseResult {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalDatabaseEvidence {
     id: String,
+    digest: String,
     locator: String,
 }
 
@@ -309,6 +310,12 @@ impl LocalDatabaseEvidence {
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// Returns the expected content digest persisted by `SQLite`.
+    #[must_use]
+    pub fn digest(&self) -> &str {
+        &self.digest
     }
 
     /// Returns the persisted evidence locator.
@@ -523,19 +530,20 @@ impl LocalDatabase {
         };
         let sql = match lookup {
             EvidenceLookup::Id => {
-                "SELECT id, locator
+                "SELECT id, digest, locator
                  FROM evidence_metadata
                  WHERE id = ?1
                  ORDER BY id"
             }
             EvidenceLookup::Digest => {
-                "SELECT id, locator
+                "SELECT id, digest, locator
                  FROM evidence_metadata
                  WHERE digest = ?1
                  ORDER BY id"
             }
             EvidenceLookup::Control => {
-                "SELECT DISTINCT evidence_metadata.id, evidence_metadata.locator
+                "SELECT DISTINCT evidence_metadata.id, evidence_metadata.digest,
+                                 evidence_metadata.locator
                  FROM evidence_metadata
                  INNER JOIN control_results
                    ON control_results.evidence_id = evidence_metadata.id
@@ -551,12 +559,34 @@ impl LocalDatabase {
             .query_map(params![value], |row| {
                 Ok(LocalDatabaseEvidence {
                     id: row.get(0)?,
-                    locator: row.get(1)?,
+                    digest: row.get(1)?,
+                    locator: row.get(2)?,
                 })
             })
             .map_err(LocalDatabaseError::Sqlite)?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(LocalDatabaseError::Sqlite)
+    }
+
+    /// Reads linked evidence metadata when its expected digest resolves to the
+    /// same evidence id in the content-addressed store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot read the linked evidence metadata.
+    pub fn read_linked_evidence(
+        &self,
+        store: &EvidenceStore,
+        evidence_id: &str,
+    ) -> Result<Option<LocalDatabaseEvidence>, LocalDatabaseError> {
+        let Some(metadata) = self.query_evidence("id", evidence_id)?.into_iter().next() else {
+            return Ok(None);
+        };
+        let resolves_expected_digest = store
+            .index()
+            .resolve_digest(metadata.digest())
+            .is_some_and(|record| record.id() == metadata.id());
+        Ok(resolves_expected_digest.then_some(metadata))
     }
 
     /// Writes a completed scan corpus into the local database.

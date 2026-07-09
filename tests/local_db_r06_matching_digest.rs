@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sovri_agent::local_db::{LocalDatabase, LocalDatabaseError, LocalDatabaseEvidence};
+use sovri_agent::local_db::LocalDatabase;
 use sovri_agent::matrix::{Classification, Corpus};
 use sovri_sdk::{Evidence, EvidenceKind, EvidenceStore};
 
@@ -52,28 +52,6 @@ impl Drop for TempFixture {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
-
-#[allow(dead_code)]
-trait LocalDatabaseLinkedEvidenceRead {
-    fn read_linked_evidence(
-        &self,
-        _store: &EvidenceStore,
-        _evidence_id: &str,
-    ) -> Result<Option<LocalDatabaseEvidence>, LocalDatabaseError> {
-        panic!("LocalDatabase::read_linked_evidence is not implemented")
-    }
-}
-
-impl LocalDatabaseLinkedEvidenceRead for LocalDatabase {}
-
-#[allow(dead_code)]
-trait LocalDatabaseEvidenceDigest {
-    fn digest(&self) -> &str {
-        panic!("LocalDatabaseEvidence::digest is not implemented")
-    }
-}
-
-impl LocalDatabaseEvidenceDigest for LocalDatabaseEvidence {}
 
 #[test]
 fn a_matching_digest_allows_the_linked_evidence_metadata_to_be_read() {
