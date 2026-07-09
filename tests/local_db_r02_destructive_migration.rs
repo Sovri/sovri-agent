@@ -25,6 +25,12 @@ const DESTRUCTIVE_PACKAGED_MIGRATIONS: &[PackagedMigration] = &[PackagedMigratio
     "DROP TABLE evidence_metadata;",
 )];
 
+const OBFUSCATED_DESTRUCTIVE_PACKAGED_MIGRATIONS: &[PackagedMigration] = &[PackagedMigration::new(
+    2,
+    "0002-commented-drop-evidence-metadata",
+    "DROP/* destructive */ TABLE \"evidence_metadata\";",
+)];
+
 struct TempDatabase {
     root: PathBuf,
     db_path: PathBuf,
@@ -154,6 +160,33 @@ fn evidence_digest(path: &Path, evidence_id: &str) -> String {
         .expect("evidence digest can be inspected")
 }
 
+fn destructive_migration_rejection(path: &Path, migrations: &[PackagedMigration]) -> String {
+    let Err(error) = LocalDatabase::open_with_packaged_migrations(path, migrations) else {
+        panic!("destructive packaged migration version 2 should be rejected");
+    };
+
+    error.to_string()
+}
+
+fn assert_rejected_as_destructive(error_message: &str, migration_name: &str) {
+    assert!(
+        error_message.contains("destructive"),
+        "the rejection should classify the migration as destructive, got {error_message:?}"
+    );
+    assert!(
+        error_message.contains(migration_name),
+        "the rejection should name the destructive migration, got {error_message:?}"
+    );
+}
+
+fn assert_single_run_and_evidence_preserved(path: &Path) {
+    assert_eq!(raw_schema_version(path), 1);
+    assert!(run_exists(path, RUN_ID));
+    assert_eq!(evidence_digest(path, EVIDENCE_ID), EVIDENCE_DIGEST);
+    assert_eq!(run_count(path), 1);
+    assert_eq!(evidence_metadata_count(path), 1);
+}
+
 #[test]
 fn a_migration_that_would_drop_persisted_corpus_data_is_rejected() {
     let database = TempDatabase::new();
@@ -170,23 +203,11 @@ fn a_migration_that_would_drop_persisted_corpus_data_is_rejected() {
 
     // And packaged migration version 2 contains destructive operation
     // "DROP TABLE evidence_metadata".
-    let Err(error) = LocalDatabase::open_with_packaged_migrations(
-        database.path(),
-        DESTRUCTIVE_PACKAGED_MIGRATIONS,
-    ) else {
-        panic!("destructive packaged migration version 2 should be rejected");
-    };
+    let error_message =
+        destructive_migration_rejection(database.path(), DESTRUCTIVE_PACKAGED_MIGRATIONS);
 
     // Then packaged migration version 2 is rejected as destructive.
-    let error_message = error.to_string();
-    assert!(
-        error_message.contains("destructive"),
-        "the rejection should classify the migration as destructive, got {error_message:?}"
-    );
-    assert!(
-        error_message.contains("0002-drop-evidence-metadata"),
-        "the rejection should name the destructive migration, got {error_message:?}"
-    );
+    assert_rejected_as_destructive(&error_message, "0002-drop-evidence-metadata");
 
     // And the database still exposes schema version 1.
     assert_eq!(raw_schema_version(database.path()), 1);
@@ -206,4 +227,17 @@ fn a_migration_that_would_drop_persisted_corpus_data_is_rejected() {
 
     // And the database still contains exactly 1 evidence metadata row.
     assert_eq!(evidence_metadata_count(database.path()), 1);
+}
+
+#[test]
+fn a_comment_obfuscated_destructive_migration_is_rejected() {
+    let database = TempDatabase::new();
+    create_version_1_database_with_single_run_and_evidence(database.path());
+
+    let error_message = destructive_migration_rejection(
+        database.path(),
+        OBFUSCATED_DESTRUCTIVE_PACKAGED_MIGRATIONS,
+    );
+    assert_rejected_as_destructive(&error_message, "0002-commented-drop-evidence-metadata");
+    assert_single_run_and_evidence_preserved(database.path());
 }

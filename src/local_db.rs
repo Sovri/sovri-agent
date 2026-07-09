@@ -481,6 +481,7 @@ fn apply_packaged_migration(
 }
 
 fn destructive_migration_operation(sql: &str) -> Option<String> {
+    let sql = sql_without_comments(sql);
     sql.split(';').find_map(|statement| {
         let table_name = dropped_table_name(statement)?;
         if PERSISTED_CORPUS_TABLES.contains(&table_name.as_str()) {
@@ -489,6 +490,37 @@ fn destructive_migration_operation(sql: &str) -> Option<String> {
             None
         }
     })
+}
+
+fn sql_without_comments(sql: &str) -> String {
+    let mut without_comments = String::with_capacity(sql.len());
+    let mut characters = sql.chars().peekable();
+
+    while let Some(character) = characters.next() {
+        if character == '-' && characters.peek() == Some(&'-') {
+            characters.next();
+            for comment_character in characters.by_ref() {
+                if comment_character == '\n' {
+                    without_comments.push(' ');
+                    break;
+                }
+            }
+        } else if character == '/' && characters.peek() == Some(&'*') {
+            characters.next();
+            let mut previous_character = '\0';
+            for comment_character in characters.by_ref() {
+                if previous_character == '*' && comment_character == '/' {
+                    without_comments.push(' ');
+                    break;
+                }
+                previous_character = comment_character;
+            }
+        } else {
+            without_comments.push(character);
+        }
+    }
+
+    without_comments
 }
 
 fn dropped_table_name(statement: &str) -> Option<String> {
