@@ -18,11 +18,14 @@ use rusqlite::{params, Connection};
 /// The schema version created by the first packaged migration.
 pub const INITIAL_SCHEMA_VERSION: u32 = 1;
 
-const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[PackagedMigration::new(
-    INITIAL_SCHEMA_VERSION,
-    "0001-initial",
-    INITIAL_SCHEMA_SQL,
-)];
+const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[
+    PackagedMigration::new(INITIAL_SCHEMA_VERSION, "0001-initial", INITIAL_SCHEMA_SQL),
+    PackagedMigration::new(
+        RUN_EVIDENCE_LINKS_SCHEMA_VERSION,
+        "0002-run-evidence-links",
+        RUN_EVIDENCE_LINKS_SCHEMA_SQL,
+    ),
+];
 
 const INITIAL_SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS scan_runs (id TEXT PRIMARY KEY);
@@ -41,6 +44,19 @@ const INITIAL_SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY);
 ";
 
+const RUN_EVIDENCE_LINKS_SCHEMA_VERSION: u32 = 2;
+
+const RUN_EVIDENCE_LINKS_SCHEMA_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS run_evidence_links (
+      run_id TEXT NOT NULL,
+      evidence_id TEXT NOT NULL,
+      PRIMARY KEY (run_id, evidence_id)
+    );
+    INSERT OR IGNORE INTO run_evidence_links(run_id, evidence_id)
+    SELECT run_id, id
+    FROM evidence_metadata;
+";
+
 const MIGRATION_LEDGER_SQL: &str = "
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
@@ -56,10 +72,13 @@ const SCHEMA_VERSION_1_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
 
 const NO_REQUIRED_SCHEMA_COLUMNS: &[RequiredSchemaColumn] = &[];
 
-const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[SchemaRequirements::new(
-    INITIAL_SCHEMA_VERSION,
-    SCHEMA_VERSION_1_REQUIRED_COLUMNS,
-)];
+const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
+    SchemaRequirements::new(INITIAL_SCHEMA_VERSION, SCHEMA_VERSION_1_REQUIRED_COLUMNS),
+    SchemaRequirements::new(
+        RUN_EVIDENCE_LINKS_SCHEMA_VERSION,
+        SCHEMA_VERSION_1_REQUIRED_COLUMNS,
+    ),
+];
 
 #[derive(Clone, Copy, Debug)]
 struct SchemaRequirements {
@@ -209,7 +228,9 @@ fn apply_packaged_migrations(
     migrations: &[PackagedMigration],
 ) -> Result<(), LocalDatabaseError> {
     for migration in migrations {
-        if !migration_is_applied(connection, migration.version)? {
+        if !migration_is_applied(connection, migration.version)?
+            && migration_is_applicable(connection, migration)?
+        {
             apply_packaged_migration(connection, migration)?;
         }
     }
@@ -221,6 +242,12 @@ fn validate_current_schema(
     migrations: &[PackagedMigration],
 ) -> Result<(), LocalDatabaseError> {
     let schema_version = connection_schema_version(connection)?;
+    if schema_version != 0 && !migration_is_applied(connection, schema_version)? {
+        return Err(LocalDatabaseError::Schema(format!(
+            "unsupported schema version {schema_version}; schema_migrations does not record that version"
+        )));
+    }
+
     let mut missing_columns = Vec::new();
 
     for required_column in required_schema_columns(schema_version, migrations)? {
@@ -390,6 +417,20 @@ fn migration_ledger_exists(connection: &Connection) -> Result<bool, LocalDatabas
         )
         .map_err(LocalDatabaseError::Sqlite)?;
     Ok(count == 1)
+}
+
+fn migration_is_applicable(
+    connection: &Connection,
+    migration: &PackagedMigration,
+) -> Result<bool, LocalDatabaseError> {
+    if migration.version == RUN_EVIDENCE_LINKS_SCHEMA_VERSION
+        && migration.name == "0002-run-evidence-links"
+        && migration.sql == RUN_EVIDENCE_LINKS_SCHEMA_SQL
+    {
+        return schema_column_exists(connection, "evidence_metadata", "run_id");
+    }
+
+    Ok(true)
 }
 
 fn apply_packaged_migration(
