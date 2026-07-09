@@ -120,12 +120,10 @@ fn a_failed_packaged_migration_is_rolled_back() {
     let database = TempDatabase::new();
 
     // When the operator opens the local database at "./tmp/sovri-mat-98.db".
-    let error = match LocalDatabase::open_with_packaged_migrations(
-        database.path(),
-        BROKEN_PACKAGED_MIGRATIONS,
-    ) {
-        Ok(_) => panic!("opening with a broken packaged migration should fail"),
-        Err(error) => error,
+    let Err(error) =
+        LocalDatabase::open_with_packaged_migrations(database.path(), BROKEN_PACKAGED_MIGRATIONS)
+    else {
+        panic!("opening with a broken packaged migration should fail");
     };
 
     // Then the open fails with a migration error for "0002-broken".
