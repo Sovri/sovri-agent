@@ -243,7 +243,7 @@ fn reject_newer_schema_version(
     migrations: &[PackagedMigration],
 ) -> Result<(), LocalDatabaseError> {
     let schema_version = connection_schema_version(connection)?;
-    let packaged_schema_version = latest_packaged_migration_version(migrations);
+    let packaged_schema_version = current_packaged_schema_version(migrations)?;
     if schema_version > packaged_schema_version {
         return Err(LocalDatabaseError::Schema(format!(
             "unsupported newer schema version {schema_version}; packaged current schema version is {packaged_schema_version}"
@@ -253,12 +253,24 @@ fn reject_newer_schema_version(
     Ok(())
 }
 
-fn latest_packaged_migration_version(migrations: &[PackagedMigration]) -> u32 {
-    migrations
-        .iter()
-        .map(|migration| migration.version)
-        .max()
-        .unwrap_or(0)
+fn current_packaged_schema_version(
+    migrations: &[PackagedMigration],
+) -> Result<u32, LocalDatabaseError> {
+    let mut versions = std::collections::BTreeSet::new();
+    for migration in migrations {
+        if !versions.insert(migration.version) {
+            return Err(LocalDatabaseError::Schema(format!(
+                "duplicate packaged migration version {}",
+                migration.version
+            )));
+        }
+    }
+
+    versions.last().copied().ok_or_else(|| {
+        LocalDatabaseError::Schema(
+            "no packaged migrations supplied; cannot determine current schema version".to_owned(),
+        )
+    })
 }
 
 fn validate_current_schema(
@@ -580,5 +592,51 @@ mod tests {
         .expect("untrusted table name can be checked"));
         assert!(schema_column_exists(&connection, "frameworks", "version")
             .expect("untrusted table name was not executed as SQL"));
+    }
+
+    #[test]
+    fn current_packaged_schema_version_uses_highest_unique_migration_version() {
+        let migrations = [
+            PackagedMigration::new(1, "0001-initial", ""),
+            PackagedMigration::new(3, "0003-future", ""),
+            PackagedMigration::new(2, "0002-middle", ""),
+        ];
+
+        assert_eq!(
+            current_packaged_schema_version(&migrations)
+                .expect("current packaged schema version can be resolved"),
+            3
+        );
+    }
+
+    #[test]
+    fn current_packaged_schema_version_rejects_empty_migration_stack() {
+        let error =
+            current_packaged_schema_version(&[]).expect_err("empty migrations are rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("no packaged migrations supplied"),
+            "empty migration stacks should be reported explicitly, got {error}"
+        );
+    }
+
+    #[test]
+    fn current_packaged_schema_version_rejects_duplicate_migration_versions() {
+        let migrations = [
+            PackagedMigration::new(1, "0001-initial", ""),
+            PackagedMigration::new(1, "0001-duplicate", ""),
+        ];
+
+        let error = current_packaged_schema_version(&migrations)
+            .expect_err("duplicate migration versions are rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate packaged migration version 1"),
+            "duplicate migration versions should be reported explicitly, got {error}"
+        );
     }
 }
