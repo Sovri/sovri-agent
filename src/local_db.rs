@@ -352,13 +352,14 @@ impl LocalDatabase {
                 .map_err(LocalDatabaseError::Sqlite)?;
         }
 
-        for (_, result) in &scoped_results {
+        for (framework_id, result) in &scoped_results {
             let evidence_id = result
                 .evidence_refs()
                 .first()
                 .map(String::as_str)
                 .unwrap_or_default();
-            let result_id = control_result_row_id(run_id, result.control_id(), result.rule_id());
+            let result_id =
+                control_result_row_id(run_id, *framework_id, result.control_id(), result.rule_id());
             transaction
                 .execute(
                     "INSERT INTO control_results(id, run_id, control_id, rule_id, status, evidence_id)
@@ -406,26 +407,37 @@ impl LocalDatabase {
     }
 }
 
-fn control_result_row_id(run_id: &str, control_id: &str, rule_id: &str) -> String {
-    let run_id_len = run_id.len().to_string();
-    let control_id_len = control_id.len().to_string();
-    let mut id = String::with_capacity(
-        run_id_len.len()
-            + run_id.len()
-            + control_id_len.len()
-            + control_id.len()
-            + rule_id.len()
-            + 4,
-    );
-    id.push_str(&run_id_len);
-    id.push(':');
-    id.push_str(run_id);
-    id.push(':');
-    id.push_str(&control_id_len);
-    id.push(':');
-    id.push_str(control_id);
-    id.push(':');
-    id.push_str(rule_id);
+fn control_result_row_id(
+    run_id: &str,
+    framework_id: Option<&str>,
+    control_id: &str,
+    rule_id: &str,
+) -> String {
+    let framework_scope_kind = if framework_id.is_some() {
+        "framework"
+    } else {
+        "unscoped"
+    };
+    let framework_scope_id = framework_id.unwrap_or_default();
+    length_prefixed_id(&[
+        run_id,
+        framework_scope_kind,
+        framework_scope_id,
+        control_id,
+        rule_id,
+    ])
+}
+
+fn length_prefixed_id(parts: &[&str]) -> String {
+    let mut id = String::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            id.push(':');
+        }
+        id.push_str(&part.len().to_string());
+        id.push(':');
+        id.push_str(part);
+    }
     id
 }
 
@@ -864,5 +876,31 @@ mod tests {
 
         assert_eq!(run_id, None);
         assert_eq!(status, None);
+    }
+
+    #[test]
+    fn control_result_row_id_includes_framework_scope() {
+        let gdpr_result = control_result_row_id(
+            "mixed-2026-06-24",
+            Some("gdpr-eprivacy"),
+            "consent.tracker.prior-consent",
+            "consent.detect-cmp-misconfiguration",
+        );
+        let iso_result = control_result_row_id(
+            "mixed-2026-06-24",
+            Some("iso-27001"),
+            "consent.tracker.prior-consent",
+            "consent.detect-cmp-misconfiguration",
+        );
+        let unscoped_result = control_result_row_id(
+            "mixed-2026-06-24",
+            None,
+            "consent.tracker.prior-consent",
+            "consent.detect-cmp-misconfiguration",
+        );
+
+        assert_ne!(gdpr_result, iso_result);
+        assert_ne!(gdpr_result, unscoped_result);
+        assert_ne!(iso_result, unscoped_result);
     }
 }
