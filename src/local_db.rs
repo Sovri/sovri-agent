@@ -358,7 +358,7 @@ impl LocalDatabase {
                 .first()
                 .map(String::as_str)
                 .unwrap_or_default();
-            let result_id = control_result_row_id(result.control_id(), result.rule_id());
+            let result_id = control_result_row_id(run_id, result.control_id(), result.rule_id());
             transaction
                 .execute(
                     "INSERT INTO control_results(id, run_id, control_id, rule_id, status, evidence_id)
@@ -406,9 +406,21 @@ impl LocalDatabase {
     }
 }
 
-fn control_result_row_id(control_id: &str, rule_id: &str) -> String {
+fn control_result_row_id(run_id: &str, control_id: &str, rule_id: &str) -> String {
+    let run_id_len = run_id.len().to_string();
     let control_id_len = control_id.len().to_string();
-    let mut id = String::with_capacity(control_id_len.len() + control_id.len() + rule_id.len() + 2);
+    let mut id = String::with_capacity(
+        run_id_len.len()
+            + run_id.len()
+            + control_id_len.len()
+            + control_id.len()
+            + rule_id.len()
+            + 4,
+    );
+    id.push_str(&run_id_len);
+    id.push(':');
+    id.push_str(run_id);
+    id.push(':');
     id.push_str(&control_id_len);
     id.push(':');
     id.push_str(control_id);
