@@ -221,6 +221,7 @@ enum EvidenceLookup {
 }
 
 impl EvidenceLookup {
+    // Lookup names are intentionally exact and case-sensitive.
     fn parse(lookup: &str) -> Option<Self> {
         match lookup {
             "id" => Some(EvidenceLookup::Id),
@@ -1023,6 +1024,22 @@ impl Error for LocalDatabaseError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evidence_lookup_parse_accepts_only_exact_names() {
+        assert_eq!(EvidenceLookup::parse("id"), Some(EvidenceLookup::Id));
+        assert_eq!(
+            EvidenceLookup::parse("digest"),
+            Some(EvidenceLookup::Digest)
+        );
+        assert_eq!(
+            EvidenceLookup::parse("control"),
+            Some(EvidenceLookup::Control)
+        );
+        assert_eq!(EvidenceLookup::parse("ID"), None);
+        assert_eq!(EvidenceLookup::parse(" id "), None);
+        assert_eq!(EvidenceLookup::parse(""), None);
+    }
 
     #[test]
     fn schema_column_exists_is_false_for_missing_or_untrusted_names() {
