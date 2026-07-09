@@ -10,8 +10,8 @@
 //! it links no third-party runtime dependency — the XML is emitted by hand.
 
 use sovri_sdk::{
-    Catalog, ControlResult, ControlScore, EnvironmentScore, FrameworkScore, Mapping, Status,
-    StatusCounts,
+    Catalog, Classification as EvidenceClassification, ControlResult, ControlScore,
+    EnvironmentScore, Evidence as StoredEvidence, FrameworkScore, Mapping, Status, StatusCounts,
 };
 
 /// XML declaration that opens the workbook document.
@@ -499,6 +499,29 @@ impl Corpus {
             location: location.into(),
             integrity: integrity.into(),
             classification: Classification::Unclassified,
+        });
+        self
+    }
+
+    /// Adds the metadata projection of an SDK evidence record.
+    ///
+    /// Classified SDK records have already dropped their raw excerpt. This
+    /// projection copies only their stable id, kind, locator, classification,
+    /// and integrity digest into the corpus, so raw evidence cannot reach a
+    /// database or export through this path.
+    #[must_use]
+    pub fn with_stored_evidence(mut self, evidence: &StoredEvidence) -> Self {
+        let classification = match evidence.classification() {
+            Some(EvidenceClassification::Secret) => Classification::Secret,
+            Some(EvidenceClassification::Sensitive) => Classification::Sensitive,
+            Some(EvidenceClassification::Public) | None => Classification::Unclassified,
+        };
+        self.evidence.push(Evidence {
+            id: evidence.id().to_owned(),
+            kind: evidence.kind().as_str().to_owned(),
+            location: evidence.locator().to_owned(),
+            integrity: evidence.content_hash().to_owned(),
+            classification,
         });
         self
     }

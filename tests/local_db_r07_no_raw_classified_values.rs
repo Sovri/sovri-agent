@@ -10,10 +10,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
 use sovri_agent::local_db::LocalDatabase;
-use sovri_agent::matrix::{Classification, Corpus};
+use sovri_agent::matrix::Corpus;
+use sovri_sdk::{Classification, Evidence, EvidenceKind};
 
 const RUN_ID: &str = "classified-evidence-2026-06-24";
 const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
+const SECRET_EVIDENCE_ID: &str = "ev-0007";
+const SENSITIVE_EVIDENCE_ID: &str = "ev-0008";
 const SECRET_RAW_VALUE: &str = "fake-secret-value-for-redaction-test";
 const SENSITIVE_RAW_VALUE: &str = "alice@example.test";
 const SECRET_DIGEST: &str =
@@ -74,12 +77,12 @@ fn raw_classified_values_cannot_be_found_in_sqlite() {
 
     // And no evidence row exposes a raw excerpt for "ev-0007".
     assert!(!contains_value(
-        &evidence_row_values(&connection, "ev-0007"),
+        &evidence_row_values(&connection, SECRET_EVIDENCE_ID),
         SECRET_RAW_VALUE,
     ));
     // And no evidence row exposes a raw excerpt for "ev-0008".
     assert!(!contains_value(
-        &evidence_row_values(&connection, "ev-0008"),
+        &evidence_row_values(&connection, SENSITIVE_EVIDENCE_ID),
         SENSITIVE_RAW_VALUE,
     ));
 }
@@ -154,20 +157,43 @@ fn contains_value(values: &[String], needle: &str) -> bool {
 }
 
 fn classified_corpus() -> Corpus {
+    let secret = classified_evidence(
+        SECRET_EVIDENCE_ID,
+        ".env.example:3",
+        Classification::Secret,
+        SECRET_RAW_VALUE,
+        SECRET_DIGEST,
+    );
+    let sensitive = classified_evidence(
+        SENSITIVE_EVIDENCE_ID,
+        "config/users.yaml:12",
+        Classification::Sensitive,
+        SENSITIVE_RAW_VALUE,
+        SENSITIVE_DIGEST,
+    );
+
     Corpus::new(EXECUTED_AT)
         .with_run_id(RUN_ID)
-        .with_classified_evidence(
-            "ev-0007",
-            "config",
-            ".env.example:3",
-            Classification::Secret,
-            SECRET_DIGEST,
-        )
-        .with_classified_evidence(
-            "ev-0008",
-            "config",
-            "config/users.yaml:12",
-            Classification::Sensitive,
-            SENSITIVE_DIGEST,
-        )
+        .with_stored_evidence(&secret)
+        .with_stored_evidence(&sensitive)
+}
+
+fn classified_evidence(
+    id: &str,
+    locator: &str,
+    classification: Classification,
+    raw_value: &str,
+    digest: &str,
+) -> Evidence {
+    let evidence = Evidence::builder()
+        .id(id)
+        .kind(EvidenceKind::Config)
+        .locator(locator)
+        .content_hash(digest)
+        .excerpt(raw_value)
+        .classification(classification)
+        .build()
+        .expect("the classified evidence validates");
+    assert!(!evidence.exposes_value(raw_value));
+    evidence
 }
