@@ -26,6 +26,11 @@ const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[
         "0002-run-evidence-links",
         RUN_EVIDENCE_LINKS_SCHEMA_SQL,
     ),
+    PackagedMigration::new(
+        CONTROL_RESULTS_RUN_ID_SCHEMA_VERSION,
+        "0003-control-results-run-id",
+        CONTROL_RESULTS_RUN_ID_SCHEMA_SQL,
+    ),
 ];
 
 const INITIAL_SCHEMA_SQL: &str = "
@@ -64,6 +69,12 @@ const RUN_EVIDENCE_LINKS_SCHEMA_SQL: &str = "
     FROM evidence_metadata;
 ";
 
+const CONTROL_RESULTS_RUN_ID_SCHEMA_VERSION: u32 = 3;
+
+const CONTROL_RESULTS_RUN_ID_SCHEMA_SQL: &str = "
+    ALTER TABLE control_results ADD COLUMN run_id TEXT;
+";
+
 const MIGRATION_LEDGER_SQL: &str = "
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
@@ -85,6 +96,16 @@ const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
         RUN_EVIDENCE_LINKS_SCHEMA_VERSION,
         SCHEMA_VERSION_1_REQUIRED_COLUMNS,
     ),
+    SchemaRequirements::new(
+        CONTROL_RESULTS_RUN_ID_SCHEMA_VERSION,
+        SCHEMA_VERSION_3_REQUIRED_COLUMNS,
+    ),
+];
+
+const SCHEMA_VERSION_3_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
+    RequiredSchemaColumn::new("frameworks", "version"),
+    RequiredSchemaColumn::new("evidence_metadata", "digest"),
+    RequiredSchemaColumn::new("control_results", "run_id"),
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -523,6 +544,14 @@ fn migration_is_applicable(
         && migration.sql == RUN_EVIDENCE_LINKS_SCHEMA_SQL
     {
         return schema_column_exists(connection, "evidence_metadata", "run_id");
+    }
+
+    if migration.version == CONTROL_RESULTS_RUN_ID_SCHEMA_VERSION
+        && migration.name == "0003-control-results-run-id"
+        && migration.sql == CONTROL_RESULTS_RUN_ID_SCHEMA_SQL
+    {
+        return Ok(schema_column_exists(connection, "control_results", "id")?
+            && !schema_column_exists(connection, "control_results", "run_id")?);
     }
 
     Ok(true)
