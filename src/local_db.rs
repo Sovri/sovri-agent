@@ -454,8 +454,16 @@ fn write_gap_rows(
         framework_id.map(|framework_id| (framework_id, *result))
     }) {
         if is_gap_status(result.status()) {
+            let legacy_gap_id =
+                legacy_compliance_gap_row_id(framework_id, result.control_id(), result.rule_id());
             let gap_id =
                 compliance_gap_row_id(run_id, framework_id, result.control_id(), result.rule_id());
+            transaction
+                .execute(
+                    "DELETE FROM compliance_gaps WHERE id = ?1",
+                    params![legacy_gap_id],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
             transaction
                 .execute(
                     "INSERT INTO compliance_gaps(
@@ -489,37 +497,21 @@ fn compliance_gap_row_id(
     control_id: &str,
     rule_id: &str,
 ) -> String {
-    let run_id_len = run_id.len().to_string();
-    let framework_id_len = framework_id.len().to_string();
-    let control_id_len = control_id.len().to_string();
-    let rule_id_len = rule_id.len().to_string();
-    let mut id = String::with_capacity(
-        run_id_len.len()
-            + run_id.len()
-            + framework_id_len.len()
-            + framework_id.len()
-            + control_id_len.len()
-            + control_id.len()
-            + rule_id_len.len()
-            + rule_id.len()
-            + 7,
-    );
-    id.push_str(&run_id_len);
-    id.push(':');
-    id.push_str(run_id);
-    id.push(':');
-    id.push_str(&framework_id_len);
-    id.push(':');
-    id.push_str(framework_id);
-    id.push(':');
-    id.push_str(&control_id_len);
-    id.push(':');
-    id.push_str(control_id);
-    id.push(':');
-    id.push_str(&rule_id_len);
-    id.push(':');
-    id.push_str(rule_id);
-    id
+    format!(
+        "{}:{run_id}:{}:{framework_id}:{}:{control_id}:{}:{rule_id}",
+        run_id.len(),
+        framework_id.len(),
+        control_id.len(),
+        rule_id.len()
+    )
+}
+
+fn legacy_compliance_gap_row_id(framework_id: &str, control_id: &str, rule_id: &str) -> String {
+    format!(
+        "{}:{framework_id}:{}:{control_id}:{rule_id}",
+        framework_id.len(),
+        control_id.len()
+    )
 }
 
 fn is_gap_status(status: Status) -> bool {
