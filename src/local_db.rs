@@ -79,18 +79,9 @@ const RUN_EVIDENCE_LINKS_SCHEMA_SQL: &str = "
 
 const GAP_QUERY_FILTERS_SCHEMA_VERSION: u32 = 3;
 
-const GAP_QUERY_FILTERS_SCHEMA_SQL: &str = "
-    ALTER TABLE compliance_gaps
-    ADD COLUMN run_id TEXT;
-    ALTER TABLE compliance_gaps
-    ADD COLUMN status TEXT;
-    ALTER TABLE compliance_gaps
-    ADD COLUMN severity TEXT;
-    ALTER TABLE compliance_gaps
-    ADD COLUMN control_id TEXT;
-    ALTER TABLE compliance_gaps
-    ADD COLUMN rule_id TEXT;
-";
+const GAP_QUERY_FILTERS_SCHEMA_SQL: &str = "";
+const GAP_QUERY_FILTER_COLUMNS: &[&str] =
+    &["run_id", "status", "severity", "control_id", "rule_id"];
 
 const MIGRATION_LEDGER_SQL: &str = "
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -501,6 +492,7 @@ fn compliance_gap_row_id(
     let run_id_len = run_id.len().to_string();
     let framework_id_len = framework_id.len().to_string();
     let control_id_len = control_id.len().to_string();
+    let rule_id_len = rule_id.len().to_string();
     let mut id = String::with_capacity(
         run_id_len.len()
             + run_id.len()
@@ -508,8 +500,9 @@ fn compliance_gap_row_id(
             + framework_id.len()
             + control_id_len.len()
             + control_id.len()
+            + rule_id_len.len()
             + rule_id.len()
-            + 6,
+            + 7,
     );
     id.push_str(&run_id_len);
     id.push(':');
@@ -522,6 +515,8 @@ fn compliance_gap_row_id(
     id.push_str(&control_id_len);
     id.push(':');
     id.push_str(control_id);
+    id.push(':');
+    id.push_str(&rule_id_len);
     id.push(':');
     id.push_str(rule_id);
     id
@@ -743,10 +738,22 @@ fn migration_is_applicable(
         && migration.sql == GAP_QUERY_FILTERS_SCHEMA_SQL
     {
         return Ok(schema_column_exists(connection, "compliance_gaps", "id")?
-            && !schema_column_exists(connection, "compliance_gaps", "run_id")?);
+            && gap_query_filter_columns_are_missing(connection)?);
     }
 
     Ok(true)
+}
+
+fn gap_query_filter_columns_are_missing(
+    connection: &Connection,
+) -> Result<bool, LocalDatabaseError> {
+    for column_name in GAP_QUERY_FILTER_COLUMNS {
+        if !schema_column_exists(connection, "compliance_gaps", column_name)? {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn apply_packaged_migration(
@@ -759,9 +766,17 @@ fn apply_packaged_migration(
     transaction
         .execute_batch(MIGRATION_LEDGER_SQL)
         .map_err(|source| migration_error(migration, source))?;
-    transaction
-        .execute_batch(migration.sql)
-        .map_err(|source| migration_error(migration, source))?;
+    if migration.version == GAP_QUERY_FILTERS_SCHEMA_VERSION
+        && migration.name == "0003-gap-query-filters"
+        && migration.sql == GAP_QUERY_FILTERS_SCHEMA_SQL
+    {
+        apply_gap_query_filters_migration(&transaction)
+            .map_err(|source| migration_error(migration, source))?;
+    } else {
+        transaction
+            .execute_batch(migration.sql)
+            .map_err(|source| migration_error(migration, source))?;
+    }
     transaction
         .execute(
             "INSERT INTO schema_migrations(version, name)
@@ -775,6 +790,34 @@ fn apply_packaged_migration(
     transaction
         .commit()
         .map_err(|source| migration_error(migration, source))
+}
+
+fn apply_gap_query_filters_migration(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<()> {
+    for column_name in GAP_QUERY_FILTER_COLUMNS {
+        if !transaction_schema_column_exists(transaction, "compliance_gaps", column_name)? {
+            let sql = format!("ALTER TABLE compliance_gaps ADD COLUMN {column_name} TEXT");
+            transaction.execute(&sql, [])?;
+        }
+    }
+
+    Ok(())
+}
+
+fn transaction_schema_column_exists(
+    transaction: &rusqlite::Transaction<'_>,
+    table_name: &str,
+    column_name: &str,
+) -> rusqlite::Result<bool> {
+    let count: i64 = transaction.query_row(
+        "SELECT COUNT(*)
+         FROM pragma_table_info(?1)
+         WHERE name = ?2",
+        params![table_name, column_name],
+        |row| row.get(0),
+    )?;
+    Ok(count == 1)
 }
 
 fn migration_error(migration: &PackagedMigration, source: rusqlite::Error) -> LocalDatabaseError {
