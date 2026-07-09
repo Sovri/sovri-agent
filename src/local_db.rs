@@ -504,10 +504,7 @@ fn destructive_migration_operation(sql: &str) -> Option<String> {
             index + 2
         };
 
-        if let Some(table_name) = tokens
-            .get(table_index)
-            .map(|table_name| canonical_sql_identifier(table_name))
-        {
+        if let Some(table_name) = dropped_table_name(&tokens, table_index) {
             if PERSISTED_CORPUS_TABLES.contains(&table_name.as_str()) {
                 return Some(format!("DROP TABLE {table_name}"));
             }
@@ -517,6 +514,20 @@ fn destructive_migration_operation(sql: &str) -> Option<String> {
     }
 
     None
+}
+
+fn dropped_table_name(tokens: &[String], table_index: usize) -> Option<String> {
+    let schema_or_table = tokens.get(table_index)?;
+    if tokens
+        .get(table_index + 1)
+        .is_some_and(|token| token == ".")
+    {
+        return tokens
+            .get(table_index + 2)
+            .map(|table_name| canonical_sql_identifier(table_name));
+    }
+
+    Some(canonical_sql_identifier(schema_or_table))
 }
 
 fn sql_tokens(sql: &str) -> Vec<String> {
@@ -571,18 +582,10 @@ fn skip_line_comment(characters: &mut std::iter::Peekable<std::str::Chars<'_>>) 
 }
 
 fn skip_block_comment(characters: &mut std::iter::Peekable<std::str::Chars<'_>>) {
-    let mut depth = 1;
-
     while let Some(character) = characters.next() {
-        if character == '/' && characters.peek() == Some(&'*') {
+        if character == '*' && characters.peek() == Some(&'/') {
             characters.next();
-            depth += 1;
-        } else if character == '*' && characters.peek() == Some(&'/') {
-            characters.next();
-            depth -= 1;
-            if depth == 0 {
-                break;
-            }
+            break;
         }
     }
 }
