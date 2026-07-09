@@ -116,6 +116,50 @@ fn rewriting_an_evidence_id_refreshes_its_expected_digest() {
     assert_eq!(metadata.digest(), ACTUAL_DIGEST);
 }
 
+#[test]
+fn rewriting_without_integrity_preserves_the_existing_digest() {
+    let fixture = TempFixture::new();
+    let mut database =
+        LocalDatabase::open(fixture.database_path()).expect("the local database opens");
+    database
+        .write_completed_corpus(&classified_corpus())
+        .expect("the initial corpus write succeeds");
+    database
+        .write_completed_corpus(&legacy_corpus("legacy-rewrite-2026-06-24"))
+        .expect("the legacy rewrite succeeds");
+
+    let metadata = database
+        .query_evidence("id", EVIDENCE_ID)
+        .expect("the evidence metadata can be read");
+
+    assert_eq!(
+        metadata.first().expect("the metadata exists").digest(),
+        EXPECTED_DIGEST
+    );
+}
+
+#[test]
+fn legacy_evidence_without_integrity_is_not_reported_as_corrupt() {
+    let fixture = TempFixture::new();
+    let mut database =
+        LocalDatabase::open(fixture.database_path()).expect("the local database opens");
+    database
+        .write_completed_corpus(&legacy_corpus(RUN_ID))
+        .expect("the legacy corpus write succeeds");
+
+    let mut store = EvidenceStore::open(fixture.store_path()).expect("the evidence store opens");
+    store
+        .write(&classified_evidence(b"abc".to_vec()))
+        .expect("the evidence is persisted");
+
+    let metadata = database
+        .read_linked_evidence(&store, EVIDENCE_ID)
+        .expect("missing legacy integrity is not a mismatch")
+        .expect("the legacy metadata is returned");
+
+    assert!(metadata.digest().is_empty());
+}
+
 fn classified_corpus() -> Corpus {
     classified_corpus_with_digest(RUN_ID, EXPECTED_DIGEST)
 }
@@ -130,6 +174,12 @@ fn classified_corpus_with_digest(run_id: &str, digest: &str) -> Corpus {
             Classification::Secret,
             digest,
         )
+}
+
+fn legacy_corpus(run_id: &str) -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_run_id(run_id)
+        .with_evidence(EVIDENCE_ID, EVIDENCE_LOCATOR)
 }
 
 fn mismatched_store(path: &Path) -> EvidenceStore {

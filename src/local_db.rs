@@ -584,6 +584,12 @@ impl LocalDatabase {
             return Ok(None);
         };
         let index = store.index();
+        if metadata.digest().is_empty() {
+            return Ok(index
+                .resolve_id(metadata.id())
+                .is_some()
+                .then_some(metadata));
+        }
         if index
             .resolve_digest(metadata.digest())
             .is_some_and(|record| {
@@ -706,7 +712,7 @@ impl LocalDatabase {
                     "INSERT INTO evidence_metadata(id, digest, locator)
                      VALUES (?1, ?2, ?3)
                      ON CONFLICT(id) DO UPDATE SET
-                       digest = excluded.digest,
+                       digest = COALESCE(NULLIF(excluded.digest, ''), evidence_metadata.digest),
                        locator = CASE
                          WHEN evidence_metadata.locator = '' THEN excluded.locator
                          ELSE evidence_metadata.locator
