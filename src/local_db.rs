@@ -237,7 +237,10 @@ impl LocalDatabase {
         let run_id = corpus.run_id();
 
         transaction
-            .execute("INSERT OR REPLACE INTO scan_runs(id) VALUES (?1)", [run_id])
+            .execute(
+                "INSERT OR REPLACE INTO scan_runs(id) VALUES (?1)",
+                params![run_id],
+            )
             .map_err(LocalDatabaseError::Sqlite)?;
 
         for (framework_id, version, _source_url) in corpus.frameworks() {
@@ -249,27 +252,21 @@ impl LocalDatabase {
                 .map_err(LocalDatabaseError::Sqlite)?;
         }
 
-        for (_framework_id, control_id, _severity, _reference) in corpus.controls() {
+        for (_, control_id, _, _) in corpus.controls() {
             transaction
                 .execute(
                     "INSERT OR REPLACE INTO controls(id) VALUES (?1)",
-                    [control_id],
+                    params![control_id],
                 )
                 .map_err(LocalDatabaseError::Sqlite)?;
         }
 
-        for (framework_id, result) in corpus.scoped_results() {
-            let result_id = format!(
-                "{}:{}:{}:{}",
-                run_id,
-                framework_id.unwrap_or("global"),
-                result.control_id(),
-                result.rule_id()
-            );
+        for (_, result) in corpus.scoped_results() {
+            let result_id = format!("{}:{}:{}", run_id, result.control_id(), result.rule_id());
             transaction
                 .execute(
                     "INSERT OR REPLACE INTO control_results(id) VALUES (?1)",
-                    [result_id],
+                    params![result_id],
                 )
                 .map_err(LocalDatabaseError::Sqlite)?;
         }

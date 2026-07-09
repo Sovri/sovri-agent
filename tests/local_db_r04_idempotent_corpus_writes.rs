@@ -25,6 +25,8 @@ const CONTROL_REFERENCE: &str = "gdpr-eprivacy:2016-679:Art.7";
 const TRACKER_RULE: &str = "consent.detect-trackers-without-consent-evidence";
 const CMP_RULE: &str = "consent.detect-cmp-misconfiguration";
 const EVIDENCE_ID: &str = "ev-0001";
+// The scenario fixes this digest; keep it literal so the acceptance data mirrors
+// the Gherkin.
 const EVIDENCE_DIGEST: &str =
     "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
@@ -113,6 +115,8 @@ fn shopfront_consent_corpus() -> Corpus {
             8,
             CONTROL_REFERENCE,
         )
+        // The Gherkin table intentionally reuses ev-0001 for both results; the
+        // scenario asserts one evidence metadata row.
         .with_control_result(
             FRAMEWORK_ID,
             control_result(TRACKER_RULE, Status::Fail, EVIDENCE_ID),
@@ -152,7 +156,7 @@ fn run_row_count(path: &Path, run_id: &str) -> i64 {
     connection
         .query_row(
             "SELECT COUNT(*) FROM scan_runs WHERE id = ?1",
-            [run_id],
+            params![run_id],
             |row| row.get(0),
         )
         .expect("run row count can be inspected")
@@ -174,16 +178,20 @@ fn control_row_count(path: &Path, control_id: &str) -> i64 {
     connection
         .query_row(
             "SELECT COUNT(*) FROM controls WHERE id = ?1",
-            [control_id],
+            params![control_id],
             |row| row.get(0),
         )
         .expect("control row count can be inspected")
 }
 
-fn result_row_count_for_run(path: &Path, _run_id: &str) -> i64 {
+fn result_row_count_for_run(path: &Path, run_id: &str) -> i64 {
     let connection = Connection::open(path).expect("the database can be inspected");
     connection
-        .query_row("SELECT COUNT(*) FROM control_results", [], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM control_results WHERE id LIKE ?1 || ':%'",
+            params![run_id],
+            |row| row.get(0),
+        )
         .expect("result row count can be inspected")
 }
 
@@ -192,7 +200,7 @@ fn evidence_metadata_row_count(path: &Path, evidence_id: &str) -> i64 {
     connection
         .query_row(
             "SELECT COUNT(*) FROM evidence_metadata WHERE id = ?1",
-            [evidence_id],
+            params![evidence_id],
             |row| row.get(0),
         )
         .expect("evidence metadata row count can be inspected")
