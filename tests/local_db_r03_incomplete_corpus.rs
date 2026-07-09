@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use sovri_agent::local_db::LocalDatabase;
 use sovri_agent::matrix::{Classification, Corpus};
 use sovri_sdk::{ControlResult, Status};
@@ -68,6 +68,41 @@ impl Drop for TempDatabase {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+fn create_version_1_database_with_legacy_run_id(path: &Path) {
+    fs::create_dir_all(path.parent().expect("database path has a parent"))
+        .expect("database parent can be created");
+    let connection = Connection::open(path).expect("version 1 database can be created");
+    connection
+        .execute_batch(
+            "
+            CREATE TABLE scan_runs (id TEXT PRIMARY KEY);
+            CREATE TABLE frameworks (
+              id TEXT PRIMARY KEY,
+              version TEXT NOT NULL
+            );
+            CREATE TABLE controls (id TEXT PRIMARY KEY);
+            CREATE TABLE control_results (id TEXT PRIMARY KEY);
+            CREATE TABLE compliance_gaps (id TEXT PRIMARY KEY);
+            CREATE TABLE evidence_metadata (
+              id TEXT PRIMARY KEY,
+              run_id TEXT NOT NULL,
+              digest TEXT NOT NULL
+            );
+            CREATE TABLE score_summaries (id TEXT PRIMARY KEY);
+            CREATE TABLE exports (id TEXT PRIMARY KEY);
+            CREATE TABLE schema_migrations (
+              version INTEGER PRIMARY KEY,
+              name TEXT NOT NULL,
+              applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO schema_migrations(version, name)
+            VALUES (1, '0001-initial');
+            PRAGMA user_version = 1;
+            ",
+        )
+        .expect("version 1 schema can be seeded");
 }
 
 #[test]
@@ -142,6 +177,113 @@ fn framework_metadata_without_controls_or_results_is_not_committed() {
     assert_table_empty(database.path(), TestTable::ControlResults);
     assert_table_empty(database.path(), TestTable::ScoreSummaries);
     assert_table_empty(database.path(), TestTable::Exports);
+}
+
+#[test]
+fn corpus_with_no_framework_metadata_is_not_committed() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+    let corpus = Corpus::new(EXECUTED_AT)
+        .with_run_id(MIXED_RUN)
+        .with_control(
+            GDPR_FRAMEWORK,
+            CONSENT_CONTROL,
+            CONSENT_TITLE,
+            "major",
+            8,
+            CONSENT_REFERENCE,
+        )
+        .with_control_result(
+            GDPR_FRAMEWORK,
+            control_result(
+                CONSENT_CONTROL,
+                TRACKER_RULE,
+                "major",
+                Status::Fail,
+                PUBLIC_EVIDENCE_ID,
+            ),
+        )
+        .with_evidence_digest(
+            PUBLIC_EVIDENCE_ID,
+            "file",
+            "dist/main.js",
+            PUBLIC_EVIDENCE_DIGEST,
+        );
+
+    let write_result = local_database.write_completed_corpus(&corpus);
+
+    assert!(
+        write_result.is_err(),
+        "a completed corpus needs framework metadata for referenced frameworks"
+    );
+    assert_row_absent(database.path(), TestTable::ScanRuns, MIXED_RUN);
+    assert_table_empty(database.path(), TestTable::Frameworks);
+    assert_table_empty(database.path(), TestTable::Controls);
+    assert_table_empty(database.path(), TestTable::ControlResults);
+    assert_row_absent(
+        database.path(),
+        TestTable::EvidenceMetadata,
+        PUBLIC_EVIDENCE_ID,
+    );
+    assert_table_empty(database.path(), TestTable::Exports);
+}
+
+#[test]
+fn completed_corpus_with_evidence_writes_to_upgraded_legacy_run_id_schema() {
+    let database = TempDatabase::new();
+    create_version_1_database_with_legacy_run_id(database.path());
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the legacy database upgrades");
+    assert_eq!(local_database.schema_version(), 2);
+    let corpus = complete_gdpr_corpus();
+
+    local_database
+        .write_completed_corpus(&corpus)
+        .expect("completed corpora with evidence write on upgraded legacy schemas");
+
+    assert_row_present(database.path(), TestTable::ScanRuns, MIXED_RUN);
+    assert_evidence_metadata_linked_to_run(
+        database.path(),
+        PUBLIC_EVIDENCE_ID,
+        MIXED_RUN,
+        PUBLIC_EVIDENCE_DIGEST,
+    );
+    assert_run_evidence_link_present(database.path(), MIXED_RUN, PUBLIC_EVIDENCE_ID);
+}
+
+fn complete_gdpr_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_run_id(MIXED_RUN)
+        .with_framework(
+            GDPR_FRAMEWORK,
+            "2016-679",
+            "https://eur-lex.europa.eu/eli/reg/2016/679/oj",
+        )
+        .with_control(
+            GDPR_FRAMEWORK,
+            CONSENT_CONTROL,
+            CONSENT_TITLE,
+            "major",
+            8,
+            CONSENT_REFERENCE,
+        )
+        .with_control_result(
+            GDPR_FRAMEWORK,
+            control_result(
+                CONSENT_CONTROL,
+                TRACKER_RULE,
+                "major",
+                Status::Fail,
+                PUBLIC_EVIDENCE_ID,
+            ),
+        )
+        .with_evidence_digest(
+            PUBLIC_EVIDENCE_ID,
+            "file",
+            "dist/main.js",
+            PUBLIC_EVIDENCE_DIGEST,
+        )
 }
 
 fn incomplete_mixed_corpus() -> Corpus {
@@ -293,6 +435,15 @@ fn assert_row_absent(path: &Path, table: TestTable, id: &str) {
     );
 }
 
+fn assert_row_present(path: &Path, table: TestTable, id: &str) {
+    assert_eq!(
+        row_count(path, table, id),
+        1,
+        "{} should contain row {id:?}",
+        table.label()
+    );
+}
+
 fn assert_table_empty(path: &Path, table: TestTable) {
     assert_eq!(
         table_row_count(path, table),
@@ -314,4 +465,37 @@ fn table_row_count(path: &Path, table: TestTable) -> i64 {
     connection
         .query_row(table.count_all_sql(), [], |row| row.get(0))
         .expect("table row count can be inspected")
+}
+
+fn assert_evidence_metadata_linked_to_run(
+    path: &Path,
+    evidence_id: &str,
+    run_id: &str,
+    digest: &str,
+) {
+    let connection = Connection::open(path).expect("the database can be inspected");
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM evidence_metadata
+             WHERE id = ?1 AND run_id = ?2 AND digest = ?3",
+            params![evidence_id, run_id, digest],
+            |row| row.get(0),
+        )
+        .expect("legacy evidence metadata link can be inspected");
+    assert_eq!(count, 1, "evidence metadata should preserve run_id");
+}
+
+fn assert_run_evidence_link_present(path: &Path, run_id: &str, evidence_id: &str) {
+    let connection = Connection::open(path).expect("the database can be inspected");
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM run_evidence_links
+             WHERE run_id = ?1 AND evidence_id = ?2",
+            params![run_id, evidence_id],
+            |row| row.get(0),
+        )
+        .expect("run evidence link can be inspected");
+    assert_eq!(count, 1, "run_evidence_links should record new evidence");
 }

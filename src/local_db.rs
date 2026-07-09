@@ -14,7 +14,7 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use crate::matrix::Corpus;
+use crate::matrix::{Corpus, EvidenceRecord};
 use rusqlite::{params, Connection, Transaction};
 use sovri_sdk::{ControlResult, Status};
 
@@ -253,18 +253,17 @@ fn validate_completed_corpus(corpus: &Corpus) -> Result<(), LocalDatabaseError> 
     let mut missing_frameworks = BTreeSet::new();
     let mut frameworks_with_content = BTreeSet::new();
 
-    for (framework_id, _control_id, _severity, _reference) in corpus.controls() {
-        if framework_metadata.contains(framework_id) {
-            frameworks_with_content.insert(framework_id);
-        } else {
-            missing_frameworks.insert(framework_id);
-        }
-    }
-
-    for (framework_id, _result) in corpus.scoped_results() {
-        let Some(framework_id) = framework_id else {
-            continue;
-        };
+    let referenced_frameworks = corpus
+        .controls()
+        .into_iter()
+        .map(|(framework_id, _control_id, _severity, _reference)| framework_id)
+        .chain(
+            corpus
+                .scoped_results()
+                .into_iter()
+                .filter_map(|(framework_id, _result)| framework_id),
+        );
+    for framework_id in referenced_frameworks {
         if framework_metadata.contains(framework_id) {
             frameworks_with_content.insert(framework_id);
         } else {
@@ -333,13 +332,18 @@ fn write_completed_corpus_rows(
         }
     }
 
+    let evidence_metadata_has_run_id =
+        transaction_schema_column_exists(transaction, "evidence_metadata", "run_id")?;
+    let run_evidence_links_exists =
+        transaction_schema_table_exists(transaction, "run_evidence_links")?;
     for evidence in corpus.evidence_records() {
-        transaction
-            .execute(
-                "INSERT OR REPLACE INTO evidence_metadata(id, digest) VALUES (?1, ?2)",
-                params![evidence.id, evidence.integrity],
-            )
-            .map_err(LocalDatabaseError::Sqlite)?;
+        insert_evidence_metadata(
+            transaction,
+            run_id,
+            &evidence,
+            evidence_metadata_has_run_id,
+            run_evidence_links_exists,
+        )?;
     }
 
     for framework_id in score_summary_ids {
@@ -349,6 +353,74 @@ fn write_completed_corpus_rows(
     insert_id_row(transaction, LocalDbTable::Exports, run_id)?;
 
     Ok(())
+}
+
+fn insert_evidence_metadata(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    evidence: &EvidenceRecord<'_>,
+    evidence_metadata_has_run_id: bool,
+    run_evidence_links_exists: bool,
+) -> Result<(), LocalDatabaseError> {
+    if evidence_metadata_has_run_id {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO evidence_metadata(id, run_id, digest) VALUES (?1, ?2, ?3)",
+                params![evidence.id, run_id, evidence.integrity],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    } else {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO evidence_metadata(id, digest) VALUES (?1, ?2)",
+                params![evidence.id, evidence.integrity],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+
+    if run_evidence_links_exists {
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO run_evidence_links(run_id, evidence_id) VALUES (?1, ?2)",
+                params![run_id, evidence.id],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+
+    Ok(())
+}
+
+fn transaction_schema_column_exists(
+    transaction: &Transaction<'_>,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool, LocalDatabaseError> {
+    let count: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*)
+             FROM pragma_table_info(?1)
+             WHERE name = ?2",
+            params![table_name, column_name],
+            |row| row.get(0),
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(count == 1)
+}
+
+fn transaction_schema_table_exists(
+    transaction: &Transaction<'_>,
+    table_name: &str,
+) -> Result<bool, LocalDatabaseError> {
+    let count: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*)
+             FROM sqlite_schema
+             WHERE type = 'table' AND name = ?1",
+            [table_name],
+            |row| row.get(0),
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(count == 1)
 }
 
 #[derive(Clone, Copy)]
