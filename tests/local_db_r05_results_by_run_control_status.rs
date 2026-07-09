@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sovri_agent::local_db::{LocalDatabase, LocalDatabaseError};
+use sovri_agent::local_db::LocalDatabase;
 use sovri_agent::matrix::{Classification, Corpus};
 use sovri_sdk::{ControlResult, Status};
 
@@ -72,20 +72,6 @@ impl Drop for TempDatabase {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
-
-#[allow(dead_code)]
-trait LocalDatabaseResultQueries {
-    fn query_results(
-        &self,
-        _run_id: &str,
-        _control_id: &str,
-        _status: &str,
-    ) -> Result<Vec<String>, LocalDatabaseError> {
-        panic!("LocalDatabase::query_results is not implemented")
-    }
-}
-
-impl LocalDatabaseResultQueries for LocalDatabase {}
 
 #[test]
 fn results_can_be_retrieved_by_run_control_and_status() {

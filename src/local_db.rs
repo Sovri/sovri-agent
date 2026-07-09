@@ -76,9 +76,9 @@ const RESULT_QUERY_FILTERS_SCHEMA_VERSION: u32 = 3;
 
 const RESULT_QUERY_FILTERS_SCHEMA_SQL: &str = "
     ALTER TABLE control_results
-    ADD COLUMN run_id TEXT NOT NULL DEFAULT '';
+    ADD COLUMN run_id TEXT;
     ALTER TABLE control_results
-    ADD COLUMN status TEXT NOT NULL DEFAULT '';
+    ADD COLUMN status TEXT;
 ";
 
 const MIGRATION_LEDGER_SQL: &str = "
@@ -824,5 +824,45 @@ mod tests {
         .expect("untrusted table name can be checked"));
         assert!(schema_column_exists(&connection, "frameworks", "version")
             .expect("untrusted table name was not executed as SQL"));
+    }
+
+    #[test]
+    fn result_query_filters_migration_preserves_unknown_legacy_values_as_null() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database opens");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE control_results (
+                  id TEXT PRIMARY KEY,
+                  control_id TEXT NOT NULL,
+                  rule_id TEXT NOT NULL,
+                  evidence_id TEXT NOT NULL
+                );
+                INSERT INTO control_results(id, control_id, rule_id, evidence_id)
+                VALUES ('legacy-result', 'legacy-control', 'legacy-rule', 'legacy-evidence');
+                ",
+            )
+            .expect("legacy schema can be created");
+
+        apply_packaged_migration(
+            &mut connection,
+            &PackagedMigration::new(
+                RESULT_QUERY_FILTERS_SCHEMA_VERSION,
+                "0003-result-query-filters",
+                RESULT_QUERY_FILTERS_SCHEMA_SQL,
+            ),
+        )
+        .expect("result query filters migration applies");
+
+        let (run_id, status): (Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT run_id, status FROM control_results WHERE id = 'legacy-result'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("legacy result can be inspected after migration");
+
+        assert_eq!(run_id, None);
+        assert_eq!(status, None);
     }
 }
