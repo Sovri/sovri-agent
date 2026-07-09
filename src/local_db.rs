@@ -1114,11 +1114,18 @@ fn backfill_control_result_run_ids(
 }
 
 fn control_result_run_id(row_id: &str) -> Option<&str> {
-    let (length, remainder) = row_id.split_once(':')?;
+    let (run_id, remainder) = take_length_prefixed_field(row_id)?;
+    let (_, remainder) = take_length_prefixed_field(remainder)?;
+    let (_, rule_id) = take_length_prefixed_field(remainder)?;
+    (!run_id.is_empty() && !rule_id.is_empty()).then_some(run_id)
+}
+
+fn take_length_prefixed_field(input: &str) -> Option<(&str, &str)> {
+    let (length, remainder) = input.split_once(':')?;
     let length = length.parse::<usize>().ok()?;
-    let run_id = remainder.get(..length)?;
-    remainder.get(length..)?.strip_prefix(':')?;
-    Some(run_id)
+    let value = remainder.get(..length)?;
+    let remainder = remainder.get(length..)?.strip_prefix(':')?;
+    Some((value, remainder))
 }
 
 fn transaction_schema_column_exists(
@@ -1213,6 +1220,27 @@ mod tests {
         assert_eq!(EvidenceLookup::parse("ID"), None);
         assert_eq!(EvidenceLookup::parse(" id "), None);
         assert_eq!(EvidenceLookup::parse(""), None);
+    }
+
+    #[test]
+    fn control_result_run_id_rejects_legacy_and_malformed_ids() {
+        let run_id = "mixed-2026-06-24";
+        let framework_id = "gdpr-eprivacy";
+        let control_id = "consent.tracker.prior-consent";
+        let rule_id = "consent.detect-trackers-without-consent-evidence";
+        let current_id = control_result_row_id(run_id, framework_id, control_id, rule_id);
+        assert_eq!(control_result_run_id(&current_id), Some(run_id));
+
+        let legacy_id = format!(
+            "{}:{framework_id}:{}:{control_id}:{rule_id}",
+            framework_id.len(),
+            control_id.len()
+        );
+        assert_eq!(control_result_run_id(&legacy_id), None);
+
+        for malformed_id in ["", "not-a-length:value", "5:short", "1:r:1:f:1:c:"] {
+            assert_eq!(control_result_run_id(malformed_id), None);
+        }
     }
 
     #[test]
