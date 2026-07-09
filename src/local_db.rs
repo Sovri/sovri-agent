@@ -434,7 +434,7 @@ impl LocalDatabase {
     pub fn query_run(&self, run_id: &str) -> Result<Vec<String>, LocalDatabaseError> {
         let mut statement = self
             .connection
-            .prepare("SELECT id FROM scan_runs WHERE id = ?1 ORDER BY id")
+            .prepare("SELECT id FROM scan_runs WHERE id = ?1")
             .map_err(LocalDatabaseError::Sqlite)?;
         let rows = statement
             .query_map(params![run_id], |row| row.get::<_, String>(0))
