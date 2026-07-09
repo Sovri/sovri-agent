@@ -57,6 +57,18 @@ const RUN_EVIDENCE_LINKS_SCHEMA_SQL: &str = "
     FROM evidence_metadata;
 ";
 
+const PERSISTED_CORPUS_TABLES: &[&str] = &[
+    "scan_runs",
+    "frameworks",
+    "controls",
+    "control_results",
+    "compliance_gaps",
+    "evidence_metadata",
+    "score_summaries",
+    "exports",
+    "run_evidence_links",
+];
+
 const MIGRATION_LEDGER_SQL: &str = "
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
@@ -437,6 +449,13 @@ fn apply_packaged_migration(
     connection: &mut Connection,
     migration: &PackagedMigration,
 ) -> Result<(), LocalDatabaseError> {
+    if let Some(operation) = destructive_migration_operation(migration.sql) {
+        return Err(LocalDatabaseError::DestructiveMigration {
+            name: migration.name.to_owned(),
+            operation,
+        });
+    }
+
     let transaction = connection
         .transaction()
         .map_err(LocalDatabaseError::Sqlite)?;
@@ -459,6 +478,46 @@ fn apply_packaged_migration(
     transaction
         .commit()
         .map_err(|source| migration_error(migration, source))
+}
+
+fn destructive_migration_operation(sql: &str) -> Option<String> {
+    sql.split(';').find_map(|statement| {
+        let table_name = dropped_table_name(statement)?;
+        if PERSISTED_CORPUS_TABLES.contains(&table_name.as_str()) {
+            Some(format!("DROP TABLE {table_name}"))
+        } else {
+            None
+        }
+    })
+}
+
+fn dropped_table_name(statement: &str) -> Option<String> {
+    let mut tokens = statement.split_whitespace();
+    let first = tokens.next()?;
+    let second = tokens.next()?;
+    if !first.eq_ignore_ascii_case("DROP") || !second.eq_ignore_ascii_case("TABLE") {
+        return None;
+    }
+
+    let third = tokens.next()?;
+    let table = if third.eq_ignore_ascii_case("IF") {
+        let fourth = tokens.next()?;
+        if !fourth.eq_ignore_ascii_case("EXISTS") {
+            return None;
+        }
+        tokens.next()?
+    } else {
+        third
+    };
+
+    Some(canonical_sql_identifier(table))
+}
+
+fn canonical_sql_identifier(identifier: &str) -> String {
+    let identifier = identifier.rsplit('.').next().unwrap_or(identifier);
+    identifier
+        .trim_matches(|character| matches!(character, '"' | '\'' | '`' | '[' | ']'))
+        .to_ascii_lowercase()
 }
 
 fn migration_error(migration: &PackagedMigration, source: rusqlite::Error) -> LocalDatabaseError {
@@ -485,6 +544,14 @@ pub enum LocalDatabaseError {
         /// Underlying `SQLite` error that failed the migration.
         source: rusqlite::Error,
     },
+    /// A named packaged migration was rejected before execution because it
+    /// contains a destructive operation against persisted corpus data.
+    DestructiveMigration {
+        /// Packaged migration name, for example `0002-drop-evidence-metadata`.
+        name: String,
+        /// Destructive operation detected in the migration SQL.
+        operation: String,
+    },
 }
 
 impl fmt::Display for LocalDatabaseError {
@@ -505,6 +572,12 @@ impl fmt::Display for LocalDatabaseError {
                     "local database migration {name} failed: {source}"
                 )
             }
+            LocalDatabaseError::DestructiveMigration { name, operation } => {
+                write!(
+                    formatter,
+                    "local database migration {name} rejected as destructive: {operation}"
+                )
+            }
         }
     }
 }
@@ -514,7 +587,7 @@ impl Error for LocalDatabaseError {
         match self {
             LocalDatabaseError::Io(error) => Some(error),
             LocalDatabaseError::Sqlite(error) => Some(error),
-            LocalDatabaseError::Schema(_) => None,
+            LocalDatabaseError::Schema(_) | LocalDatabaseError::DestructiveMigration { .. } => None,
             LocalDatabaseError::Migration { source, .. } => Some(source),
         }
     }
