@@ -730,22 +730,10 @@ fn migration_is_applicable(
         && migration.sql == GAP_QUERY_FILTERS_SCHEMA_SQL
     {
         return Ok(schema_column_exists(connection, "compliance_gaps", "id")?
-            && gap_query_filter_columns_are_missing(connection)?);
+            && !schema_column_exists(connection, "compliance_gaps", "run_id")?);
     }
 
     Ok(true)
-}
-
-fn gap_query_filter_columns_are_missing(
-    connection: &Connection,
-) -> Result<bool, LocalDatabaseError> {
-    for column_name in GAP_QUERY_FILTER_COLUMNS {
-        if !schema_column_exists(connection, "compliance_gaps", column_name)? {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
 }
 
 fn apply_packaged_migration(
