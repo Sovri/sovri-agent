@@ -37,6 +37,7 @@ const INITIAL_SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS controls (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS control_results (
       id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
       control_id TEXT NOT NULL,
       rule_id TEXT NOT NULL,
       evidence_id TEXT NOT NULL
@@ -278,11 +279,12 @@ impl LocalDatabase {
             let result_id = control_result_row_id(result.control_id(), result.rule_id());
             transaction
                 .execute(
-                    "INSERT INTO control_results(id, control_id, rule_id, evidence_id)
-                     VALUES (?1, ?2, ?3, ?4)
+                    "INSERT INTO control_results(id, run_id, control_id, rule_id, evidence_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
                      ON CONFLICT(id) DO NOTHING",
                     params![
                         result_id,
+                        run_id,
                         result.control_id(),
                         result.rule_id(),
                         evidence_id
