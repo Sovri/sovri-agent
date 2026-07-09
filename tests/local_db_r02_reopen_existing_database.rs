@@ -73,27 +73,42 @@ fn seed_current_corpus(path: &Path) {
         .expect("evidence digest can be seeded");
 }
 
-fn create_legacy_v1_without_required_columns(path: &Path) {
+fn create_legacy_v1_with_columns(
+    path: &Path,
+    include_framework_version: bool,
+    include_evidence_digest: bool,
+) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("legacy database parent can be created");
     }
+    let framework_version_column = if include_framework_version {
+        ", version TEXT NOT NULL"
+    } else {
+        ""
+    };
+    let evidence_digest_column = if include_evidence_digest {
+        ", digest TEXT NOT NULL"
+    } else {
+        ""
+    };
+    let schema = format!(
+        "
+        CREATE TABLE scan_runs (id TEXT PRIMARY KEY);
+        CREATE TABLE frameworks (id TEXT PRIMARY KEY{framework_version_column});
+        CREATE TABLE evidence_metadata (id TEXT PRIMARY KEY{evidence_digest_column});
+        CREATE TABLE schema_migrations (
+          version INTEGER PRIMARY KEY,
+          name TEXT NOT NULL,
+          applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO schema_migrations(version, name)
+        VALUES (1, '0001-initial');
+        PRAGMA user_version = 1;
+        "
+    );
     let connection = Connection::open(path).expect("legacy database can be created");
     connection
-        .execute_batch(
-            "
-            CREATE TABLE scan_runs (id TEXT PRIMARY KEY);
-            CREATE TABLE frameworks (id TEXT PRIMARY KEY);
-            CREATE TABLE evidence_metadata (id TEXT PRIMARY KEY);
-            CREATE TABLE schema_migrations (
-              version INTEGER PRIMARY KEY,
-              name TEXT NOT NULL,
-              applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            INSERT INTO schema_migrations(version, name)
-            VALUES (1, '0001-initial');
-            PRAGMA user_version = 1;
-            ",
-        )
+        .execute_batch(&schema)
         .expect("legacy version 1 database can be seeded");
 }
 
@@ -167,7 +182,7 @@ fn reopening_a_current_database_validates_the_schema_and_preserves_rows() {
 #[test]
 fn reopening_a_version_1_database_missing_required_columns_is_rejected() {
     let database = TempDatabase::new();
-    create_legacy_v1_without_required_columns(database.path());
+    create_legacy_v1_with_columns(database.path(), false, false);
 
     let Err(error) = LocalDatabase::open(database.path()) else {
         panic!("a version 1 database missing required columns should not open as current");
@@ -177,5 +192,31 @@ fn reopening_a_version_1_database_missing_required_columns_is_rejected() {
     assert!(
         error_message.contains("frameworks.version"),
         "schema validation should name the missing required column, got {error_message:?}"
+    );
+    assert!(
+        error_message.contains("evidence_metadata.digest"),
+        "schema validation should name every missing required column, got {error_message:?}"
+    );
+}
+
+#[test]
+fn reopening_a_version_1_database_missing_evidence_digest_is_rejected() {
+    let database = TempDatabase::new();
+    create_legacy_v1_with_columns(database.path(), true, false);
+
+    let Err(error) = LocalDatabase::open(database.path()) else {
+        panic!(
+            "a version 1 database missing the evidence digest column should not open as current"
+        );
+    };
+
+    let error_message = error.to_string();
+    assert!(
+        error_message.contains("evidence_metadata.digest"),
+        "schema validation should name the missing evidence digest column, got {error_message:?}"
+    );
+    assert!(
+        !error_message.contains("frameworks.version"),
+        "schema validation should not name columns that are present, got {error_message:?}"
     );
 }

@@ -49,8 +49,25 @@ const MIGRATION_LEDGER_SQL: &str = "
     );
 ";
 
-const REQUIRED_SCHEMA_COLUMNS: &[(&str, &str)] =
-    &[("frameworks", "version"), ("evidence_metadata", "digest")];
+const SCHEMA_VERSION_1_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
+    RequiredSchemaColumn::new("frameworks", "version"),
+    RequiredSchemaColumn::new("evidence_metadata", "digest"),
+];
+
+#[derive(Clone, Copy, Debug)]
+struct RequiredSchemaColumn {
+    table_name: &'static str,
+    column_name: &'static str,
+}
+
+impl RequiredSchemaColumn {
+    const fn new(table_name: &'static str, column_name: &'static str) -> Self {
+        RequiredSchemaColumn {
+            table_name,
+            column_name,
+        }
+    }
+}
 
 /// A packaged `SQLite` migration embedded in the agent binary.
 #[derive(Clone, Copy, Debug)]
@@ -178,14 +195,46 @@ fn apply_packaged_migrations(
 }
 
 fn validate_current_schema(connection: &Connection) -> Result<(), LocalDatabaseError> {
-    for (table_name, column_name) in REQUIRED_SCHEMA_COLUMNS {
-        if !schema_column_exists(connection, table_name, column_name)? {
-            return Err(LocalDatabaseError::Schema(format!(
-                "missing required column {table_name}.{column_name}"
-            )));
+    let schema_version = connection_schema_version(connection)?;
+    let mut missing_columns = Vec::new();
+
+    for required_column in required_schema_columns(schema_version) {
+        if !schema_column_exists(
+            connection,
+            required_column.table_name,
+            required_column.column_name,
+        )? {
+            missing_columns.push(format!(
+                "{}.{}",
+                required_column.table_name, required_column.column_name
+            ));
         }
     }
-    Ok(())
+
+    if missing_columns.is_empty() {
+        Ok(())
+    } else {
+        Err(LocalDatabaseError::Schema(format!(
+            "schema version {schema_version} missing required columns: {}",
+            missing_columns.join(", ")
+        )))
+    }
+}
+
+fn required_schema_columns(schema_version: u32) -> &'static [RequiredSchemaColumn] {
+    match schema_version {
+        INITIAL_SCHEMA_VERSION => SCHEMA_VERSION_1_REQUIRED_COLUMNS,
+        _ => &[],
+    }
+}
+
+fn connection_schema_version(connection: &Connection) -> Result<u32, LocalDatabaseError> {
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(LocalDatabaseError::Sqlite)?;
+    u32::try_from(version).map_err(|_| {
+        LocalDatabaseError::Schema(format!("schema version {version} cannot be negative"))
+    })
 }
 
 fn schema_column_exists(
