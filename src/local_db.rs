@@ -650,7 +650,10 @@ impl LocalDatabase {
             return Ok(Some(metadata));
         }
         let Some(record) = index.resolve_id(metadata.id()) else {
-            return Ok(None);
+            return Err(LocalDatabaseError::MissingEvidence {
+                evidence_id: metadata.id().to_owned(),
+                expected: metadata.digest().to_owned(),
+            });
         };
         Err(LocalDatabaseError::IntegrityMismatch {
             evidence_id: metadata.id().to_owned(),
@@ -1357,6 +1360,14 @@ pub enum LocalDatabaseError {
         /// Digest resolved from the content-addressed store.
         actual: String,
     },
+    /// Linked evidence metadata has an expected digest, but the backing store
+    /// has no record for its stable id.
+    MissingEvidence {
+        /// Stable evidence id that is absent from the backing store.
+        evidence_id: String,
+        /// Digest persisted by `SQLite`.
+        expected: String,
+    },
     /// A named packaged migration failed and its transaction was rolled back.
     Migration {
         /// Packaged migration name, for example `0001-initial`.
@@ -1367,17 +1378,22 @@ pub enum LocalDatabaseError {
 }
 
 impl LocalDatabaseError {
-    /// Whether this error reports a linked-evidence integrity mismatch.
+    /// Whether this error reports a linked-evidence integrity failure.
     #[must_use]
     pub fn is_integrity_error(&self) -> bool {
-        matches!(self, LocalDatabaseError::IntegrityMismatch { .. })
+        matches!(
+            self,
+            LocalDatabaseError::IntegrityMismatch { .. }
+                | LocalDatabaseError::MissingEvidence { .. }
+        )
     }
 
-    /// Returns the expected digest for a linked-evidence integrity mismatch.
+    /// Returns the expected digest for a linked-evidence integrity failure.
     #[must_use]
     pub fn expected_digest(&self) -> Option<&str> {
         match self {
-            LocalDatabaseError::IntegrityMismatch { expected, .. } => Some(expected),
+            LocalDatabaseError::IntegrityMismatch { expected, .. }
+            | LocalDatabaseError::MissingEvidence { expected, .. } => Some(expected),
             _ => None,
         }
     }
@@ -1412,6 +1428,13 @@ impl fmt::Display for LocalDatabaseError {
                 formatter,
                 "linked evidence {evidence_id} integrity mismatch: expected {expected}, actual {actual}"
             ),
+            LocalDatabaseError::MissingEvidence {
+                evidence_id,
+                expected,
+            } => write!(
+                formatter,
+                "linked evidence {evidence_id} is missing: expected {expected}"
+            ),
             LocalDatabaseError::Migration { name, source } => {
                 write!(
                     formatter,
@@ -1427,7 +1450,9 @@ impl Error for LocalDatabaseError {
         match self {
             LocalDatabaseError::Io(error) => Some(error),
             LocalDatabaseError::Sqlite(error) => Some(error),
-            LocalDatabaseError::Schema(_) | LocalDatabaseError::IntegrityMismatch { .. } => None,
+            LocalDatabaseError::Schema(_)
+            | LocalDatabaseError::IntegrityMismatch { .. }
+            | LocalDatabaseError::MissingEvidence { .. } => None,
             LocalDatabaseError::Migration { source, .. } => Some(source),
         }
     }
