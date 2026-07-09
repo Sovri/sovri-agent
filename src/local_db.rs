@@ -275,7 +275,7 @@ impl LocalDatabase {
                 .first()
                 .map(String::as_str)
                 .unwrap_or_default();
-            let result_id = format!("{}/{}", result.control_id(), result.rule_id());
+            let result_id = control_result_row_id(result.control_id(), result.rule_id());
             transaction
                 .execute(
                     "INSERT INTO control_results(id, control_id, rule_id, evidence_id)
@@ -303,6 +303,17 @@ impl LocalDatabase {
 
         transaction.commit().map_err(LocalDatabaseError::Sqlite)
     }
+}
+
+fn control_result_row_id(control_id: &str, rule_id: &str) -> String {
+    let control_id_len = control_id.len().to_string();
+    let mut id = String::with_capacity(control_id_len.len() + control_id.len() + rule_id.len() + 2);
+    id.push_str(&control_id_len);
+    id.push(':');
+    id.push_str(control_id);
+    id.push(':');
+    id.push_str(rule_id);
+    id
 }
 
 fn apply_packaged_migrations(
