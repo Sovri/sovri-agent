@@ -122,6 +122,15 @@ const RUN_EVIDENCE_INDEX_SCHEMA_SQL: &str = "
       evidence_id TEXT NOT NULL,
       PRIMARY KEY (run_id, evidence_id)
     );
+    INSERT OR IGNORE INTO run_evidence_links(run_id, evidence_id)
+    SELECT DISTINCT run_id, evidence_id
+    FROM control_results
+    WHERE run_id <> '' AND evidence_id <> '';
+    INSERT OR IGNORE INTO run_evidence_links(run_id, evidence_id)
+    SELECT scan_runs.id, evidence_metadata.id
+    FROM scan_runs
+    CROSS JOIN evidence_metadata
+    WHERE (SELECT COUNT(*) FROM scan_runs) = 1;
 ";
 
 const MIGRATION_LEDGER_SQL: &str = "
@@ -1147,11 +1156,18 @@ fn migration_is_applicable(
         && migration.sql == RUN_EVIDENCE_INDEX_SCHEMA_SQL
     {
         let schema_version = connection_schema_version(connection)?;
+        let link_columns_missing =
+            !schema_column_exists(connection, "run_evidence_links", "run_id")?
+                || !schema_column_exists(connection, "run_evidence_links", "evidence_id")?;
+        let can_backfill = schema_column_exists(connection, "scan_runs", "id")?
+            && schema_column_exists(connection, "evidence_metadata", "id")?
+            && schema_column_exists(connection, "control_results", "run_id")?
+            && schema_column_exists(connection, "control_results", "evidence_id")?;
         return Ok((INITIAL_SCHEMA_VERSION..RUN_EVIDENCE_INDEX_SCHEMA_VERSION)
             .contains(&schema_version)
             && migration_is_applied(connection, schema_version)?
-            && (!schema_column_exists(connection, "run_evidence_links", "run_id")?
-                || !schema_column_exists(connection, "run_evidence_links", "evidence_id")?));
+            && can_backfill
+            && (schema_version > INITIAL_SCHEMA_VERSION || link_columns_missing));
     }
 
     Ok(true)
@@ -1427,14 +1443,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_evidence_index_migration_repairs_a_recognized_v5_database() {
+    fn run_evidence_index_migration_backfills_a_recognized_v5_database() {
         let mut connection = Connection::open_in_memory().expect("open in-memory SQLite");
         connection
             .execute_batch(INITIAL_SCHEMA_SQL)
             .expect("create the current table shapes");
-        connection
-            .execute("DROP TABLE run_evidence_links", [])
-            .expect("remove the run-evidence index");
         connection
             .execute_batch(
                 "CREATE TABLE schema_migrations (
@@ -1447,6 +1460,16 @@ mod tests {
                    (3, '0003-gap-query-filters'),
                    (4, '0004-evidence-locators'),
                    (5, '0005-result-query-filters');
+                 INSERT INTO scan_runs(id) VALUES ('existing-run');
+                 INSERT INTO evidence_metadata(id, digest, locator) VALUES
+                   ('result-evidence', 'sha256:result', 'result.locator'),
+                   ('standalone-evidence', 'sha256:standalone', 'standalone.locator');
+                 INSERT INTO control_results(
+                   id, run_id, control_id, rule_id, status, evidence_id
+                 ) VALUES (
+                   'existing-result', 'existing-run', 'control', 'rule', 'FAIL',
+                   'result-evidence'
+                 );
                  PRAGMA user_version = 5;",
             )
             .expect("record a recognized v5 schema");
@@ -1457,6 +1480,24 @@ mod tests {
         assert_eq!(connection_schema_version(&connection).unwrap(), 6);
         assert!(schema_column_exists(&connection, "run_evidence_links", "run_id").unwrap());
         assert!(schema_column_exists(&connection, "run_evidence_links", "evidence_id").unwrap());
+        let links: Vec<(String, String)> = connection
+            .prepare(
+                "SELECT run_id, evidence_id
+                 FROM run_evidence_links
+                 ORDER BY evidence_id",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            links,
+            vec![
+                ("existing-run".to_owned(), "result-evidence".to_owned()),
+                ("existing-run".to_owned(), "standalone-evidence".to_owned()),
+            ]
+        );
     }
 
     #[test]
