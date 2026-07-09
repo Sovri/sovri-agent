@@ -193,18 +193,16 @@ fn schema_column_exists(
     table_name: &str,
     column_name: &str,
 ) -> Result<bool, LocalDatabaseError> {
-    let mut statement = connection
-        .prepare(&format!("PRAGMA table_info({table_name})"))
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM pragma_table_info(?1)
+             WHERE name = ?2",
+            params![table_name, column_name],
+            |row| row.get(0),
+        )
         .map_err(LocalDatabaseError::Sqlite)?;
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(LocalDatabaseError::Sqlite)?;
-    for column in columns {
-        if column.map_err(LocalDatabaseError::Sqlite)? == column_name {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(count == 1)
 }
 
 fn migration_is_applied(connection: &Connection, version: u32) -> Result<bool, LocalDatabaseError> {
