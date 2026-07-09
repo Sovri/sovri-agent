@@ -8,11 +8,13 @@
 //! evidence bytes; this module stores only local `SQLite` rows and integrity
 //! metadata.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::path::Path;
 
+use crate::matrix::Corpus;
 use rusqlite::{params, Connection};
 
 /// The schema version created by the first packaged migration.
@@ -221,6 +223,57 @@ impl LocalDatabase {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(LocalDatabaseError::Sqlite)
     }
+
+    /// Writes a completed scan corpus into the local database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the corpus is incomplete or `SQLite` cannot start or
+    /// finish the write transaction.
+    pub fn write_completed_corpus(&mut self, corpus: &Corpus) -> Result<(), LocalDatabaseError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(LocalDatabaseError::Sqlite)?;
+        validate_completed_corpus(corpus)?;
+        transaction.commit().map_err(LocalDatabaseError::Sqlite)
+    }
+}
+
+fn validate_completed_corpus(corpus: &Corpus) -> Result<(), LocalDatabaseError> {
+    let framework_metadata = corpus
+        .frameworks()
+        .into_iter()
+        .map(|(framework_id, _version, _source_url)| framework_id)
+        .collect::<BTreeSet<_>>();
+    let mut missing_frameworks = BTreeSet::new();
+
+    for (framework_id, _control_id, _severity, _reference) in corpus.controls() {
+        if !framework_metadata.contains(framework_id) {
+            missing_frameworks.insert(framework_id);
+        }
+    }
+
+    for (framework_id, _result) in corpus.scoped_results() {
+        let Some(framework_id) = framework_id else {
+            continue;
+        };
+        if !framework_metadata.contains(framework_id) {
+            missing_frameworks.insert(framework_id);
+        }
+    }
+
+    if missing_frameworks.is_empty() {
+        return Ok(());
+    }
+
+    let missing_frameworks = missing_frameworks
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(LocalDatabaseError::Schema(format!(
+        "completed corpus missing framework metadata for {missing_frameworks}"
+    )))
 }
 
 fn apply_packaged_migrations(
