@@ -137,7 +137,7 @@ impl LocalDatabase {
         }
         let mut connection = Connection::open(path).map_err(LocalDatabaseError::Sqlite)?;
         apply_packaged_migrations(&mut connection, migrations)?;
-        validate_current_schema(&connection)?;
+        validate_current_schema(&connection, migrations)?;
         Ok(LocalDatabase { connection })
     }
 
@@ -214,11 +214,14 @@ fn apply_packaged_migrations(
     Ok(())
 }
 
-fn validate_current_schema(connection: &Connection) -> Result<(), LocalDatabaseError> {
+fn validate_current_schema(
+    connection: &Connection,
+    migrations: &[PackagedMigration],
+) -> Result<(), LocalDatabaseError> {
     let schema_version = connection_schema_version(connection)?;
     let mut missing_columns = Vec::new();
 
-    for required_column in required_schema_columns(schema_version)? {
+    for required_column in required_schema_columns(schema_version, migrations)? {
         if !schema_column_exists(
             connection,
             required_column.table_name,
@@ -235,16 +238,20 @@ fn validate_current_schema(connection: &Connection) -> Result<(), LocalDatabaseE
         Ok(())
     } else {
         Err(LocalDatabaseError::Schema(format!(
-            "schema version {schema_version} missing required columns: {}",
+            "schema version {schema_version} failed validation; missing {} required column(s): {}",
+            missing_columns.len(),
             missing_columns.join(", ")
         )))
     }
 }
 
-/// Returns the column requirements for schema versions this binary can safely
-/// interpret. Unknown versions are rejected instead of being treated as current.
+/// Returns the column requirements for the schema version this database reports.
+/// Exact known versions use version-specific requirements. Caller-supplied
+/// newer migrations retain the latest known requirements, while versions not
+/// produced by the supplied migration stack are rejected.
 fn required_schema_columns(
     schema_version: u32,
+    migrations: &[PackagedMigration],
 ) -> Result<&'static [RequiredSchemaColumn], LocalDatabaseError> {
     if schema_version == 0 {
         return Err(LocalDatabaseError::Schema(
@@ -252,24 +259,52 @@ fn required_schema_columns(
         ));
     }
 
-    SUPPORTED_SCHEMA_REQUIREMENTS
+    if let Some(requirements) = SUPPORTED_SCHEMA_REQUIREMENTS
         .iter()
         .find(|requirements| requirements.version == schema_version)
-        .map(|requirements| requirements.required_columns)
-        .ok_or_else(|| {
-            LocalDatabaseError::Schema(format!(
-                "unsupported schema version {schema_version}; this agent supports up to {}",
-                max_supported_schema_version()
-            ))
-        })
+    {
+        return Ok(requirements.required_columns);
+    }
+
+    let latest_requirements = latest_supported_schema_requirements();
+    if schema_version > latest_requirements.version
+        && migrations
+            .iter()
+            .any(|migration| migration.version == schema_version)
+    {
+        return Ok(latest_requirements.required_columns);
+    }
+
+    Err(LocalDatabaseError::Schema(format!(
+        "unsupported schema version {schema_version}; supplied packaged migration versions: {}",
+        packaged_migration_versions(migrations)
+    )))
 }
 
-fn max_supported_schema_version() -> u32 {
+fn latest_supported_schema_requirements() -> &'static SchemaRequirements {
     SUPPORTED_SCHEMA_REQUIREMENTS
         .iter()
-        .map(|requirements| requirements.version)
-        .max()
-        .unwrap_or(0)
+        .max_by_key(|requirements| requirements.version)
+        .expect("at least one local database schema requirement is packaged")
+}
+
+fn packaged_migration_versions(migrations: &[PackagedMigration]) -> String {
+    let mut versions = migrations
+        .iter()
+        .map(|migration| migration.version)
+        .collect::<Vec<_>>();
+    versions.sort_unstable();
+    versions.dedup();
+
+    if versions.is_empty() {
+        return "none".to_owned();
+    }
+
+    versions
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn connection_schema_version(connection: &Connection) -> Result<u32, LocalDatabaseError> {

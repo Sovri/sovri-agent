@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
-use sovri_agent::local_db::LocalDatabase;
+use sovri_agent::local_db::{LocalDatabase, PackagedMigration};
 
 const RUN_ID: &str = "shopfront-2026-06-24";
 const FRAMEWORK_ID: &str = "gdpr-eprivacy";
@@ -18,6 +18,27 @@ const FRAMEWORK_VERSION: &str = "2016-679";
 const EVIDENCE_ID: &str = "ev-0001";
 const EVIDENCE_DIGEST: &str =
     "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+const CUSTOM_INITIAL_SCHEMA_SQL: &str = "
+    CREATE TABLE scan_runs (id TEXT PRIMARY KEY);
+    CREATE TABLE frameworks (
+      id TEXT PRIMARY KEY,
+      version TEXT NOT NULL
+    );
+    CREATE TABLE evidence_metadata (
+      id TEXT PRIMARY KEY,
+      digest TEXT NOT NULL
+    );
+";
+
+const CUSTOM_SECOND_SCHEMA_SQL: &str = "
+    CREATE TABLE custom_migration_marker (id TEXT PRIMARY KEY);
+";
+
+const CUSTOM_VERSION_2_MIGRATIONS: &[PackagedMigration] = &[
+    PackagedMigration::new(1, "0001-custom-initial", CUSTOM_INITIAL_SCHEMA_SQL),
+    PackagedMigration::new(2, "0002-custom-marker", CUSTOM_SECOND_SCHEMA_SQL),
+];
 
 struct TempDatabase {
     root: PathBuf,
@@ -223,6 +244,28 @@ fn reopening_a_version_1_database_missing_evidence_digest_is_rejected() {
 }
 
 #[test]
+fn reopening_a_version_1_database_missing_framework_version_is_rejected() {
+    let database = TempDatabase::new();
+    create_database_with_schema_version(database.path(), 1, false, true);
+
+    let Err(error) = LocalDatabase::open(database.path()) else {
+        panic!(
+            "a version 1 database missing the framework version column should not open as current"
+        );
+    };
+
+    let error_message = error.to_string();
+    assert!(
+        error_message.contains("frameworks.version"),
+        "schema validation should name the missing framework version column, got {error_message:?}"
+    );
+    assert!(
+        !error_message.contains("evidence_metadata.digest"),
+        "schema validation should not name columns that are present, got {error_message:?}"
+    );
+}
+
+#[test]
 fn reopening_a_future_schema_version_is_rejected() {
     let database = TempDatabase::new();
     create_database_with_schema_version(database.path(), 2, true, true);
@@ -239,6 +282,24 @@ fn reopening_a_future_schema_version_is_rejected() {
     assert!(
         !error_message.contains("missing required columns"),
         "a future-version failure should not be reported as a missing-column failure, got {error_message:?}"
+    );
+}
+
+#[test]
+fn supplied_packaged_migrations_past_version_1_can_open() {
+    let database = TempDatabase::new();
+
+    let opened =
+        LocalDatabase::open_with_packaged_migrations(database.path(), CUSTOM_VERSION_2_MIGRATIONS)
+            .expect("caller-supplied version 2 migrations can open");
+
+    assert_eq!(opened.schema_version(), 2);
+    assert!(
+        opened
+            .schema_tables()
+            .expect("schema tables can be inspected")
+            .contains(&"custom_migration_marker".to_owned()),
+        "the caller-supplied second migration was applied"
     );
 }
 
