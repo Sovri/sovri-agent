@@ -22,6 +22,7 @@ use sovri_agent::matrix::{Classification, Corpus};
 use sovri_sdk::{ControlResult, Status};
 
 const SHOPFRONT_RUN: &str = "shopfront-2026-06-24";
+const SHOPFRONT_REPLAY_RUN: &str = "shopfront-replay-2026-06-24";
 const MIXED_RUN: &str = "mixed-2026-06-24";
 const CLASSIFIED_EVIDENCE_RUN: &str = "classified-evidence-2026-06-24";
 const STORED_RECORD_RUN: &str = "stored-record-2026-06-24";
@@ -245,6 +246,25 @@ fn writing_a_completed_corpus_upgrades_legacy_section_tables() {
             .len(),
         1
     );
+
+    local_database
+        .write_completed_corpus(&consent_corpus().with_run_id(SHOPFRONT_REPLAY_RUN))
+        .expect("a second run with overlapping ids is written to upgraded section tables");
+
+    assert_eq!(
+        local_database
+            .framework_records_for_run(SHOPFRONT_RUN)
+            .expect("the first run's framework records can still be retrieved")
+            .len(),
+        1
+    );
+    assert_eq!(
+        local_database
+            .framework_records_for_run(SHOPFRONT_REPLAY_RUN)
+            .expect("the second run's framework records can be retrieved")
+            .len(),
+        1
+    );
     assert_legacy_rows_are_preserved(database.path());
 }
 
@@ -461,6 +481,7 @@ fn create_legacy_completed_corpus_schema(path: &Path) {
             CREATE TABLE compliance_gaps (id TEXT PRIMARY KEY);
             CREATE TABLE evidence_metadata (
               id TEXT PRIMARY KEY,
+              run_id TEXT NOT NULL,
               digest TEXT NOT NULL
             );
             CREATE TABLE score_summaries (id TEXT PRIMARY KEY);
@@ -475,8 +496,8 @@ fn create_legacy_completed_corpus_schema(path: &Path) {
             INSERT INTO scan_runs(id) VALUES ('legacy-run');
             INSERT INTO frameworks(id, version) VALUES ('legacy-framework', 'legacy-version');
             INSERT INTO controls(id) VALUES ('legacy-control');
-            INSERT INTO evidence_metadata(id, digest)
-            VALUES ('legacy-evidence', 'sha256:legacy');
+            INSERT INTO evidence_metadata(id, run_id, digest)
+            VALUES ('legacy-evidence', 'legacy-run', 'sha256:legacy');
             PRAGMA user_version = 1;
             ",
         )
@@ -504,6 +525,19 @@ fn assert_legacy_rows_are_preserved(path: &Path) {
         legacy_row_count(&connection, "evidence_metadata", "legacy-evidence"),
         1,
         "legacy evidence remains present"
+    );
+    let legacy_link_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM run_evidence_links
+             WHERE run_id = 'legacy-run' AND evidence_id = 'legacy-evidence'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("legacy evidence link can be inspected");
+    assert_eq!(
+        legacy_link_count, 1,
+        "legacy evidence remains linked to its run"
     );
 }
 

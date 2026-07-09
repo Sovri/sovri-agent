@@ -475,42 +475,6 @@ fn write_completed_corpus_rows(
 }
 
 fn ensure_completed_corpus_schema(connection: &Connection) -> Result<(), LocalDatabaseError> {
-    add_column_if_missing(
-        connection,
-        "scan_runs",
-        "executed_at",
-        "ALTER TABLE scan_runs ADD COLUMN executed_at TEXT NOT NULL DEFAULT ''",
-    )?;
-    add_column_if_missing(
-        connection,
-        "frameworks",
-        "run_id",
-        "ALTER TABLE frameworks ADD COLUMN run_id TEXT NOT NULL DEFAULT ''",
-    )?;
-    add_column_if_missing(
-        connection,
-        "controls",
-        "run_id",
-        "ALTER TABLE controls ADD COLUMN run_id TEXT NOT NULL DEFAULT ''",
-    )?;
-    add_column_if_missing(
-        connection,
-        "control_results",
-        "run_id",
-        "ALTER TABLE control_results ADD COLUMN run_id TEXT NOT NULL DEFAULT ''",
-    )?;
-    add_column_if_missing(
-        connection,
-        "compliance_gaps",
-        "run_id",
-        "ALTER TABLE compliance_gaps ADD COLUMN run_id TEXT NOT NULL DEFAULT ''",
-    )?;
-    add_column_if_missing(
-        connection,
-        "score_summaries",
-        "run_id",
-        "ALTER TABLE score_summaries ADD COLUMN run_id TEXT NOT NULL DEFAULT ''",
-    )?;
     connection
         .execute(
             "CREATE TABLE IF NOT EXISTS run_evidence_links (
@@ -521,20 +485,205 @@ fn ensure_completed_corpus_schema(connection: &Connection) -> Result<(), LocalDa
             [],
         )
         .map_err(LocalDatabaseError::Sqlite)?;
+    rebuild_scan_runs_table(connection)?;
+    rebuild_frameworks_table(connection)?;
+    rebuild_run_scoped_id_table(
+        connection,
+        "ALTER TABLE controls RENAME TO controls_completed_corpus_upgrade",
+        "CREATE TABLE controls (
+          run_id TEXT NOT NULL DEFAULT '',
+          id TEXT NOT NULL,
+          PRIMARY KEY (run_id, id)
+        )",
+        "INSERT OR IGNORE INTO controls(run_id, id)
+         SELECT run_id, id FROM controls_completed_corpus_upgrade",
+        "INSERT OR IGNORE INTO controls(run_id, id)
+         SELECT '', id FROM controls_completed_corpus_upgrade",
+        "DROP TABLE controls_completed_corpus_upgrade",
+        "controls",
+    )?;
+    rebuild_run_scoped_id_table(
+        connection,
+        "ALTER TABLE control_results RENAME TO control_results_completed_corpus_upgrade",
+        "CREATE TABLE control_results (
+          run_id TEXT NOT NULL DEFAULT '',
+          id TEXT NOT NULL,
+          PRIMARY KEY (run_id, id)
+        )",
+        "INSERT OR IGNORE INTO control_results(run_id, id)
+         SELECT run_id, id FROM control_results_completed_corpus_upgrade",
+        "INSERT OR IGNORE INTO control_results(run_id, id)
+         SELECT '', id FROM control_results_completed_corpus_upgrade",
+        "DROP TABLE control_results_completed_corpus_upgrade",
+        "control_results",
+    )?;
+    rebuild_run_scoped_id_table(
+        connection,
+        "ALTER TABLE compliance_gaps RENAME TO compliance_gaps_completed_corpus_upgrade",
+        "CREATE TABLE compliance_gaps (
+          run_id TEXT NOT NULL DEFAULT '',
+          id TEXT NOT NULL,
+          PRIMARY KEY (run_id, id)
+        )",
+        "INSERT OR IGNORE INTO compliance_gaps(run_id, id)
+         SELECT run_id, id FROM compliance_gaps_completed_corpus_upgrade",
+        "INSERT OR IGNORE INTO compliance_gaps(run_id, id)
+         SELECT '', id FROM compliance_gaps_completed_corpus_upgrade",
+        "DROP TABLE compliance_gaps_completed_corpus_upgrade",
+        "compliance_gaps",
+    )?;
+    rebuild_evidence_metadata_table(connection)?;
+    rebuild_run_scoped_id_table(
+        connection,
+        "ALTER TABLE score_summaries RENAME TO score_summaries_completed_corpus_upgrade",
+        "CREATE TABLE score_summaries (
+          run_id TEXT NOT NULL DEFAULT '',
+          id TEXT NOT NULL,
+          PRIMARY KEY (run_id, id)
+        )",
+        "INSERT OR IGNORE INTO score_summaries(run_id, id)
+         SELECT run_id, id FROM score_summaries_completed_corpus_upgrade",
+        "INSERT OR IGNORE INTO score_summaries(run_id, id)
+         SELECT '', id FROM score_summaries_completed_corpus_upgrade",
+        "DROP TABLE score_summaries_completed_corpus_upgrade",
+        "score_summaries",
+    )?;
     Ok(())
 }
 
-fn add_column_if_missing(
+fn rebuild_scan_runs_table(connection: &Connection) -> Result<(), LocalDatabaseError> {
+    let had_executed_at = schema_column_exists(connection, "scan_runs", "executed_at")?;
+    connection
+        .execute(
+            "ALTER TABLE scan_runs RENAME TO scan_runs_completed_corpus_upgrade",
+            [],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    connection
+        .execute(
+            "CREATE TABLE scan_runs (
+              id TEXT PRIMARY KEY,
+              executed_at TEXT NOT NULL DEFAULT ''
+            )",
+            [],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    let copy_sql = if had_executed_at {
+        "INSERT OR REPLACE INTO scan_runs(id, executed_at)
+         SELECT id, executed_at FROM scan_runs_completed_corpus_upgrade"
+    } else {
+        "INSERT OR REPLACE INTO scan_runs(id, executed_at)
+         SELECT id, '' FROM scan_runs_completed_corpus_upgrade"
+    };
+    connection
+        .execute(copy_sql, [])
+        .map_err(LocalDatabaseError::Sqlite)?;
+    connection
+        .execute("DROP TABLE scan_runs_completed_corpus_upgrade", [])
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(())
+}
+
+fn rebuild_frameworks_table(connection: &Connection) -> Result<(), LocalDatabaseError> {
+    let had_run_id = schema_column_exists(connection, "frameworks", "run_id")?;
+    connection
+        .execute(
+            "ALTER TABLE frameworks RENAME TO frameworks_completed_corpus_upgrade",
+            [],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    connection
+        .execute(
+            "CREATE TABLE frameworks (
+              run_id TEXT NOT NULL DEFAULT '',
+              id TEXT NOT NULL,
+              version TEXT NOT NULL,
+              PRIMARY KEY (run_id, id)
+            )",
+            [],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    let copy_sql = if had_run_id {
+        "INSERT OR IGNORE INTO frameworks(run_id, id, version)
+         SELECT run_id, id, version FROM frameworks_completed_corpus_upgrade"
+    } else {
+        "INSERT OR IGNORE INTO frameworks(run_id, id, version)
+         SELECT '', id, version FROM frameworks_completed_corpus_upgrade"
+    };
+    connection
+        .execute(copy_sql, [])
+        .map_err(LocalDatabaseError::Sqlite)?;
+    connection
+        .execute("DROP TABLE frameworks_completed_corpus_upgrade", [])
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(())
+}
+
+fn rebuild_run_scoped_id_table(
     connection: &Connection,
+    rename_sql: &str,
+    create_sql: &str,
+    copy_with_run_id_sql: &str,
+    copy_without_run_id_sql: &str,
+    drop_sql: &str,
     table_name: &str,
-    column_name: &str,
-    alter_sql: &str,
 ) -> Result<(), LocalDatabaseError> {
-    if schema_column_exists(connection, table_name, column_name)? {
-        return Ok(());
+    let had_run_id = schema_column_exists(connection, table_name, "run_id")?;
+    connection
+        .execute(rename_sql, [])
+        .map_err(LocalDatabaseError::Sqlite)?;
+    connection
+        .execute(create_sql, [])
+        .map_err(LocalDatabaseError::Sqlite)?;
+    let copy_sql = if had_run_id {
+        copy_with_run_id_sql
+    } else {
+        copy_without_run_id_sql
+    };
+    connection
+        .execute(copy_sql, [])
+        .map_err(LocalDatabaseError::Sqlite)?;
+    connection
+        .execute(drop_sql, [])
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(())
+}
+
+fn rebuild_evidence_metadata_table(connection: &Connection) -> Result<(), LocalDatabaseError> {
+    let had_run_id = schema_column_exists(connection, "evidence_metadata", "run_id")?;
+    connection
+        .execute(
+            "ALTER TABLE evidence_metadata RENAME TO evidence_metadata_completed_corpus_upgrade",
+            [],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    connection
+        .execute(
+            "CREATE TABLE evidence_metadata (
+              id TEXT PRIMARY KEY,
+              digest TEXT NOT NULL
+            )",
+            [],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO evidence_metadata(id, digest)
+             SELECT id, digest FROM evidence_metadata_completed_corpus_upgrade",
+            [],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    if had_run_id {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO run_evidence_links(run_id, evidence_id)
+                 SELECT run_id, id FROM evidence_metadata_completed_corpus_upgrade",
+                [],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
     }
     connection
-        .execute(alter_sql, [])
+        .execute("DROP TABLE evidence_metadata_completed_corpus_upgrade", [])
         .map_err(LocalDatabaseError::Sqlite)?;
     Ok(())
 }
