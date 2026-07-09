@@ -587,6 +587,11 @@ impl Corpus {
 #[must_use]
 pub fn export(corpus: &Corpus) -> String {
     let created = xml_escape(&corpus.executed_at);
+    let run_property = if corpus.run_id.is_empty() {
+        String::new()
+    } else {
+        format!("<Title>{}</Title>\n", xml_escape(&corpus.run_id))
+    };
     let mut worksheets = String::new();
     for name in WORKSHEET_NAMES {
         worksheets.push_str("<Worksheet ss:Name=\"");
@@ -620,6 +625,7 @@ pub fn export(corpus: &Corpus) -> String {
          <Workbook xmlns=\"{SPREADSHEET_NAMESPACE}\" xmlns:ss=\"{SPREADSHEET_NAMESPACE}\">\n\
          <DocumentProperties xmlns=\"{OFFICE_NAMESPACE}\">\n\
          <Created>{created}</Created>\n\
+         {run_property}\
          </DocumentProperties>\n\
          {worksheets}\
          </Workbook>\n"

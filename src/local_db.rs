@@ -14,7 +14,7 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use crate::matrix::Corpus;
+use crate::matrix::{Classification, Corpus};
 use rusqlite::{params, Connection};
 use sovri_sdk::{ControlResult, EvidenceStore, Status};
 
@@ -681,6 +681,126 @@ impl LocalDatabase {
             .map_err(LocalDatabaseError::Sqlite)?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(LocalDatabaseError::Sqlite)
+    }
+
+    /// Exports one persisted run through an existing artifact format.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the run is missing, `SQLite` metadata cannot be read,
+    /// the format is unsupported, or the PDF renderer cannot write the artifact.
+    pub fn export_run(
+        &self,
+        format: &str,
+        run_id: &str,
+        signing_seed: &[u8; 32],
+    ) -> Result<Vec<u8>, LocalDatabaseError> {
+        let corpus = self.reconstruct_export_corpus(run_id)?;
+        match format {
+            "PDF" => crate::report::export(&corpus).map_err(LocalDatabaseError::Export),
+            "SpreadsheetML" => Ok(crate::matrix::export(&corpus).into_bytes()),
+            "signed JSON" => Ok(crate::signed_json::export(&corpus, signing_seed).into_bytes()),
+            other => Err(LocalDatabaseError::UnsupportedExportFormat(
+                other.to_owned(),
+            )),
+        }
+    }
+
+    fn reconstruct_export_corpus(&self, run_id: &str) -> Result<Corpus, LocalDatabaseError> {
+        let run_exists = self
+            .connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM scan_runs WHERE id = ?1)",
+                params![run_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        if !run_exists {
+            return Err(LocalDatabaseError::MissingRun(run_id.to_owned()));
+        }
+
+        let frameworks = {
+            let mut statement = self
+                .connection
+                .prepare("SELECT id, version FROM frameworks ORDER BY id")
+                .map_err(LocalDatabaseError::Sqlite)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(LocalDatabaseError::Sqlite)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(LocalDatabaseError::Sqlite)?
+        };
+        let control_framework = frameworks
+            .first()
+            .map(|(id, _)| id.as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let mut corpus = Corpus::new("").with_run_id(run_id);
+        for (id, version) in frameworks {
+            corpus = corpus.with_framework(id, version, "");
+        }
+
+        let controls = {
+            let mut statement = self
+                .connection
+                .prepare("SELECT id FROM controls ORDER BY id")
+                .map_err(LocalDatabaseError::Sqlite)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(LocalDatabaseError::Sqlite)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(LocalDatabaseError::Sqlite)?
+        };
+        for control_id in controls {
+            corpus = corpus.with_control(&control_framework, control_id, "", "", 0, "");
+        }
+
+        let evidence = {
+            let mut statement = self
+                .connection
+                .prepare(
+                    "SELECT evidence_metadata.id,
+                            evidence_metadata.digest,
+                            evidence_metadata.locator,
+                            evidence_metadata.classification
+                     FROM evidence_metadata
+                     INNER JOIN run_evidence_links
+                       ON run_evidence_links.evidence_id = evidence_metadata.id
+                     WHERE run_evidence_links.run_id = ?1
+                     ORDER BY evidence_metadata.id",
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+            let rows = statement
+                .query_map(params![run_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
+                .map_err(LocalDatabaseError::Sqlite)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(LocalDatabaseError::Sqlite)?
+        };
+        for (id, digest, locator, classification) in evidence {
+            corpus = match classification.as_str() {
+                "Unclassified" => corpus.with_evidence_digest(id, "", locator, digest),
+                "Sensitive" => corpus.with_classified_evidence(
+                    id,
+                    "",
+                    locator,
+                    Classification::Sensitive,
+                    digest,
+                ),
+                _ => {
+                    corpus.with_classified_evidence(id, "", locator, Classification::Secret, digest)
+                }
+            };
+        }
+        Ok(corpus)
     }
 
     /// Reads linked evidence metadata when its expected digest resolves to the
@@ -1450,6 +1570,8 @@ pub enum LocalDatabaseError {
     Io(std::io::Error),
     /// `SQLite` failed while opening, migrating, or reading the database.
     Sqlite(rusqlite::Error),
+    /// A PDF artifact could not be rendered into memory.
+    Export(std::io::Error),
     /// The database reports a current schema version but is missing required
     /// current-schema objects.
     Schema(String),
@@ -1471,6 +1593,10 @@ pub enum LocalDatabaseError {
         /// Digest persisted by `SQLite`.
         expected: String,
     },
+    /// The requested run does not exist in the local database.
+    MissingRun(String),
+    /// The requested export format is not one of the existing artifact paths.
+    UnsupportedExportFormat(String),
     /// A named packaged migration failed and its transaction was rolled back.
     Migration {
         /// Packaged migration name, for example `0001-initial`.
@@ -1520,6 +1646,9 @@ impl fmt::Display for LocalDatabaseError {
             LocalDatabaseError::Sqlite(error) => {
                 write!(formatter, "local database sqlite error: {error}")
             }
+            LocalDatabaseError::Export(error) => {
+                write!(formatter, "local database export error: {error}")
+            }
             LocalDatabaseError::Schema(error) => {
                 write!(formatter, "local database schema error: {error}")
             }
@@ -1538,6 +1667,12 @@ impl fmt::Display for LocalDatabaseError {
                 formatter,
                 "linked evidence {evidence_id} is missing: expected {expected}"
             ),
+            LocalDatabaseError::MissingRun(run_id) => {
+                write!(formatter, "local database run {run_id} is missing")
+            }
+            LocalDatabaseError::UnsupportedExportFormat(format) => {
+                write!(formatter, "unsupported local database export format: {format}")
+            }
             LocalDatabaseError::Migration { name, source } => {
                 write!(
                     formatter,
@@ -1551,11 +1686,13 @@ impl fmt::Display for LocalDatabaseError {
 impl Error for LocalDatabaseError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            LocalDatabaseError::Io(error) => Some(error),
+            LocalDatabaseError::Io(error) | LocalDatabaseError::Export(error) => Some(error),
             LocalDatabaseError::Sqlite(error) => Some(error),
             LocalDatabaseError::Schema(_)
             | LocalDatabaseError::IntegrityMismatch { .. }
-            | LocalDatabaseError::MissingEvidence { .. } => None,
+            | LocalDatabaseError::MissingEvidence { .. }
+            | LocalDatabaseError::MissingRun(_)
+            | LocalDatabaseError::UnsupportedExportFormat(_) => None,
             LocalDatabaseError::Migration { source, .. } => Some(source),
         }
     }

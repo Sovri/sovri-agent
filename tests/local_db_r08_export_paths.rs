@@ -1,14 +1,14 @@
 // Copyright 2026 Sovri contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! R-08 -- every existing export path reads a persisted SQLite corpus. Covers #362.
+//! R-08 -- every existing export path reads a persisted `SQLite` corpus. Covers #362.
 
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sovri_agent::local_db::{LocalDatabase, LocalDatabaseError};
+use sovri_agent::local_db::LocalDatabase;
 use sovri_agent::matrix::Corpus;
 
 const RUN_ID: &str = "shopfront-2026-06-24";
@@ -65,13 +65,6 @@ fn export_a_persisted_corpus_through_each_existing_export_path() {
         .write_completed_corpus(&consent_corpus())
         .expect("the consent corpus write succeeds");
 
-    let _red_fallback: fn(
-        &LocalDatabase,
-        &str,
-        &str,
-        &[u8; 32],
-    ) -> Result<Vec<u8>, LocalDatabaseError> = <LocalDatabase as SqliteRunExports>::export_run;
-
     for format in FORMATS {
         // When the operator exports "<format>" for run "shopfront-2026-06-24" from SQLite.
         let artifact = database
@@ -111,16 +104,3 @@ fn consent_corpus() -> Corpus {
         .with_control(FRAMEWORK_ID, CONTROL_ID, "", "major", 8, "")
         .with_evidence(EVIDENCE_ID, "dist/main.js")
 }
-
-trait SqliteRunExports {
-    fn export_run(
-        &self,
-        _format: &str,
-        _run_id: &str,
-        _signing_seed: &[u8; 32],
-    ) -> Result<Vec<u8>, LocalDatabaseError> {
-        panic!("LocalDatabase::export_run is not implemented")
-    }
-}
-
-impl SqliteRunExports for LocalDatabase {}

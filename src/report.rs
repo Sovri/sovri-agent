@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::evidence::{Evidence, EvidenceKind, EvidenceLog, EvidenceStore, StoreError};
+use crate::matrix::Corpus;
 use crate::scanners::ssh;
 use sovri_sdk::is_valid_execution_timestamp;
 
@@ -351,6 +352,31 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         Err(error) => fail(&error),
     }
+}
+
+/// Exports a reconstructed compliance corpus as deterministic PDF bytes.
+///
+/// # Errors
+///
+/// Returns an error if the in-memory PDF renderer cannot encode the artifact.
+pub fn export(corpus: &Corpus) -> io::Result<Vec<u8>> {
+    let mut lines = vec![
+        "Sovri PDF compliance report".to_owned(),
+        format!("Run: {}", corpus.run_id()),
+    ];
+    for (id, version, _) in corpus.frameworks() {
+        lines.push(format!("Framework: {id} version {version}"));
+    }
+    for control_id in corpus.control_ids() {
+        lines.push(format!("Control: {control_id}"));
+    }
+    for evidence_id in corpus.evidence_ids() {
+        lines.push(format!("Evidence id: {evidence_id}"));
+    }
+
+    let mut artifact = Vec::new();
+    write_pdf(&mut artifact, &lines)?;
+    Ok(artifact)
 }
 
 fn fail(error: &Error) -> ExitCode {
