@@ -15,7 +15,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::matrix::Corpus;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction};
 use sovri_sdk::{ControlResult, Status};
 
 /// The schema version created by the first packaged migration.
@@ -257,90 +257,13 @@ impl LocalDatabase {
     ///
     /// Returns an error if `SQLite` cannot write any required corpus section.
     pub fn write_completed_corpus(&mut self, corpus: &Corpus) -> Result<(), LocalDatabaseError> {
-        let run_id = corpus.run_id();
         let transaction = self
             .connection
             .transaction()
             .map_err(LocalDatabaseError::Sqlite)?;
-
-        transaction
-            .execute(
-                "INSERT OR REPLACE INTO scan_runs(id, executed_at)
-                 VALUES (?1, ?2)",
-                params![run_id, corpus.executed_at()],
-            )
-            .map_err(LocalDatabaseError::Sqlite)?;
-
-        for (framework_id, version, _source_url) in corpus.frameworks() {
-            transaction
-                .execute(
-                    "INSERT OR REPLACE INTO frameworks(run_id, id, version)
-                     VALUES (?1, ?2, ?3)",
-                    params![run_id, framework_id, version],
-                )
-                .map_err(LocalDatabaseError::Sqlite)?;
-        }
-
-        for (_framework_id, control_id, _severity, _reference) in corpus.controls() {
-            transaction
-                .execute(
-                    "INSERT OR REPLACE INTO controls(run_id, id)
-                     VALUES (?1, ?2)",
-                    params![run_id, control_id],
-                )
-                .map_err(LocalDatabaseError::Sqlite)?;
-        }
-
-        let mut score_summary_ids = BTreeSet::new();
-        for (framework_id, result) in corpus.scoped_results() {
-            let result_id = result_record_id(framework_id, result);
-            transaction
-                .execute(
-                    "INSERT OR REPLACE INTO control_results(run_id, id)
-                     VALUES (?1, ?2)",
-                    params![run_id, result_id],
-                )
-                .map_err(LocalDatabaseError::Sqlite)?;
-
-            if let Some(framework_id) = framework_id {
-                score_summary_ids.insert(framework_id.to_owned());
-                if result_is_gap(result) {
-                    transaction
-                        .execute(
-                            "INSERT OR REPLACE INTO compliance_gaps(run_id, id)
-                             VALUES (?1, ?2)",
-                            params![run_id, gap_record_id(framework_id, result)],
-                        )
-                        .map_err(LocalDatabaseError::Sqlite)?;
-                }
-            }
-        }
-
-        for evidence in corpus.evidence_records() {
-            transaction
-                .execute(
-                    "INSERT OR REPLACE INTO evidence_metadata(id, digest)
-                     VALUES (?1, ?2)",
-                    params![evidence.id, evidence.integrity],
-                )
-                .map_err(LocalDatabaseError::Sqlite)?;
-            transaction
-                .execute(
-                    "INSERT OR IGNORE INTO run_evidence_links(run_id, evidence_id)
-                     VALUES (?1, ?2)",
-                    params![run_id, evidence.id],
-                )
-                .map_err(LocalDatabaseError::Sqlite)?;
-        }
-
-        for score_summary_id in score_summary_ids {
-            transaction
-                .execute(
-                    "INSERT OR REPLACE INTO score_summaries(run_id, id)
-                     VALUES (?1, ?2)",
-                    params![run_id, score_summary_id],
-                )
-                .map_err(LocalDatabaseError::Sqlite)?;
+        if let Err(error) = write_completed_corpus_rows(&transaction, corpus) {
+            let _ = transaction.rollback();
+            return Err(error);
         }
 
         transaction.commit().map_err(LocalDatabaseError::Sqlite)
@@ -459,6 +382,161 @@ impl LocalDatabase {
             run_id,
         )
     }
+}
+
+fn write_completed_corpus_rows(
+    transaction: &Transaction<'_>,
+    corpus: &Corpus,
+) -> Result<(), LocalDatabaseError> {
+    ensure_completed_corpus_schema(transaction)?;
+    let run_id = corpus.run_id();
+
+    transaction
+        .execute(
+            "INSERT OR REPLACE INTO scan_runs(id, executed_at)
+                 VALUES (?1, ?2)",
+            params![run_id, corpus.executed_at()],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+
+    for (framework_id, version, _source_url) in corpus.frameworks() {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO frameworks(run_id, id, version)
+                     VALUES (?1, ?2, ?3)",
+                params![run_id, framework_id, version],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+
+    for (_framework_id, control_id, _severity, _reference) in corpus.controls() {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO controls(run_id, id)
+                     VALUES (?1, ?2)",
+                params![run_id, control_id],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+
+    let mut score_summary_ids = BTreeSet::new();
+    for (framework_id, result) in corpus.scoped_results() {
+        let result_id = result_record_id(framework_id, result);
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO control_results(run_id, id)
+                     VALUES (?1, ?2)",
+                params![run_id, result_id],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+
+        if let Some(framework_id) = framework_id {
+            score_summary_ids.insert(framework_id.to_owned());
+            if result_is_gap(result) {
+                transaction
+                    .execute(
+                        "INSERT OR REPLACE INTO compliance_gaps(run_id, id)
+                             VALUES (?1, ?2)",
+                        params![run_id, gap_record_id(framework_id, result)],
+                    )
+                    .map_err(LocalDatabaseError::Sqlite)?;
+            }
+        }
+    }
+
+    for evidence in corpus.evidence_records() {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO evidence_metadata(id, digest)
+                     VALUES (?1, ?2)",
+                params![evidence.id, evidence.integrity],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO run_evidence_links(run_id, evidence_id)
+                     VALUES (?1, ?2)",
+                params![run_id, evidence.id],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+
+    for score_summary_id in score_summary_ids {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO score_summaries(run_id, id)
+                     VALUES (?1, ?2)",
+                params![run_id, score_summary_id],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+
+    Ok(())
+}
+
+fn ensure_completed_corpus_schema(connection: &Connection) -> Result<(), LocalDatabaseError> {
+    add_column_if_missing(
+        connection,
+        "scan_runs",
+        "executed_at",
+        "ALTER TABLE scan_runs ADD COLUMN executed_at TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_column_if_missing(
+        connection,
+        "frameworks",
+        "run_id",
+        "ALTER TABLE frameworks ADD COLUMN run_id TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_column_if_missing(
+        connection,
+        "controls",
+        "run_id",
+        "ALTER TABLE controls ADD COLUMN run_id TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_column_if_missing(
+        connection,
+        "control_results",
+        "run_id",
+        "ALTER TABLE control_results ADD COLUMN run_id TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_column_if_missing(
+        connection,
+        "compliance_gaps",
+        "run_id",
+        "ALTER TABLE compliance_gaps ADD COLUMN run_id TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_column_if_missing(
+        connection,
+        "score_summaries",
+        "run_id",
+        "ALTER TABLE score_summaries ADD COLUMN run_id TEXT NOT NULL DEFAULT ''",
+    )?;
+    connection
+        .execute(
+            "CREATE TABLE IF NOT EXISTS run_evidence_links (
+              run_id TEXT NOT NULL,
+              evidence_id TEXT NOT NULL,
+              PRIMARY KEY (run_id, evidence_id)
+            )",
+            [],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(())
+}
+
+fn add_column_if_missing(
+    connection: &Connection,
+    table_name: &str,
+    column_name: &str,
+    alter_sql: &str,
+) -> Result<(), LocalDatabaseError> {
+    if schema_column_exists(connection, table_name, column_name)? {
+        return Ok(());
+    }
+    connection
+        .execute(alter_sql, [])
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(())
 }
 
 fn result_record_id(framework_id: Option<&str>, result: &ControlResult) -> String {

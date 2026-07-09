@@ -16,6 +16,7 @@ use matrix_support::{
     FRAMEWORK_URL, FRAMEWORK_VERSION, STORED_EVIDENCE_ID, STORED_EVIDENCE_INTEGRITY,
     STORED_EVIDENCE_KIND, STORED_EVIDENCE_LOCATION,
 };
+use rusqlite::Connection;
 use sovri_agent::local_db::LocalDatabase;
 use sovri_agent::matrix::{Classification, Corpus};
 use sovri_sdk::{ControlResult, Status};
@@ -182,6 +183,69 @@ fn writing_a_completed_corpus_persists_every_required_section() {
             case.run
         );
     }
+}
+
+#[test]
+fn writing_a_completed_corpus_upgrades_legacy_section_tables() {
+    let database = TempDatabase::new();
+    create_legacy_completed_corpus_schema(database.path());
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the legacy local database opens");
+
+    local_database
+        .write_completed_corpus(&consent_corpus().with_run_id(SHOPFRONT_RUN))
+        .expect("the completed corpus is written to legacy section tables");
+
+    assert_eq!(
+        local_database
+            .completed_run_executed_at(SHOPFRONT_RUN)
+            .expect("the completed run can be retrieved")
+            .as_deref(),
+        Some(EXECUTED_AT)
+    );
+    assert_eq!(
+        local_database
+            .framework_records_for_run(SHOPFRONT_RUN)
+            .expect("framework records can be retrieved")
+            .len(),
+        1
+    );
+    assert_eq!(
+        local_database
+            .control_records_for_run(SHOPFRONT_RUN)
+            .expect("control records can be retrieved")
+            .len(),
+        1
+    );
+    assert_eq!(
+        local_database
+            .control_result_records_for_run(SHOPFRONT_RUN)
+            .expect("control results can be retrieved")
+            .len(),
+        2
+    );
+    assert_eq!(
+        local_database
+            .compliance_gap_records_for_run(SHOPFRONT_RUN)
+            .expect("compliance gaps can be retrieved")
+            .len(),
+        1
+    );
+    assert_eq!(
+        local_database
+            .evidence_metadata_records_for_run(SHOPFRONT_RUN)
+            .expect("evidence metadata records can be retrieved")
+            .len(),
+        1
+    );
+    assert_eq!(
+        local_database
+            .score_summary_records_for_run(SHOPFRONT_RUN)
+            .expect("score summaries can be retrieved")
+            .len(),
+        1
+    );
+    assert_legacy_rows_are_preserved(database.path());
 }
 
 fn completed_corpus_examples() -> Vec<CompletedCorpusCase> {
@@ -378,4 +442,74 @@ fn control_result(
     builder
         .build()
         .expect("the completed corpus fixture result validates")
+}
+
+fn create_legacy_completed_corpus_schema(path: &Path) {
+    fs::create_dir_all(path.parent().expect("database path has a parent"))
+        .expect("legacy database parent can be created");
+    let connection = Connection::open(path).expect("legacy database can be created");
+    connection
+        .execute_batch(
+            "
+            CREATE TABLE scan_runs (id TEXT PRIMARY KEY);
+            CREATE TABLE frameworks (
+              id TEXT PRIMARY KEY,
+              version TEXT NOT NULL
+            );
+            CREATE TABLE controls (id TEXT PRIMARY KEY);
+            CREATE TABLE control_results (id TEXT PRIMARY KEY);
+            CREATE TABLE compliance_gaps (id TEXT PRIMARY KEY);
+            CREATE TABLE evidence_metadata (
+              id TEXT PRIMARY KEY,
+              digest TEXT NOT NULL
+            );
+            CREATE TABLE score_summaries (id TEXT PRIMARY KEY);
+            CREATE TABLE exports (id TEXT PRIMARY KEY);
+            CREATE TABLE schema_migrations (
+              version INTEGER PRIMARY KEY,
+              name TEXT NOT NULL,
+              applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO schema_migrations(version, name)
+            VALUES (1, '0001-initial');
+            INSERT INTO scan_runs(id) VALUES ('legacy-run');
+            INSERT INTO frameworks(id, version) VALUES ('legacy-framework', 'legacy-version');
+            INSERT INTO controls(id) VALUES ('legacy-control');
+            INSERT INTO evidence_metadata(id, digest)
+            VALUES ('legacy-evidence', 'sha256:legacy');
+            PRAGMA user_version = 1;
+            ",
+        )
+        .expect("legacy schema can be seeded");
+}
+
+fn assert_legacy_rows_are_preserved(path: &Path) {
+    let connection = Connection::open(path).expect("database can be inspected");
+    assert_eq!(
+        legacy_row_count(&connection, "scan_runs", "legacy-run"),
+        1,
+        "legacy scan run remains present"
+    );
+    assert_eq!(
+        legacy_row_count(&connection, "frameworks", "legacy-framework"),
+        1,
+        "legacy framework remains present"
+    );
+    assert_eq!(
+        legacy_row_count(&connection, "controls", "legacy-control"),
+        1,
+        "legacy control remains present"
+    );
+    assert_eq!(
+        legacy_row_count(&connection, "evidence_metadata", "legacy-evidence"),
+        1,
+        "legacy evidence remains present"
+    );
+}
+
+fn legacy_row_count(connection: &Connection, table_name: &str, id: &str) -> i64 {
+    let sql = format!("SELECT COUNT(*) FROM {table_name} WHERE id = ?1");
+    connection
+        .query_row(&sql, [id], |row| row.get(0))
+        .expect("legacy row count can be inspected")
 }
