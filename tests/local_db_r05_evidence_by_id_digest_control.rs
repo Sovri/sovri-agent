@@ -15,6 +15,7 @@ use sovri_sdk::{ControlResult, Status};
 
 const MIXED_RUN_ID: &str = "mixed-2026-06-24";
 const CLASSIFIED_RUN_ID: &str = "classified-evidence-2026-06-24";
+const FOLLOWUP_RUN_ID: &str = "same-control-followup-2026-06-25";
 const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
 const GDPR_FRAMEWORK_ID: &str = "gdpr-eprivacy";
 const GDPR_FRAMEWORK_VERSION: &str = "2016-679";
@@ -37,6 +38,9 @@ const CONSENT_EVIDENCE_DIGEST: &str =
 const SSH_EVIDENCE_ID: &str = "ev-0008";
 const SSH_EVIDENCE_DIGEST: &str =
     "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const FOLLOWUP_EVIDENCE_ID: &str = "ev-0009";
+const FOLLOWUP_EVIDENCE_DIGEST: &str =
+    "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae";
 const CLASSIFIED_EVIDENCE_ID: &str = "ev-0007";
 
 struct TempDatabase {
@@ -150,6 +154,59 @@ fn evidence_can_be_retrieved_by_id_digest_and_control() {
             example.excluded_id
         );
     }
+}
+
+#[test]
+fn control_lookup_includes_evidence_from_later_runs() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+
+    local_database
+        .write_completed_corpus(&mixed_corpus())
+        .expect("the mixed corpus write succeeds");
+    local_database
+        .write_completed_corpus(&same_control_followup_corpus())
+        .expect("the follow-up corpus write succeeds");
+
+    let evidence = local_database
+        .query_evidence("control", CONSENT_CONTROL_ID)
+        .expect("the evidence can be queried by control");
+
+    assert!(
+        evidence.iter().any(|row| row.id() == CONSENT_EVIDENCE_ID),
+        "control lookup should include evidence from the first run"
+    );
+    assert!(
+        evidence.iter().any(|row| row.id() == FOLLOWUP_EVIDENCE_ID),
+        "control lookup should include evidence from the later run"
+    );
+}
+
+#[test]
+fn repeated_evidence_write_does_not_replace_a_non_empty_locator() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+
+    local_database
+        .write_completed_corpus(&mixed_corpus())
+        .expect("the mixed corpus write succeeds");
+    local_database
+        .write_completed_corpus(&same_evidence_new_locator_corpus())
+        .expect("the rewrite corpus succeeds");
+
+    let evidence = local_database
+        .query_evidence("id", CONSENT_EVIDENCE_ID)
+        .expect("the evidence can be queried by id");
+
+    assert_eq!(
+        evidence
+            .first()
+            .expect("the evidence row is returned")
+            .locator(),
+        "dist/main.js"
+    );
 }
 
 struct EvidenceQueryExample {
@@ -274,6 +331,76 @@ fn classified_evidence_corpus() -> Corpus {
             "classified/evidence.env",
             Classification::Secret,
             "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        )
+}
+
+fn same_control_followup_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_run_id(FOLLOWUP_RUN_ID)
+        .with_framework(
+            GDPR_FRAMEWORK_ID,
+            GDPR_FRAMEWORK_VERSION,
+            GDPR_FRAMEWORK_URL,
+        )
+        .with_control(
+            GDPR_FRAMEWORK_ID,
+            CONSENT_CONTROL_ID,
+            CONSENT_CONTROL_TITLE,
+            "major",
+            8,
+            CONSENT_CONTROL_REFERENCE,
+        )
+        .with_control_result(
+            GDPR_FRAMEWORK_ID,
+            control_result(
+                CONSENT_CONTROL_ID,
+                TRACKER_RULE,
+                Status::Fail,
+                "major",
+                8,
+                FOLLOWUP_EVIDENCE_ID,
+            ),
+        )
+        .with_evidence_digest(
+            FOLLOWUP_EVIDENCE_ID,
+            "file",
+            "dist/followup.js",
+            FOLLOWUP_EVIDENCE_DIGEST,
+        )
+}
+
+fn same_evidence_new_locator_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_run_id(FOLLOWUP_RUN_ID)
+        .with_framework(
+            GDPR_FRAMEWORK_ID,
+            GDPR_FRAMEWORK_VERSION,
+            GDPR_FRAMEWORK_URL,
+        )
+        .with_control(
+            GDPR_FRAMEWORK_ID,
+            CONSENT_CONTROL_ID,
+            CONSENT_CONTROL_TITLE,
+            "major",
+            8,
+            CONSENT_CONTROL_REFERENCE,
+        )
+        .with_control_result(
+            GDPR_FRAMEWORK_ID,
+            control_result(
+                CONSENT_CONTROL_ID,
+                TRACKER_RULE,
+                Status::Fail,
+                "major",
+                8,
+                CONSENT_EVIDENCE_ID,
+            ),
+        )
+        .with_evidence_digest(
+            CONSENT_EVIDENCE_ID,
+            "file",
+            "dist/renamed-main.js",
+            CONSENT_EVIDENCE_DIGEST,
         )
 }
 

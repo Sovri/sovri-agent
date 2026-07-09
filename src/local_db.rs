@@ -122,6 +122,11 @@ const SCHEMA_VERSION_4_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
     RequiredSchemaColumn::new("control_results", "evidence_id"),
     RequiredSchemaColumn::new("evidence_metadata", "digest"),
     RequiredSchemaColumn::new("evidence_metadata", "locator"),
+    RequiredSchemaColumn::new("compliance_gaps", "run_id"),
+    RequiredSchemaColumn::new("compliance_gaps", "status"),
+    RequiredSchemaColumn::new("compliance_gaps", "severity"),
+    RequiredSchemaColumn::new("compliance_gaps", "control_id"),
+    RequiredSchemaColumn::new("compliance_gaps", "rule_id"),
 ];
 
 const NO_REQUIRED_SCHEMA_COLUMNS: &[RequiredSchemaColumn] = &[];
@@ -488,13 +493,18 @@ impl LocalDatabase {
                 .map_err(LocalDatabaseError::Sqlite)?;
         }
 
-        for (_, result) in &scoped_results {
+        for (framework_id, result) in &scoped_results {
             let evidence_id = result
                 .evidence_refs()
                 .first()
                 .map(String::as_str)
                 .unwrap_or_default();
-            let result_id = control_result_row_id(result.control_id(), result.rule_id());
+            let result_id = control_result_row_id(
+                run_id,
+                framework_id.unwrap_or_default(),
+                result.control_id(),
+                result.rule_id(),
+            );
             transaction
                 .execute(
                     "INSERT INTO control_results(id, control_id, rule_id, evidence_id)
@@ -515,13 +525,15 @@ impl LocalDatabase {
         for evidence in corpus.evidence_records() {
             transaction
                 .execute(
-                    // Rewrites fill locators for evidence rows created before
+                    // Rewrites only fill empty locators for rows created before
                     // the locator migration existed.
                     "INSERT INTO evidence_metadata(id, digest, locator)
                      VALUES (?1, ?2, ?3)
                      ON CONFLICT(id) DO UPDATE SET
-                       digest = excluded.digest,
-                       locator = excluded.locator",
+                       locator = CASE
+                         WHEN evidence_metadata.locator = '' THEN excluded.locator
+                         ELSE evidence_metadata.locator
+                       END",
                     params![evidence.id, evidence.integrity, evidence.locator],
                 )
                 .map_err(LocalDatabaseError::Sqlite)?;
@@ -531,15 +543,18 @@ impl LocalDatabase {
     }
 }
 
-fn control_result_row_id(control_id: &str, rule_id: &str) -> String {
-    let control_id_len = control_id.len().to_string();
-    let mut id = String::with_capacity(control_id_len.len() + control_id.len() + rule_id.len() + 2);
-    id.push_str(&control_id_len);
-    id.push(':');
-    id.push_str(control_id);
-    id.push(':');
-    id.push_str(rule_id);
-    id
+fn control_result_row_id(
+    run_id: &str,
+    framework_id: &str,
+    control_id: &str,
+    rule_id: &str,
+) -> String {
+    format!(
+        "{}:{run_id}:{}:{framework_id}:{}:{control_id}:{rule_id}",
+        run_id.len(),
+        framework_id.len(),
+        control_id.len()
+    )
 }
 
 fn write_gap_rows(
