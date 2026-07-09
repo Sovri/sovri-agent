@@ -8,12 +8,15 @@
 //! evidence bytes; this module stores only local `SQLite` rows and integrity
 //! metadata.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::path::Path;
 
+use crate::matrix::Corpus;
 use rusqlite::{params, Connection};
+use sovri_sdk::{ControlResult, Status};
 
 /// The schema version created by the first packaged migration.
 pub const INITIAL_SCHEMA_VERSION: u32 = 1;
@@ -28,19 +31,45 @@ const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[
 ];
 
 const INITIAL_SCHEMA_SQL: &str = "
-    CREATE TABLE IF NOT EXISTS scan_runs (id TEXT PRIMARY KEY);
-    CREATE TABLE IF NOT EXISTS frameworks (
+    CREATE TABLE IF NOT EXISTS scan_runs (
       id TEXT PRIMARY KEY,
-      version TEXT NOT NULL
+      executed_at TEXT NOT NULL DEFAULT ''
     );
-    CREATE TABLE IF NOT EXISTS controls (id TEXT PRIMARY KEY);
-    CREATE TABLE IF NOT EXISTS control_results (id TEXT PRIMARY KEY);
-    CREATE TABLE IF NOT EXISTS compliance_gaps (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS frameworks (
+      run_id TEXT NOT NULL DEFAULT '',
+      id TEXT NOT NULL,
+      version TEXT NOT NULL,
+      PRIMARY KEY (run_id, id)
+    );
+    CREATE TABLE IF NOT EXISTS controls (
+      run_id TEXT NOT NULL DEFAULT '',
+      id TEXT NOT NULL,
+      PRIMARY KEY (run_id, id)
+    );
+    CREATE TABLE IF NOT EXISTS control_results (
+      run_id TEXT NOT NULL DEFAULT '',
+      id TEXT NOT NULL,
+      PRIMARY KEY (run_id, id)
+    );
+    CREATE TABLE IF NOT EXISTS compliance_gaps (
+      run_id TEXT NOT NULL DEFAULT '',
+      id TEXT NOT NULL,
+      PRIMARY KEY (run_id, id)
+    );
     CREATE TABLE IF NOT EXISTS evidence_metadata (
       id TEXT PRIMARY KEY,
       digest TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS score_summaries (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS run_evidence_links (
+      run_id TEXT NOT NULL,
+      evidence_id TEXT NOT NULL,
+      PRIMARY KEY (run_id, evidence_id)
+    );
+    CREATE TABLE IF NOT EXISTS score_summaries (
+      run_id TEXT NOT NULL DEFAULT '',
+      id TEXT NOT NULL,
+      PRIMARY KEY (run_id, id)
+    );
     CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY);
 ";
 
@@ -221,6 +250,266 @@ impl LocalDatabase {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(LocalDatabaseError::Sqlite)
     }
+
+    /// Writes a completed scan corpus into the local database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot write any required corpus section.
+    pub fn write_completed_corpus(&mut self, corpus: &Corpus) -> Result<(), LocalDatabaseError> {
+        let run_id = corpus.run_id();
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(LocalDatabaseError::Sqlite)?;
+
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO scan_runs(id, executed_at)
+                 VALUES (?1, ?2)",
+                params![run_id, corpus.executed_at()],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+
+        for (framework_id, version, _source_url) in corpus.frameworks() {
+            transaction
+                .execute(
+                    "INSERT OR REPLACE INTO frameworks(run_id, id, version)
+                     VALUES (?1, ?2, ?3)",
+                    params![run_id, framework_id, version],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+        }
+
+        for (_framework_id, control_id, _severity, _reference) in corpus.controls() {
+            transaction
+                .execute(
+                    "INSERT OR REPLACE INTO controls(run_id, id)
+                     VALUES (?1, ?2)",
+                    params![run_id, control_id],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+        }
+
+        let mut score_summary_ids = BTreeSet::new();
+        for (framework_id, result) in corpus.scoped_results() {
+            let result_id = result_record_id(framework_id, result);
+            transaction
+                .execute(
+                    "INSERT OR REPLACE INTO control_results(run_id, id)
+                     VALUES (?1, ?2)",
+                    params![run_id, result_id],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+
+            if let Some(framework_id) = framework_id {
+                score_summary_ids.insert(framework_id.to_owned());
+                if result_is_gap(result) {
+                    transaction
+                        .execute(
+                            "INSERT OR REPLACE INTO compliance_gaps(run_id, id)
+                             VALUES (?1, ?2)",
+                            params![run_id, gap_record_id(framework_id, result)],
+                        )
+                        .map_err(LocalDatabaseError::Sqlite)?;
+                }
+            }
+        }
+
+        for evidence in corpus.evidence_records() {
+            transaction
+                .execute(
+                    "INSERT OR REPLACE INTO evidence_metadata(id, digest)
+                     VALUES (?1, ?2)",
+                    params![evidence.id, evidence.integrity],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+            transaction
+                .execute(
+                    "INSERT OR IGNORE INTO run_evidence_links(run_id, evidence_id)
+                     VALUES (?1, ?2)",
+                    params![run_id, evidence.id],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+        }
+
+        for score_summary_id in score_summary_ids {
+            transaction
+                .execute(
+                    "INSERT OR REPLACE INTO score_summaries(run_id, id)
+                     VALUES (?1, ?2)",
+                    params![run_id, score_summary_id],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+        }
+
+        transaction.commit().map_err(LocalDatabaseError::Sqlite)
+    }
+
+    /// Retrieves a completed run's fixed executed-at timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot read the scan run.
+    pub fn completed_run_executed_at(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<String>, LocalDatabaseError> {
+        query_optional_text(
+            &self.connection,
+            "SELECT executed_at FROM scan_runs WHERE id = ?1",
+            run_id,
+        )
+    }
+
+    /// Retrieves framework record ids for a run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot read framework records.
+    pub fn framework_records_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<String>, LocalDatabaseError> {
+        query_run_scoped_ids(
+            &self.connection,
+            "SELECT id FROM frameworks WHERE run_id = ?1 ORDER BY id",
+            run_id,
+        )
+    }
+
+    /// Retrieves control record ids for a run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot read control records.
+    pub fn control_records_for_run(&self, run_id: &str) -> Result<Vec<String>, LocalDatabaseError> {
+        query_run_scoped_ids(
+            &self.connection,
+            "SELECT id FROM controls WHERE run_id = ?1 ORDER BY id",
+            run_id,
+        )
+    }
+
+    /// Retrieves control-result record ids for a run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot read control-result records.
+    pub fn control_result_records_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<String>, LocalDatabaseError> {
+        query_run_scoped_ids(
+            &self.connection,
+            "SELECT id FROM control_results WHERE run_id = ?1 ORDER BY id",
+            run_id,
+        )
+    }
+
+    /// Retrieves compliance-gap record ids for a run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot read compliance-gap records.
+    pub fn compliance_gap_records_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<String>, LocalDatabaseError> {
+        query_run_scoped_ids(
+            &self.connection,
+            "SELECT id FROM compliance_gaps WHERE run_id = ?1 ORDER BY id",
+            run_id,
+        )
+    }
+
+    /// Retrieves evidence metadata record ids for a run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot read evidence metadata records.
+    pub fn evidence_metadata_records_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<String>, LocalDatabaseError> {
+        query_run_scoped_ids(
+            &self.connection,
+            "SELECT evidence_metadata.id
+             FROM evidence_metadata
+             INNER JOIN run_evidence_links
+               ON run_evidence_links.evidence_id = evidence_metadata.id
+             WHERE run_evidence_links.run_id = ?1
+             ORDER BY evidence_metadata.id",
+            run_id,
+        )
+    }
+
+    /// Retrieves score-summary record ids for a run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot read score-summary records.
+    pub fn score_summary_records_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<String>, LocalDatabaseError> {
+        query_run_scoped_ids(
+            &self.connection,
+            "SELECT id FROM score_summaries WHERE run_id = ?1 ORDER BY id",
+            run_id,
+        )
+    }
+}
+
+fn result_record_id(framework_id: Option<&str>, result: &ControlResult) -> String {
+    format!(
+        "{}:{}:{}",
+        framework_id.unwrap_or_default(),
+        result.control_id(),
+        result.rule_id()
+    )
+}
+
+fn gap_record_id(framework_id: &str, result: &ControlResult) -> String {
+    format!(
+        "{framework_id}:{}:{}",
+        result.control_id(),
+        result.rule_id()
+    )
+}
+
+fn result_is_gap(result: &ControlResult) -> bool {
+    matches!(result.status(), Status::Fail | Status::Warning)
+}
+
+fn query_optional_text(
+    connection: &Connection,
+    sql: &str,
+    value: &str,
+) -> Result<Option<String>, LocalDatabaseError> {
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(LocalDatabaseError::Sqlite)?;
+    match statement.query_row([value], |row| row.get(0)) {
+        Ok(value) => Ok(Some(value)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(LocalDatabaseError::Sqlite(error)),
+    }
+}
+
+fn query_run_scoped_ids(
+    connection: &Connection,
+    sql: &str,
+    run_id: &str,
+) -> Result<Vec<String>, LocalDatabaseError> {
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(LocalDatabaseError::Sqlite)?;
+    let rows = statement
+        .query_map([run_id], |row| row.get::<_, String>(0))
+        .map_err(LocalDatabaseError::Sqlite)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(LocalDatabaseError::Sqlite)
 }
 
 fn apply_packaged_migrations(
