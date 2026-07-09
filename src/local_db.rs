@@ -843,7 +843,7 @@ fn write_evidence_rows(
     )?;
     for evidence in corpus.evidence_records() {
         transaction.execute(
-            // Rewrites refresh content identity but preserve the first non-empty locator.
+            // Legacy rewrites preserve integrity-backed metadata they do not carry.
             "INSERT INTO evidence_metadata(id, digest, locator, classification)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(id) DO UPDATE SET
@@ -852,7 +852,10 @@ fn write_evidence_rows(
                  WHEN evidence_metadata.locator = '' THEN excluded.locator
                  ELSE evidence_metadata.locator
                END,
-               classification = excluded.classification",
+               classification = CASE
+                 WHEN excluded.digest = '' THEN evidence_metadata.classification
+                 ELSE excluded.classification
+               END",
             params![
                 evidence.id,
                 evidence.integrity,
@@ -1533,6 +1536,45 @@ impl Error for LocalDatabaseError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::matrix::Classification;
+
+    #[test]
+    fn legacy_rewrite_preserves_an_integrity_backed_classification() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory SQLite");
+        apply_packaged_migrations(&mut connection, PACKAGED_MIGRATIONS)
+            .expect("apply packaged migrations");
+        let mut database = LocalDatabase { connection };
+        database
+            .write_completed_corpus(
+                &Corpus::new("2026-06-24T13:16:28Z")
+                    .with_run_id("classified-run")
+                    .with_classified_evidence(
+                        "classified-evidence",
+                        "config",
+                        ".env.example:3",
+                        Classification::Secret,
+                        "sha256:classified",
+                    ),
+            )
+            .expect("write classified evidence");
+        database
+            .write_completed_corpus(
+                &Corpus::new("2026-06-24T13:16:28Z")
+                    .with_run_id("legacy-run")
+                    .with_evidence("classified-evidence", ".env.example:3"),
+            )
+            .expect("rewrite through the legacy metadata path");
+
+        let classification: String = database
+            .connection
+            .query_row(
+                "SELECT classification FROM evidence_metadata WHERE id = ?1",
+                ["classified-evidence"],
+                |row| row.get(0),
+            )
+            .expect("read the preserved classification");
+        assert_eq!(classification, "Secret");
+    }
 
     #[test]
     fn rewriting_a_run_replaces_its_evidence_links() {
