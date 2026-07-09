@@ -38,6 +38,11 @@ const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[
         "0004-evidence-locators",
         EVIDENCE_LOCATORS_SCHEMA_SQL,
     ),
+    PackagedMigration::new(
+        RESULT_QUERY_FILTERS_SCHEMA_VERSION,
+        "0005-result-query-filters",
+        RESULT_QUERY_FILTERS_SCHEMA_SQL,
+    ),
 ];
 
 const INITIAL_SCHEMA_SQL: &str = "
@@ -49,8 +54,10 @@ const INITIAL_SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS controls (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS control_results (
       id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL DEFAULT '',
       control_id TEXT NOT NULL,
       rule_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT '',
       evidence_id TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS compliance_gaps (
@@ -93,6 +100,10 @@ const EVIDENCE_LOCATORS_SCHEMA_VERSION: u32 = 4;
 
 const EVIDENCE_LOCATORS_SCHEMA_SQL: &str = "";
 
+const RESULT_QUERY_FILTERS_SCHEMA_VERSION: u32 = 5;
+
+const RESULT_QUERY_FILTERS_SCHEMA_SQL: &str = "";
+
 const MIGRATION_LEDGER_SQL: &str = "
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
@@ -129,6 +140,22 @@ const SCHEMA_VERSION_4_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
     RequiredSchemaColumn::new("compliance_gaps", "rule_id"),
 ];
 
+const SCHEMA_VERSION_5_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
+    RequiredSchemaColumn::new("frameworks", "version"),
+    RequiredSchemaColumn::new("control_results", "run_id"),
+    RequiredSchemaColumn::new("control_results", "control_id"),
+    RequiredSchemaColumn::new("control_results", "rule_id"),
+    RequiredSchemaColumn::new("control_results", "status"),
+    RequiredSchemaColumn::new("control_results", "evidence_id"),
+    RequiredSchemaColumn::new("evidence_metadata", "digest"),
+    RequiredSchemaColumn::new("evidence_metadata", "locator"),
+    RequiredSchemaColumn::new("compliance_gaps", "run_id"),
+    RequiredSchemaColumn::new("compliance_gaps", "status"),
+    RequiredSchemaColumn::new("compliance_gaps", "severity"),
+    RequiredSchemaColumn::new("compliance_gaps", "control_id"),
+    RequiredSchemaColumn::new("compliance_gaps", "rule_id"),
+];
+
 const NO_REQUIRED_SCHEMA_COLUMNS: &[RequiredSchemaColumn] = &[];
 
 const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
@@ -144,6 +171,10 @@ const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
     SchemaRequirements::new(
         EVIDENCE_LOCATORS_SCHEMA_VERSION,
         SCHEMA_VERSION_4_REQUIRED_COLUMNS,
+    ),
+    SchemaRequirements::new(
+        RESULT_QUERY_FILTERS_SCHEMA_VERSION,
+        SCHEMA_VERSION_5_REQUIRED_COLUMNS,
     ),
 ];
 
@@ -206,6 +237,13 @@ pub struct LocalDatabaseGap {
     status: String,
 }
 
+/// A persisted control result returned by local database queries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalDatabaseResult {
+    run_id: String,
+    status: String,
+}
+
 /// Persisted evidence metadata returned by local database queries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalDatabaseEvidence {
@@ -246,6 +284,20 @@ impl LocalDatabaseGap {
     }
 
     /// Returns the persisted result status for the compliance gap.
+    #[must_use]
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+}
+
+impl LocalDatabaseResult {
+    /// Returns the scan run that produced the result.
+    #[must_use]
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    /// Returns the persisted result status.
     #[must_use]
     pub fn status(&self) -> &str {
         &self.status
@@ -407,6 +459,38 @@ impl LocalDatabase {
             .map_err(LocalDatabaseError::Sqlite)
     }
 
+    /// Queries persisted control results by run, control, and status.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot prepare or run the result-list query.
+    pub fn query_results(
+        &self,
+        run_id: &str,
+        control_id: &str,
+        status: &str,
+    ) -> Result<Vec<LocalDatabaseResult>, LocalDatabaseError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT run_id, status
+                 FROM control_results
+                 WHERE run_id = ?1 AND control_id = ?2 AND status = ?3
+                 ORDER BY rule_id",
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let rows = statement
+            .query_map(params![run_id, control_id, status], |row| {
+                Ok(LocalDatabaseResult {
+                    run_id: row.get(0)?,
+                    status: row.get(1)?,
+                })
+            })
+            .map_err(LocalDatabaseError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(LocalDatabaseError::Sqlite)
+    }
+
     /// Queries persisted evidence metadata by id, digest, or control id.
     ///
     /// # Errors
@@ -528,13 +612,22 @@ impl LocalDatabase {
             );
             transaction
                 .execute(
-                    "INSERT INTO control_results(id, control_id, rule_id, evidence_id)
-                     VALUES (?1, ?2, ?3, ?4)
+                    "INSERT INTO control_results(
+                       id,
+                       run_id,
+                       control_id,
+                       rule_id,
+                       status,
+                       evidence_id
+                     )
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                      ON CONFLICT(id) DO NOTHING",
                     params![
                         result_id,
+                        run_id,
                         result.control_id(),
                         result.rule_id(),
+                        result.status().label(),
                         evidence_id
                     ],
                 )
@@ -876,6 +969,15 @@ fn migration_is_applicable(
             && !schema_column_exists(connection, "evidence_metadata", "locator")?);
     }
 
+    if migration.version == RESULT_QUERY_FILTERS_SCHEMA_VERSION
+        && migration.name == "0005-result-query-filters"
+        && migration.sql == RESULT_QUERY_FILTERS_SCHEMA_SQL
+    {
+        return Ok(schema_column_exists(connection, "control_results", "id")?
+            && (!schema_column_exists(connection, "control_results", "run_id")?
+                || !schema_column_exists(connection, "control_results", "status")?));
+    }
+
     Ok(true)
 }
 
@@ -900,6 +1002,12 @@ fn apply_packaged_migration(
         && migration.sql == EVIDENCE_LOCATORS_SCHEMA_SQL
     {
         apply_evidence_locators_migration(&transaction)
+            .map_err(|source| migration_error(migration, source))?;
+    } else if migration.version == RESULT_QUERY_FILTERS_SCHEMA_VERSION
+        && migration.name == "0005-result-query-filters"
+        && migration.sql == RESULT_QUERY_FILTERS_SCHEMA_SQL
+    {
+        apply_result_query_filters_migration(&transaction)
             .map_err(|source| migration_error(migration, source))?;
     } else {
         transaction
@@ -945,6 +1053,72 @@ fn apply_evidence_locators_migration(
     }
 
     Ok(())
+}
+
+fn apply_result_query_filters_migration(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<()> {
+    if !transaction_schema_column_exists(transaction, "control_results", "run_id")? {
+        transaction.execute(
+            "ALTER TABLE control_results ADD COLUMN run_id TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    if !transaction_schema_column_exists(transaction, "control_results", "status")? {
+        transaction.execute(
+            "ALTER TABLE control_results ADD COLUMN status TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+
+    backfill_control_result_run_ids(transaction)?;
+    transaction.execute(
+        "UPDATE control_results
+         SET status = COALESCE(
+           (
+             SELECT compliance_gaps.status
+             FROM compliance_gaps
+             WHERE compliance_gaps.run_id = control_results.run_id
+               AND compliance_gaps.control_id = control_results.control_id
+               AND compliance_gaps.rule_id = control_results.rule_id
+             ORDER BY compliance_gaps.id
+             LIMIT 1
+           ),
+           control_results.status
+         )
+         WHERE status = ''",
+        [],
+    )?;
+
+    Ok(())
+}
+
+fn backfill_control_result_run_ids(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<()> {
+    let mut statement = transaction.prepare("SELECT id FROM control_results")?;
+    let row_ids = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    for row_id in row_ids {
+        if let Some(run_id) = control_result_run_id(&row_id) {
+            transaction.execute(
+                "UPDATE control_results SET run_id = ?1 WHERE id = ?2",
+                params![run_id, row_id],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn control_result_run_id(row_id: &str) -> Option<&str> {
+    let (length, remainder) = row_id.split_once(':')?;
+    let length = length.parse::<usize>().ok()?;
+    let run_id = remainder.get(..length)?;
+    remainder.get(length..)?.strip_prefix(':')?;
+    Some(run_id)
 }
 
 fn transaction_schema_column_exists(
