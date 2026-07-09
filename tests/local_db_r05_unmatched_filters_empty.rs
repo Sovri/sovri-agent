@@ -72,15 +72,6 @@ impl Drop for TempDatabase {
     }
 }
 
-#[allow(dead_code)]
-trait LocalDatabaseRunLookup {
-    fn query_run(&self, _run_id: &str) -> Result<Vec<String>, LocalDatabaseError> {
-        panic!("LocalDatabase::query_run is not implemented")
-    }
-}
-
-impl LocalDatabaseRunLookup for LocalDatabase {}
-
 #[test]
 fn unmatched_filters_return_a_stable_empty_result() {
     let database = TempDatabase::new();
