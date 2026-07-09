@@ -9,7 +9,7 @@
 
 mod signed_json_support;
 
-use signed_json_support::{string_member, FIXTURE_SIGNING_SEED};
+use signed_json_support::{section_value, string_member, FIXTURE_SIGNING_SEED};
 use sovri_agent::matrix::Corpus;
 use sovri_agent::signed_json;
 use sovri_sdk::{ControlResult, Status};
@@ -73,45 +73,6 @@ fn consent_corpus() -> Corpus {
         .with_control_result(FRAMEWORK, consent_result(TRACKER_RULE, Status::Fail))
         .with_control_result(FRAMEWORK, consent_result(CMP_RULE, Status::Pass))
         .with_evidence(EVIDENCE_ID, "dist/main.js")
-}
-
-/// Returns the JSON value of the top-level payload member `name` — the balanced
-/// `{...}` object or `[...]` array following `"name":`. Nesting depth is tracked
-/// through strings, so the matching close delimiter, not one inside a value, ends
-/// the slice.
-fn section_value<'a>(document: &'a str, name: &str) -> &'a str {
-    let anchor = format!("\"{name}\":");
-    let start = document
-        .find(&anchor)
-        .unwrap_or_else(|| panic!("the document has a {name:?} member"))
-        + anchor.len();
-    let mut depth = 0i32;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (offset, ch) in document[start..].char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match ch {
-            '"' => in_string = true,
-            '{' | '[' => depth += 1,
-            '}' | ']' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &document[start..start + offset + ch.len_utf8()];
-                }
-            }
-            _ => {}
-        }
-    }
-    &document[start..]
 }
 
 #[test]

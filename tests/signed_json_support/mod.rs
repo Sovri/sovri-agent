@@ -9,6 +9,7 @@
 //! not every binary uses every helper.
 #![allow(dead_code)]
 
+use serde_json::Value;
 use sovri_agent::matrix::Corpus;
 use sovri_sdk::{ControlResult, Status};
 
@@ -21,22 +22,22 @@ pub const FIXTURE_SIGNING_SEED: [u8; 32] = [
     0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
 ];
 
-const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
-const RUN_ID: &str = "shopfront-2026-06-24";
-const FRAMEWORK: &str = "gdpr-eprivacy";
-const FRAMEWORK_VERSION: &str = "2016-679";
-const FRAMEWORK_URL: &str = "https://eur-lex.europa.eu/eli/reg/2016/679/oj";
-const CONTROL: &str = "consent.tracker.prior-consent";
-const CONTROL_TITLE: &str = "Prior consent for tracker access";
-const CONTROL_REFERENCE: &str = "gdpr-eprivacy:2016-679:Art.7";
-const CONTROL_SEVERITY: &str = "major";
-const CONTROL_WEIGHT: u32 = 8;
-const TRACKER_RULE: &str = "consent.detect-trackers-without-consent-evidence";
-const CMP_RULE: &str = "consent.detect-cmp-misconfiguration";
-const EVIDENCE_ID: &str = "ev-0001";
-const EXECUTION_METADATA: &str = "engine_version=0.3.0";
+pub const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
+pub const RUN_ID: &str = "shopfront-2026-06-24";
+pub const FRAMEWORK: &str = "gdpr-eprivacy";
+pub const FRAMEWORK_VERSION: &str = "2016-679";
+pub const FRAMEWORK_URL: &str = "https://eur-lex.europa.eu/eli/reg/2016/679/oj";
+pub const CONTROL: &str = "consent.tracker.prior-consent";
+pub const CONTROL_TITLE: &str = "Prior consent for tracker access";
+pub const CONTROL_REFERENCE: &str = "gdpr-eprivacy:2016-679:Art.7";
+pub const CONTROL_SEVERITY: &str = "major";
+pub const CONTROL_WEIGHT: u32 = 8;
+pub const TRACKER_RULE: &str = "consent.detect-trackers-without-consent-evidence";
+pub const CMP_RULE: &str = "consent.detect-cmp-misconfiguration";
+pub const EVIDENCE_ID: &str = "ev-0001";
+pub const EXECUTION_METADATA: &str = "engine_version=0.3.0";
 
-fn consent_result(rule_id: &str, status: Status) -> ControlResult {
+pub fn consent_result(rule_id: &str, status: Status) -> ControlResult {
     consent_result_with_evidence_refs(rule_id, status, vec![EVIDENCE_ID])
 }
 
@@ -151,6 +152,28 @@ pub fn string_member(doc: &str, name: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Returns the JSON integer value of the first `"name":<digits>` member in a
+/// compact JSON document, or `None` if the member is absent or is not an
+/// unquoted integer token.
+#[must_use]
+pub fn integer_member<'a>(document: &'a str, name: &str) -> Option<&'a str> {
+    let anchor = format!("\"{name}\":");
+    let start = document.find(&anchor)? + anchor.len();
+    let rest = &document[start..];
+    if rest.starts_with('"') {
+        return None;
+    }
+    let end = rest.find([',', '}', ']']).unwrap_or(rest.len());
+    let value = &rest[..end];
+    (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())).then_some(value)
+}
+
+/// Returns the string value of `name` from a parsed JSON object record.
+#[must_use]
+pub fn json_string_member<'a>(record: &'a Value, name: &str) -> Option<&'a str> {
+    record.get(name).and_then(Value::as_str)
 }
 
 /// Returns the JSON value of the member `name` — the balanced `{...}` object or

@@ -244,6 +244,42 @@ fn compact_object_string_member<'a>(object: &'a str, member_key: &str) -> Option
     None
 }
 
+/// Reads a direct compact JSON object integer member by key, or `None` when the
+/// direct member is absent or is not an unquoted integer token.
+fn compact_object_int_member(object: &str, member_key: &str) -> Option<i64> {
+    if object.as_bytes().first().copied()? != b'{' {
+        return None;
+    }
+
+    let mut cursor = 1usize;
+    while cursor < object.len() {
+        match object.as_bytes().get(cursor).copied()? {
+            b',' => {
+                cursor += 1;
+                continue;
+            }
+            b'"' => {}
+            _ => return None,
+        }
+
+        let (key, key_end) = compact_string_at(object, cursor)?;
+        if object.as_bytes().get(key_end + 1).copied()? != b':' {
+            return None;
+        }
+        let value_start = key_end + 2;
+        let value_end = compact_value_end(object, value_start)?;
+        if key == member_key {
+            let value = &object[value_start..=value_end];
+            return (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+                .then(|| value.parse().ok())
+                .flatten();
+        }
+        cursor = value_end + 1;
+    }
+
+    None
+}
+
 /// Reads the compact JSON string starting at `start`, returning its raw value and
 /// closing quote byte index.
 fn compact_string_at(document: &str, start: usize) -> Option<(&str, usize)> {
@@ -336,17 +372,14 @@ fn from_hex(hex: &str) -> Option<Vec<u8>> {
 /// Reads the `schema_version` integer a compact export `document` declares, or
 /// `None` when the member is absent or not an unquoted integer.
 ///
-/// Scans for the `"schema_version":` key and parses the unquoted digit run that
-/// follows, matching how the exporter emits the version; a quoted value is a
-/// string, not an integer version, and yields `None`.
+/// Reads only `payload.schema.schema_version` as a direct schema-block member, so
+/// a decoy `schema_version` elsewhere in the document cannot satisfy the gate.
+/// The value must be an integer token, not a quoted string, decimal, exponent, or
+/// other numeric form the verifier does not currently support.
 fn declared_schema_version(document: &str) -> Option<i64> {
-    let anchor = "\"schema_version\":";
-    let start = document.find(anchor)? + anchor.len();
-    let digits: String = document[start..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    digits.parse().ok()
+    let payload = compact_object_member(document, "payload")?;
+    let schema = compact_object_member(payload, "schema")?;
+    compact_object_int_member(schema, "schema_version")
 }
 
 /// Why a signed export failed verification.
@@ -474,7 +507,7 @@ fn results_array(scoped: &[(Option<&str>, &ControlResult)]) -> Json {
     Json::Array(
         ordered_scoped_results(scoped)
             .iter()
-            .map(|&(_, result)| result_member(result))
+            .map(|&(framework, result)| result_member(framework, result))
             .collect(),
     )
 }
@@ -518,25 +551,39 @@ fn result_id_order(a: &ControlResult, b: &ControlResult) -> Ordering {
         .then_with(|| a.rule_id().cmp(b.rule_id()))
 }
 
-/// The stable derived id of a control result — `{control_id}:{rule_id}`, composed
-/// only from the record's own stable corpus keys, so re-exporting the same corpus
-/// yields the same id. Shared by the result and gap records.
-fn derived_id(result: &ControlResult) -> String {
-    format!("{}:{}", result.control_id(), result.rule_id())
+/// The stable derived id of a control result, composed from stable corpus keys.
+/// Scoped results include their framework id so the same control and rule emitted
+/// under two frameworks cannot collapse into one downstream record identity.
+fn derived_id(framework_id: Option<&str>, result: &ControlResult) -> String {
+    match framework_id {
+        Some(framework_id) => {
+            format!(
+                "{}:{}:{}",
+                framework_id,
+                result.control_id(),
+                result.rule_id()
+            )
+        }
+        None => format!("{}:{}", result.control_id(), result.rule_id()),
+    }
 }
 
 /// Builds the JSON record the results section carries — a stable derived id, the
-/// control and rule ids it is composed from, and the status label (`PASS`, `FAIL`,
-/// `WARNING`, `SKIPPED`, or `ERROR`), the same label the matrix export renders.
-/// Gaps use [`gap_member`], which adds the gap-specific reference, severity, and
-/// source URL.
-fn result_member(result: &ControlResult) -> Json {
-    Json::Object(vec![
+/// control and rule ids it is composed from, optional framework scope, and the
+/// status label (`PASS`, `FAIL`, `WARNING`, `SKIPPED`, or `ERROR`), the same label
+/// the matrix export renders. Gaps use [`gap_member`], which adds the
+/// gap-specific reference, severity, and source URL.
+fn result_member(framework_id: Option<&str>, result: &ControlResult) -> Json {
+    let mut members = vec![
         ("control_id", Json::Str(result.control_id().to_owned())),
-        ("id", Json::Str(derived_id(result))),
+        ("id", Json::Str(derived_id(framework_id, result))),
         ("rule_id", Json::Str(result.rule_id().to_owned())),
         ("status", Json::Str(result.status().label().to_owned())),
-    ])
+    ];
+    if let Some(framework_id) = framework_id {
+        members.push(("framework_id", Json::Str(framework_id.to_owned())));
+    }
+    Json::Object(members)
 }
 
 /// Builds a gap record — the control and rule ids, the shared derived id, and the
@@ -555,7 +602,8 @@ fn gap_member(
     let source_url = framework_source_url(frameworks, framework_id);
     Json::Object(vec![
         ("control_id", Json::Str(result.control_id().to_owned())),
-        ("id", Json::Str(derived_id(result))),
+        ("framework_id", Json::Str(framework_id.to_owned())),
+        ("id", Json::Str(derived_id(Some(framework_id), result))),
         ("reference", Json::Str(reference.to_owned())),
         ("rule_id", Json::Str(result.rule_id().to_owned())),
         ("severity", Json::Str(severity.to_owned())),
@@ -636,9 +684,10 @@ fn framework_scores(environment: &EnvironmentScore) -> Json {
     )
 }
 
-/// Builds the control-score array — one `{ control_id, score }` record per scored
-/// control across every framework, ordered by control id then rule id. The score is
-/// the control's earned-over-applicable ratio rendered as a percentage string.
+/// Builds the control-score array — one `{ control_id, rule_id, score }` record
+/// per scored control across every framework, ordered by control id then rule id.
+/// The score is the control's earned-over-applicable ratio rendered as a
+/// percentage string.
 fn control_scores(environment: &EnvironmentScore) -> Json {
     let mut controls: Vec<&ControlScore> = environment
         .frameworks()
@@ -656,6 +705,7 @@ fn control_scores(environment: &EnvironmentScore) -> Json {
             .map(|&control| {
                 Json::Object(vec![
                     ("control_id", Json::Str(control.control_id().to_owned())),
+                    ("rule_id", Json::Str(control.rule_id().to_owned())),
                     ("score", Json::Str(control_ratio(control).to_string())),
                 ])
             })

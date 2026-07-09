@@ -8,7 +8,7 @@ mod matrix_support;
 mod signed_json_support;
 
 use serde_json::Value;
-use signed_json_support::FIXTURE_SIGNING_SEED;
+use signed_json_support::{json_string_member, FIXTURE_SIGNING_SEED};
 use sovri_agent::signed_json;
 
 struct Example {
@@ -60,7 +60,7 @@ fn a_classified_evidence_record_is_reduced_to_metadata_in_the_json() {
     for example in examples() {
         let record = evidence
             .iter()
-            .find(|record| string_member(record, "id") == Some(example.evidence_id))
+            .find(|record| json_string_member(record, "id") == Some(example.evidence_id))
             .unwrap_or_else(|| {
                 panic!(
                     "the signed export has evidence record {} for {} classified evidence",
@@ -71,19 +71,19 @@ fn a_classified_evidence_record_is_reduced_to_metadata_in_the_json() {
         // Then the evidence record "<evidence_id>" shows its type, locator, and
         // integrity "<integrity>".
         assert!(
-            string_member(record, "type").is_some_and(|value| !value.is_empty()),
+            json_string_member(record, "type").is_some_and(|value| !value.is_empty()),
             "evidence record {} shows its type (record: {record})",
             example.evidence_id
         );
         assert_eq!(
-            string_member(record, "locator"),
+            json_string_member(record, "locator"),
             Some(example.locator),
             "evidence record {} shows locator {} (record: {record})",
             example.evidence_id,
             example.locator
         );
         assert_eq!(
-            string_member(record, "integrity"),
+            json_string_member(record, "integrity"),
             Some(example.integrity),
             "evidence record {} shows integrity {} (record: {record})",
             example.evidence_id,
@@ -92,7 +92,7 @@ fn a_classified_evidence_record_is_reduced_to_metadata_in_the_json() {
 
         // And it shows redaction status "redacted".
         assert_eq!(
-            string_member(record, "redaction_status"),
+            json_string_member(record, "redaction_status"),
             Some("redacted"),
             "evidence record {} shows redaction status redacted (record: {record})",
             example.evidence_id
@@ -119,7 +119,7 @@ fn an_unclassified_evidence_record_is_marked_not_redacted_in_the_json() {
         .expect("the signed export carries payload.evidence records");
     let record = evidence
         .iter()
-        .find(|record| string_member(record, "id") == Some(matrix_support::STORED_EVIDENCE_ID))
+        .find(|record| json_string_member(record, "id") == Some(matrix_support::STORED_EVIDENCE_ID))
         .unwrap_or_else(|| {
             panic!(
                 "the signed export has unclassified evidence record {}",
@@ -128,22 +128,22 @@ fn an_unclassified_evidence_record_is_marked_not_redacted_in_the_json() {
         });
 
     assert_eq!(
-        string_member(record, "type"),
+        json_string_member(record, "type"),
         Some(matrix_support::STORED_EVIDENCE_KIND),
         "the unclassified evidence record shows its type (record: {record})"
     );
     assert_eq!(
-        string_member(record, "locator"),
+        json_string_member(record, "locator"),
         Some(matrix_support::STORED_EVIDENCE_LOCATION),
         "the unclassified evidence record shows its locator (record: {record})"
     );
     assert_eq!(
-        string_member(record, "integrity"),
+        json_string_member(record, "integrity"),
         Some(matrix_support::STORED_EVIDENCE_INTEGRITY),
         "the unclassified evidence record shows its integrity (record: {record})"
     );
     assert_eq!(
-        string_member(record, "redaction_status"),
+        json_string_member(record, "redaction_status"),
         Some("none"),
         "the unclassified evidence record shows redaction status none (record: {record})"
     );
@@ -164,8 +164,4 @@ fn an_empty_evidence_store_is_an_empty_array_in_the_json() {
         evidence.is_empty(),
         "an export with no evidence records carries an empty evidence array"
     );
-}
-
-fn string_member<'a>(record: &'a Value, name: &str) -> Option<&'a str> {
-    record.get(name).and_then(Value::as_str)
 }
