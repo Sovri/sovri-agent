@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sovri_agent::local_db::{LocalDatabase, LocalDatabaseError};
+use sovri_agent::local_db::LocalDatabase;
 use sovri_agent::matrix::{Classification, Corpus};
 use sovri_sdk::{Evidence, EvidenceKind, EvidenceStore};
 
@@ -54,19 +54,6 @@ impl Drop for TempFixture {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
-
-#[allow(dead_code)]
-trait LocalDatabaseCorpusReconstruction {
-    fn reconstruct_corpus(
-        &self,
-        _store: &EvidenceStore,
-        _run_id: &str,
-    ) -> Result<Corpus, LocalDatabaseError> {
-        panic!("LocalDatabase::reconstruct_corpus is not implemented")
-    }
-}
-
-impl LocalDatabaseCorpusReconstruction for LocalDatabase {}
 
 #[test]
 fn export_reconstruction_stops_on_a_digest_mismatch() {
