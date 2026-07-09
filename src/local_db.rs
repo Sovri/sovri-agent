@@ -526,8 +526,10 @@ impl LocalDatabase {
             .prepare(
                 "SELECT framework_id
                  FROM score_summary_runs
+                 INNER JOIN score_summaries
+                   ON score_summaries.id = score_summary_runs.framework_id
                  WHERE run_id = ?1
-                 ORDER BY framework_id",
+                 ORDER BY score_summary_runs.framework_id",
             )
             .map_err(LocalDatabaseError::Sqlite)?;
         let rows = statement
@@ -734,7 +736,10 @@ fn write_control_result_rows(
                    run_id = CASE
                      WHEN control_results.run_id = '' THEN excluded.run_id
                      ELSE control_results.run_id
-                   END",
+                   END,
+                   control_id = excluded.control_id,
+                   rule_id = excluded.rule_id,
+                   evidence_id = excluded.evidence_id",
                 params![
                     result_id,
                     run_id,
@@ -1184,21 +1189,12 @@ fn backfill_score_summary_run_links(
     migrated_scopes: &[ControlResultScope],
 ) -> rusqlite::Result<()> {
     for scope in migrated_scopes.iter().collect::<BTreeSet<_>>() {
-        let score_exists: i64 = transaction.query_row(
-            "SELECT COUNT(*)
-             FROM score_summaries
-             WHERE id = ?1",
-            params![&scope.framework_id],
-            |row| row.get(0),
+        transaction.execute(
+            "INSERT INTO score_summary_runs(run_id, framework_id)
+             VALUES (?1, ?2)
+             ON CONFLICT(run_id, framework_id) DO NOTHING",
+            params![&scope.run_id, &scope.framework_id],
         )?;
-        if score_exists > 0 {
-            transaction.execute(
-                "INSERT INTO score_summary_runs(run_id, framework_id)
-                 VALUES (?1, ?2)
-                 ON CONFLICT(run_id, framework_id) DO NOTHING",
-                params![&scope.run_id, &scope.framework_id],
-            )?;
-        }
     }
 
     Ok(())
