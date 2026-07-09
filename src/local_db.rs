@@ -48,6 +48,11 @@ const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[
         "0006-run-evidence-index",
         RUN_EVIDENCE_INDEX_SCHEMA_SQL,
     ),
+    PackagedMigration::new(
+        EVIDENCE_CLASSIFICATIONS_SCHEMA_VERSION,
+        "0007-evidence-classifications",
+        EVIDENCE_CLASSIFICATIONS_SCHEMA_SQL,
+    ),
 ];
 
 const INITIAL_SCHEMA_SQL: &str = "
@@ -76,7 +81,8 @@ const INITIAL_SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS evidence_metadata (
       id TEXT PRIMARY KEY,
       digest TEXT NOT NULL,
-      locator TEXT NOT NULL DEFAULT ''
+      locator TEXT NOT NULL DEFAULT '',
+      classification TEXT NOT NULL DEFAULT 'Unclassified'
     );
     CREATE TABLE IF NOT EXISTS run_evidence_links (
       run_id TEXT NOT NULL,
@@ -131,6 +137,13 @@ const RUN_EVIDENCE_INDEX_SCHEMA_SQL: &str = "
     FROM scan_runs
     CROSS JOIN evidence_metadata
     WHERE (SELECT COUNT(*) FROM scan_runs) = 1;
+";
+
+const EVIDENCE_CLASSIFICATIONS_SCHEMA_VERSION: u32 = 7;
+
+const EVIDENCE_CLASSIFICATIONS_SCHEMA_SQL: &str = "
+    ALTER TABLE evidence_metadata
+    ADD COLUMN classification TEXT NOT NULL DEFAULT 'Unclassified';
 ";
 
 const MIGRATION_LEDGER_SQL: &str = "
@@ -203,6 +216,25 @@ const SCHEMA_VERSION_6_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
     RequiredSchemaColumn::new("run_evidence_links", "evidence_id"),
 ];
 
+const SCHEMA_VERSION_7_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
+    RequiredSchemaColumn::new("frameworks", "version"),
+    RequiredSchemaColumn::new("control_results", "run_id"),
+    RequiredSchemaColumn::new("control_results", "control_id"),
+    RequiredSchemaColumn::new("control_results", "rule_id"),
+    RequiredSchemaColumn::new("control_results", "status"),
+    RequiredSchemaColumn::new("control_results", "evidence_id"),
+    RequiredSchemaColumn::new("evidence_metadata", "digest"),
+    RequiredSchemaColumn::new("evidence_metadata", "locator"),
+    RequiredSchemaColumn::new("evidence_metadata", "classification"),
+    RequiredSchemaColumn::new("compliance_gaps", "run_id"),
+    RequiredSchemaColumn::new("compliance_gaps", "status"),
+    RequiredSchemaColumn::new("compliance_gaps", "severity"),
+    RequiredSchemaColumn::new("compliance_gaps", "control_id"),
+    RequiredSchemaColumn::new("compliance_gaps", "rule_id"),
+    RequiredSchemaColumn::new("run_evidence_links", "run_id"),
+    RequiredSchemaColumn::new("run_evidence_links", "evidence_id"),
+];
+
 const NO_REQUIRED_SCHEMA_COLUMNS: &[RequiredSchemaColumn] = &[];
 
 const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
@@ -226,6 +258,10 @@ const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
     SchemaRequirements::new(
         RUN_EVIDENCE_INDEX_SCHEMA_VERSION,
         SCHEMA_VERSION_6_REQUIRED_COLUMNS,
+    ),
+    SchemaRequirements::new(
+        EVIDENCE_CLASSIFICATIONS_SCHEMA_VERSION,
+        SCHEMA_VERSION_7_REQUIRED_COLUMNS,
     ),
 ];
 
@@ -808,15 +844,21 @@ fn write_evidence_rows(
     for evidence in corpus.evidence_records() {
         transaction.execute(
             // Rewrites refresh content identity but preserve the first non-empty locator.
-            "INSERT INTO evidence_metadata(id, digest, locator)
-             VALUES (?1, ?2, ?3)
+            "INSERT INTO evidence_metadata(id, digest, locator, classification)
+             VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(id) DO UPDATE SET
                digest = COALESCE(NULLIF(excluded.digest, ''), evidence_metadata.digest),
                locator = CASE
                  WHEN evidence_metadata.locator = '' THEN excluded.locator
                  ELSE evidence_metadata.locator
-               END",
-            params![evidence.id, evidence.integrity, evidence.locator],
+               END,
+               classification = excluded.classification",
+            params![
+                evidence.id,
+                evidence.integrity,
+                evidence.locator,
+                evidence.classification
+            ],
         )?;
         transaction.execute(
             "INSERT INTO run_evidence_links(run_id, evidence_id)
@@ -1081,6 +1123,22 @@ fn schema_column_exists(
     Ok(count == 1)
 }
 
+fn schema_has_required_columns(
+    connection: &Connection,
+    required_columns: &[RequiredSchemaColumn],
+) -> Result<bool, LocalDatabaseError> {
+    for required_column in required_columns {
+        if !schema_column_exists(
+            connection,
+            required_column.table_name,
+            required_column.column_name,
+        )? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn migration_is_applied(connection: &Connection, version: u32) -> Result<bool, LocalDatabaseError> {
     if !migration_ledger_exists(connection)? {
         return Ok(false);
@@ -1166,6 +1224,20 @@ fn migration_is_applicable(
             && migration_is_applied(connection, schema_version)?
             && can_backfill
             && (schema_version > INITIAL_SCHEMA_VERSION || link_columns_missing));
+    }
+
+    if migration.version == EVIDENCE_CLASSIFICATIONS_SCHEMA_VERSION
+        && migration.name == "0007-evidence-classifications"
+        && migration.sql == EVIDENCE_CLASSIFICATIONS_SCHEMA_SQL
+    {
+        let schema_version = connection_schema_version(connection)?;
+        return Ok(
+            (INITIAL_SCHEMA_VERSION..EVIDENCE_CLASSIFICATIONS_SCHEMA_VERSION)
+                .contains(&schema_version)
+                && migration_is_applied(connection, schema_version)?
+                && schema_has_required_columns(connection, SCHEMA_VERSION_6_REQUIRED_COLUMNS)?
+                && !schema_column_exists(connection, "evidence_metadata", "classification")?,
+        );
     }
 
     Ok(true)
