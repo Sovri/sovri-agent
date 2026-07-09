@@ -426,6 +426,23 @@ impl LocalDatabase {
             .map_err(LocalDatabaseError::Sqlite)
     }
 
+    /// Queries a persisted scan run by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot prepare or run the run query.
+    pub fn query_run(&self, run_id: &str) -> Result<Vec<String>, LocalDatabaseError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id FROM scan_runs WHERE id = ?1")
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let rows = statement
+            .query_map(params![run_id], |row| row.get::<_, String>(0))
+            .map_err(LocalDatabaseError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(LocalDatabaseError::Sqlite)
+    }
+
     /// Queries persisted compliance gaps by run, status, and severity.
     ///
     /// # Errors
