@@ -121,6 +121,7 @@ const WORKSHEET_NAMES: [&str; 6] = [
 /// their rows from the same corpus.
 pub struct Corpus {
     executed_at: String,
+    run_id: String,
     controls: Vec<Control>,
     results: Vec<ScopedResult>,
     evidence: Vec<Evidence>,
@@ -207,6 +208,24 @@ struct Evidence {
     classification: Classification,
 }
 
+/// Borrowed evidence metadata exposed to downstream exporters.
+///
+/// The view carries only persisted metadata: stable id, evidence kind, locator,
+/// stored integrity value, and the redaction status derived from the record's
+/// classification. It never exposes raw evidence bytes.
+pub struct EvidenceRecord<'a> {
+    /// Stable evidence id used by results and gaps to reference this record.
+    pub id: &'a str,
+    /// Evidence kind recorded by the persisted store, such as `file` or `config`.
+    pub kind: &'a str,
+    /// Location the evidence was collected from.
+    pub locator: &'a str,
+    /// Integrity metadata read from the persisted store.
+    pub integrity: &'a str,
+    /// Redaction status derived from the record classification.
+    pub redaction_status: &'a str,
+}
+
 impl Corpus {
     /// Builds a corpus for a run with the given fixed executed-at timestamp.
     ///
@@ -219,11 +238,133 @@ impl Corpus {
     pub fn new(executed_at: impl Into<String>) -> Self {
         Self {
             executed_at: executed_at.into(),
+            run_id: String::new(),
             controls: Vec::new(),
             results: Vec::new(),
             evidence: Vec::new(),
             frameworks: Vec::new(),
         }
+    }
+
+    /// The run's fixed executed-at timestamp — the value the exports carry as
+    /// their generated date, so output stays deterministic and never reads the
+    /// wall clock.
+    #[must_use]
+    pub fn executed_at(&self) -> &str {
+        &self.executed_at
+    }
+
+    /// Records the stable id of the compliance run, the value the signed export's
+    /// scan record carries so a downstream system can key off the run. A corpus
+    /// built without one carries an empty run id, so existing callers are
+    /// unaffected. The builder is chainable.
+    #[must_use]
+    pub fn with_run_id(mut self, run_id: impl Into<String>) -> Self {
+        self.run_id = run_id.into();
+        self
+    }
+
+    /// The stable id of the compliance run, carried on the signed export's scan
+    /// record so each export traces back to its run. Empty when the corpus was
+    /// built without one.
+    #[must_use]
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    /// The MAT-87 environment score for the corpus's framework-scoped results — the
+    /// pooled environment score plus the per-framework and per-control scores the
+    /// SDK derives, grouped by the framework each result was evaluated under. The
+    /// exporter carries this score; it never recomputes it here.
+    #[must_use]
+    pub fn environment_score(&self) -> EnvironmentScore {
+        environment_score(&self.results)
+    }
+
+    /// The frameworks the corpus covers, each as its stable id, catalog version,
+    /// and source URL, in the order they were added — the records the signed JSON
+    /// export's frameworks section lists so a consumer can pin the exact catalog.
+    #[must_use]
+    pub fn frameworks(&self) -> Vec<(&str, &str, &str)> {
+        self.frameworks
+            .iter()
+            .map(|framework| {
+                (
+                    framework.id.as_str(),
+                    framework.version.as_str(),
+                    framework.source_url.as_str(),
+                )
+            })
+            .collect()
+    }
+
+    /// The stable ids of the catalogued controls the corpus evaluated, in the
+    /// order they were added — the controls the signed JSON export lists, one
+    /// record per id.
+    #[must_use]
+    pub fn control_ids(&self) -> Vec<&str> {
+        self.controls
+            .iter()
+            .map(|control| control.id.as_str())
+            .collect()
+    }
+
+    /// The catalogued controls, each as its framework id, control id, severity, and
+    /// non-CWE framework reference, in the order they were added — the details a gap
+    /// on a control resolves (its own reference and severity) by looking the control
+    /// up by framework and control id.
+    #[must_use]
+    pub fn controls(&self) -> Vec<(&str, &str, &str, &str)> {
+        self.controls
+            .iter()
+            .map(|control| {
+                (
+                    control.framework_id.as_str(),
+                    control.id.as_str(),
+                    control.severity.as_str(),
+                    control.reference.as_str(),
+                )
+            })
+            .collect()
+    }
+
+    /// The stable ids of the evidence records the corpus holds, in the order they
+    /// were collected — the evidence the signed JSON export lists, one record per
+    /// id.
+    #[must_use]
+    pub fn evidence_ids(&self) -> Vec<&str> {
+        self.evidence
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect()
+    }
+
+    /// The evidence metadata records the corpus holds, in the order they were
+    /// collected.
+    #[must_use]
+    pub fn evidence_records(&self) -> Vec<EvidenceRecord<'_>> {
+        self.evidence
+            .iter()
+            .map(|record| EvidenceRecord {
+                id: record.id.as_str(),
+                kind: record.kind.as_str(),
+                locator: record.location.as_str(),
+                integrity: record.integrity.as_str(),
+                redaction_status: redaction_status(record.classification),
+            })
+            .collect()
+    }
+
+    /// The corpus's control results, each paired with the framework it was
+    /// evaluated under (`None` when it was added without one), in the order they
+    /// were added — the source of the signed JSON export's results and gaps
+    /// sections.
+    #[must_use]
+    pub fn scoped_results(&self) -> Vec<(Option<&str>, &ControlResult)> {
+        self.results
+            .iter()
+            .map(|scoped| (scoped.framework_id.as_deref(), &scoped.result))
+            .collect()
     }
 
     /// Adds a catalogued control the corpus evaluated, rendered as one row on the
@@ -579,9 +720,10 @@ fn applicability_for(status: Status) -> &'static str {
     }
 }
 
-/// The redaction status an evidence record of `classification` renders on its
-/// Evidence row: a `Secret` or `Sensitive` record was reduced to metadata, so its
-/// row is `redacted`; an unclassified record kept its value, so its row is `none`.
+/// The redaction status an evidence record of `classification` renders in corpus
+/// metadata exports. A `Secret` or `Sensitive` record was reduced to metadata, so
+/// its status is `redacted`; an unclassified record kept its value, so its status
+/// is `none`.
 fn redaction_status(classification: Classification) -> &'static str {
     match classification {
         Classification::Secret | Classification::Sensitive => "redacted",
