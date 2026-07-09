@@ -633,13 +633,21 @@ impl LocalDatabase {
         };
         let sql = match lookup {
             EvidenceLookup::Id => {
-                "SELECT id, digest, locator, classification
+                "SELECT
+                   id,
+                   digest,
+                   locator,
+                   classification
                  FROM evidence_metadata
                  WHERE id = ?1
                  ORDER BY id"
             }
             EvidenceLookup::Digest => {
-                "SELECT id, digest, locator, classification
+                "SELECT
+                   id,
+                   digest,
+                   locator,
+                   classification
                  FROM evidence_metadata
                  WHERE digest = ?1
                  ORDER BY id"
