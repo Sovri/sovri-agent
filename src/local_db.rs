@@ -38,6 +38,11 @@ const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[
         "0004-evidence-locators",
         EVIDENCE_LOCATORS_SCHEMA_SQL,
     ),
+    PackagedMigration::new(
+        RESULT_SCORE_QUERY_SCOPE_SCHEMA_VERSION,
+        "0005-result-score-query-scope",
+        RESULT_SCORE_QUERY_SCOPE_SCHEMA_SQL,
+    ),
 ];
 
 const INITIAL_SCHEMA_SQL: &str = "
@@ -49,6 +54,7 @@ const INITIAL_SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS controls (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS control_results (
       id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL DEFAULT '',
       control_id TEXT NOT NULL,
       rule_id TEXT NOT NULL,
       evidence_id TEXT NOT NULL
@@ -67,6 +73,11 @@ const INITIAL_SCHEMA_SQL: &str = "
       locator TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS score_summaries (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS score_summary_runs (
+      run_id TEXT NOT NULL,
+      framework_id TEXT NOT NULL,
+      PRIMARY KEY (run_id, framework_id)
+    );
     CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY);
 ";
 
@@ -92,6 +103,10 @@ const GAP_QUERY_FILTER_COLUMNS: &[&str] =
 const EVIDENCE_LOCATORS_SCHEMA_VERSION: u32 = 4;
 
 const EVIDENCE_LOCATORS_SCHEMA_SQL: &str = "";
+
+const RESULT_SCORE_QUERY_SCOPE_SCHEMA_VERSION: u32 = 5;
+
+const RESULT_SCORE_QUERY_SCOPE_SCHEMA_SQL: &str = "";
 
 const MIGRATION_LEDGER_SQL: &str = "
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -129,6 +144,23 @@ const SCHEMA_VERSION_4_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
     RequiredSchemaColumn::new("compliance_gaps", "rule_id"),
 ];
 
+const SCHEMA_VERSION_5_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
+    RequiredSchemaColumn::new("frameworks", "version"),
+    RequiredSchemaColumn::new("control_results", "run_id"),
+    RequiredSchemaColumn::new("control_results", "control_id"),
+    RequiredSchemaColumn::new("control_results", "rule_id"),
+    RequiredSchemaColumn::new("control_results", "evidence_id"),
+    RequiredSchemaColumn::new("evidence_metadata", "digest"),
+    RequiredSchemaColumn::new("evidence_metadata", "locator"),
+    RequiredSchemaColumn::new("compliance_gaps", "run_id"),
+    RequiredSchemaColumn::new("compliance_gaps", "status"),
+    RequiredSchemaColumn::new("compliance_gaps", "severity"),
+    RequiredSchemaColumn::new("compliance_gaps", "control_id"),
+    RequiredSchemaColumn::new("compliance_gaps", "rule_id"),
+    RequiredSchemaColumn::new("score_summary_runs", "run_id"),
+    RequiredSchemaColumn::new("score_summary_runs", "framework_id"),
+];
+
 const NO_REQUIRED_SCHEMA_COLUMNS: &[RequiredSchemaColumn] = &[];
 
 const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
@@ -144,6 +176,10 @@ const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
     SchemaRequirements::new(
         EVIDENCE_LOCATORS_SCHEMA_VERSION,
         SCHEMA_VERSION_4_REQUIRED_COLUMNS,
+    ),
+    SchemaRequirements::new(
+        RESULT_SCORE_QUERY_SCOPE_SCHEMA_VERSION,
+        SCHEMA_VERSION_5_REQUIRED_COLUMNS,
     ),
 ];
 
@@ -206,11 +242,24 @@ pub struct LocalDatabaseGap {
     status: String,
 }
 
+/// A persisted control result returned by local database queries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalDatabaseResult {
+    control_id: String,
+    rule_id: String,
+}
+
 /// Persisted evidence metadata returned by local database queries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalDatabaseEvidence {
     id: String,
     locator: String,
+}
+
+/// A persisted score summary returned by local database queries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalDatabaseScoreSummary {
+    framework_id: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -252,6 +301,20 @@ impl LocalDatabaseGap {
     }
 }
 
+impl LocalDatabaseResult {
+    /// Returns the control id for the persisted result.
+    #[must_use]
+    pub fn control_id(&self) -> &str {
+        &self.control_id
+    }
+
+    /// Returns the rule id for the persisted result.
+    #[must_use]
+    pub fn rule_id(&self) -> &str {
+        &self.rule_id
+    }
+}
+
 impl LocalDatabaseEvidence {
     /// Returns the stable evidence id.
     #[must_use]
@@ -263,6 +326,14 @@ impl LocalDatabaseEvidence {
     #[must_use]
     pub fn locator(&self) -> &str {
         &self.locator
+    }
+}
+
+impl LocalDatabaseScoreSummary {
+    /// Returns the framework id for the persisted score summary.
+    #[must_use]
+    pub fn framework_id(&self) -> &str {
+        &self.framework_id
     }
 }
 
@@ -407,6 +478,65 @@ impl LocalDatabase {
             .map_err(LocalDatabaseError::Sqlite)
     }
 
+    /// Queries persisted control results by run in stable order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot prepare or run the result-list query.
+    pub fn query_results(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<LocalDatabaseResult>, LocalDatabaseError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT control_id, rule_id
+                 FROM control_results
+                 WHERE run_id = ?1
+                 ORDER BY control_id, rule_id",
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let rows = statement
+            .query_map(params![run_id], |row| {
+                Ok(LocalDatabaseResult {
+                    control_id: row.get(0)?,
+                    rule_id: row.get(1)?,
+                })
+            })
+            .map_err(LocalDatabaseError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(LocalDatabaseError::Sqlite)
+    }
+
+    /// Queries persisted score summaries by run in stable framework order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot prepare or run the score-summary query.
+    pub fn query_score_summaries(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<LocalDatabaseScoreSummary>, LocalDatabaseError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT framework_id
+                 FROM score_summary_runs
+                 WHERE run_id = ?1
+                 ORDER BY framework_id",
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let rows = statement
+            .query_map(params![run_id], |row| {
+                Ok(LocalDatabaseScoreSummary {
+                    framework_id: row.get(0)?,
+                })
+            })
+            .map_err(LocalDatabaseError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(LocalDatabaseError::Sqlite)
+    }
+
     /// Queries persisted evidence metadata by id, digest, or control id.
     ///
     /// # Errors
@@ -500,47 +630,8 @@ impl LocalDatabase {
                 .map_err(LocalDatabaseError::Sqlite)?;
         }
 
-        for framework_id in scoped_results
-            .iter()
-            .filter_map(|(framework_id, _)| *framework_id)
-            .collect::<BTreeSet<_>>()
-        {
-            transaction
-                .execute(
-                    "INSERT INTO score_summaries(id) VALUES (?1)
-                     ON CONFLICT(id) DO NOTHING",
-                    params![framework_id],
-                )
-                .map_err(LocalDatabaseError::Sqlite)?;
-        }
-
-        for (framework_id, result) in &scoped_results {
-            let evidence_id = result
-                .evidence_refs()
-                .first()
-                .map(String::as_str)
-                .unwrap_or_default();
-            let result_id = control_result_row_id(
-                run_id,
-                framework_id.unwrap_or_default(),
-                result.control_id(),
-                result.rule_id(),
-            );
-            transaction
-                .execute(
-                    "INSERT INTO control_results(id, control_id, rule_id, evidence_id)
-                     VALUES (?1, ?2, ?3, ?4)
-                     ON CONFLICT(id) DO NOTHING",
-                    params![
-                        result_id,
-                        result.control_id(),
-                        result.rule_id(),
-                        evidence_id
-                    ],
-                )
-                .map_err(LocalDatabaseError::Sqlite)?;
-        }
-
+        write_score_summary_rows(&transaction, run_id, &scoped_results)?;
+        write_control_result_rows(&transaction, run_id, &scoped_results)?;
         write_gap_rows(&transaction, run_id, &scoped_results)?;
 
         for evidence in corpus.evidence_records() {
@@ -576,6 +667,82 @@ fn control_result_row_id(
         framework_id.len(),
         control_id.len()
     )
+}
+
+fn write_score_summary_rows(
+    transaction: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    scoped_results: &[(Option<&str>, &ControlResult)],
+) -> Result<(), LocalDatabaseError> {
+    for framework_id in scoped_results
+        .iter()
+        .filter_map(|(framework_id, _)| *framework_id)
+        .collect::<BTreeSet<_>>()
+    {
+        transaction
+            .execute(
+                "INSERT INTO score_summaries(id) VALUES (?1)
+                 ON CONFLICT(id) DO NOTHING",
+                params![framework_id],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        transaction
+            .execute(
+                "INSERT INTO score_summary_runs(run_id, framework_id)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(run_id, framework_id) DO NOTHING",
+                params![run_id, framework_id],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+
+    Ok(())
+}
+
+fn write_control_result_rows(
+    transaction: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    scoped_results: &[(Option<&str>, &ControlResult)],
+) -> Result<(), LocalDatabaseError> {
+    for (framework_id, result) in scoped_results {
+        let evidence_id = result
+            .evidence_refs()
+            .first()
+            .map(String::as_str)
+            .unwrap_or_default();
+        let result_id = control_result_row_id(
+            run_id,
+            framework_id.unwrap_or_default(),
+            result.control_id(),
+            result.rule_id(),
+        );
+        transaction
+            .execute(
+                "INSERT INTO control_results(
+                   id,
+                   run_id,
+                   control_id,
+                   rule_id,
+                   evidence_id
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(id) DO UPDATE SET
+                   run_id = CASE
+                     WHEN control_results.run_id = '' THEN excluded.run_id
+                     ELSE control_results.run_id
+                   END",
+                params![
+                    result_id,
+                    run_id,
+                    result.control_id(),
+                    result.rule_id(),
+                    evidence_id
+                ],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+
+    Ok(())
 }
 
 fn write_gap_rows(
@@ -876,6 +1043,17 @@ fn migration_is_applicable(
             && !schema_column_exists(connection, "evidence_metadata", "locator")?);
     }
 
+    if migration.version == RESULT_SCORE_QUERY_SCOPE_SCHEMA_VERSION
+        && migration.name == "0005-result-score-query-scope"
+        && migration.sql == RESULT_SCORE_QUERY_SCOPE_SCHEMA_SQL
+    {
+        return Ok(schema_column_exists(connection, "control_results", "id")?
+            && schema_column_exists(connection, "score_summaries", "id")?
+            && (!schema_column_exists(connection, "control_results", "run_id")?
+                || !schema_column_exists(connection, "score_summary_runs", "run_id")?
+                || !schema_column_exists(connection, "score_summary_runs", "framework_id")?));
+    }
+
     Ok(true)
 }
 
@@ -900,6 +1078,12 @@ fn apply_packaged_migration(
         && migration.sql == EVIDENCE_LOCATORS_SCHEMA_SQL
     {
         apply_evidence_locators_migration(&transaction)
+            .map_err(|source| migration_error(migration, source))?;
+    } else if migration.version == RESULT_SCORE_QUERY_SCOPE_SCHEMA_VERSION
+        && migration.name == "0005-result-score-query-scope"
+        && migration.sql == RESULT_SCORE_QUERY_SCOPE_SCHEMA_SQL
+    {
+        apply_result_score_query_scope_migration(&transaction)
             .map_err(|source| migration_error(migration, source))?;
     } else {
         transaction
@@ -943,6 +1127,27 @@ fn apply_evidence_locators_migration(
             [],
         )?;
     }
+
+    Ok(())
+}
+
+fn apply_result_score_query_scope_migration(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<()> {
+    if !transaction_schema_column_exists(transaction, "control_results", "run_id")? {
+        transaction.execute(
+            "ALTER TABLE control_results ADD COLUMN run_id TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    transaction.execute(
+        "CREATE TABLE IF NOT EXISTS score_summary_runs (
+           run_id TEXT NOT NULL,
+           framework_id TEXT NOT NULL,
+           PRIMARY KEY (run_id, framework_id)
+         )",
+        [],
+    )?;
 
     Ok(())
 }
