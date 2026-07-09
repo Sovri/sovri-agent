@@ -202,6 +202,24 @@ fn rewriting_run_replaces_stale_score_summaries() {
     assert_eq!(summaries[0].warning_count(), 0, "WARNING");
 }
 
+#[test]
+fn unrepairable_score_summary_schema_error_is_propagated() {
+    let database = TempDatabase::new();
+    LocalDatabase::open(database.path()).expect("the local database opens");
+    replace_score_summary_table_with_view(database.path());
+    let local_database =
+        LocalDatabase::open(database.path()).expect("the database with an invalid object opens");
+
+    let error = local_database
+        .score_summaries_for_run(MIXED_RUN)
+        .expect_err("the unrepairable score summary schema returns an error");
+
+    assert!(
+        error.to_string().contains("view"),
+        "unexpected error: {error}"
+    );
+}
+
 fn mixed_completed_corpus() -> Corpus {
     Corpus::new(EXECUTED_AT)
         .with_run_id(MIXED_RUN)
@@ -332,6 +350,18 @@ fn score_summary_columns(path: &Path) -> Vec<String> {
         .expect("score_summaries columns can be listed")
         .collect::<Result<Vec<_>, _>>()
         .expect("score_summaries column names can be read")
+}
+
+fn replace_score_summary_table_with_view(path: &Path) {
+    let connection = Connection::open(path).expect("the SQLite database opens");
+    connection
+        .execute_batch(
+            "
+            DROP TABLE score_summaries;
+            CREATE VIEW score_summaries AS SELECT 'legacy-score' AS id;
+            ",
+        )
+        .expect("the score_summaries table is replaced by an invalid view");
 }
 
 fn control_result(

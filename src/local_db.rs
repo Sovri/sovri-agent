@@ -143,9 +143,13 @@ pub struct LocalDatabase {
 /// Persisted status-count summary for one framework in a completed run.
 #[derive(Debug, PartialEq)]
 pub struct ScoreSummaryRecord {
+    /// Framework identifier this summary belongs to.
     framework_id: String,
+    /// Number of PASS results counted for the framework in this run.
     pass_count: u32,
+    /// Number of FAIL results counted for the framework in this run.
     fail_count: u32,
+    /// Number of WARNING results counted for the framework in this run.
     warning_count: u32,
 }
 
@@ -379,6 +383,25 @@ fn score_summary_counts(corpus: &Corpus) -> std::collections::BTreeMap<String, S
 }
 
 fn ensure_score_summary_schema(connection: &Connection) -> Result<(), LocalDatabaseError> {
+    connection
+        .execute_batch("SAVEPOINT score_summary_schema_repair")
+        .map_err(LocalDatabaseError::Sqlite)?;
+    let repair_result = add_missing_score_summary_columns(connection);
+    match repair_result {
+        Ok(()) => connection
+            .execute_batch("RELEASE SAVEPOINT score_summary_schema_repair")
+            .map_err(LocalDatabaseError::Sqlite),
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "ROLLBACK TO SAVEPOINT score_summary_schema_repair;
+                 RELEASE SAVEPOINT score_summary_schema_repair",
+            );
+            Err(error)
+        }
+    }
+}
+
+fn add_missing_score_summary_columns(connection: &Connection) -> Result<(), LocalDatabaseError> {
     if !schema_column_exists(connection, "score_summaries", "run_id")? {
         connection
             .execute(
