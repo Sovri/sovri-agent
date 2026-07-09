@@ -621,7 +621,9 @@ impl LocalDatabase {
                        evidence_id
                      )
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                     ON CONFLICT(id) DO NOTHING",
+                     ON CONFLICT(id) DO UPDATE SET
+                       run_id = COALESCE(NULLIF(control_results.run_id, ''), excluded.run_id),
+                       status = COALESCE(NULLIF(control_results.status, ''), excluded.status)",
                     params![
                         result_id,
                         run_id,
