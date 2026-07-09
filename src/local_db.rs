@@ -15,6 +15,7 @@ use std::path::Path;
 
 use crate::matrix::Corpus;
 use rusqlite::{params, Connection};
+use sovri_sdk::Status;
 
 /// The schema version created by the first packaged migration.
 pub const INITIAL_SCHEMA_VERSION: u32 = 1;
@@ -257,6 +258,13 @@ impl LocalDatabase {
                     params![framework_id, version],
                 )
                 .map_err(LocalDatabaseError::Sqlite)?;
+            transaction
+                .execute(
+                    "INSERT INTO score_summaries(id) VALUES (?1)
+                     ON CONFLICT(id) DO NOTHING",
+                    params![framework_id],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
         }
 
         for (_, control_id, _, _) in corpus.controls() {
@@ -269,7 +277,7 @@ impl LocalDatabase {
                 .map_err(LocalDatabaseError::Sqlite)?;
         }
 
-        for (_, result) in corpus.scoped_results() {
+        for (framework_id, result) in corpus.scoped_results() {
             let evidence_id = result
                 .evidence_refs()
                 .first()
@@ -289,6 +297,19 @@ impl LocalDatabase {
                     ],
                 )
                 .map_err(LocalDatabaseError::Sqlite)?;
+            if let Some(framework_id) = framework_id {
+                if is_gap_status(result.status()) {
+                    let gap_id =
+                        compliance_gap_row_id(framework_id, result.control_id(), result.rule_id());
+                    transaction
+                        .execute(
+                            "INSERT INTO compliance_gaps(id) VALUES (?1)
+                             ON CONFLICT(id) DO NOTHING",
+                            params![gap_id],
+                        )
+                        .map_err(LocalDatabaseError::Sqlite)?;
+                }
+            }
         }
 
         for evidence in corpus.evidence_records() {
@@ -314,6 +335,14 @@ fn control_result_row_id(control_id: &str, rule_id: &str) -> String {
     id.push(':');
     id.push_str(rule_id);
     id
+}
+
+fn compliance_gap_row_id(framework_id: &str, control_id: &str, rule_id: &str) -> String {
+    format!("{framework_id}:{control_id}:{rule_id}")
+}
+
+fn is_gap_status(status: Status) -> bool {
+    matches!(status, Status::Fail | Status::Warning)
 }
 
 fn apply_packaged_migrations(
