@@ -13,6 +13,7 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
+use crate::matrix::Corpus;
 use rusqlite::{params, Connection};
 
 /// The schema version created by the first packaged migration.
@@ -220,6 +221,69 @@ impl LocalDatabase {
             .map_err(LocalDatabaseError::Sqlite)?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(LocalDatabaseError::Sqlite)
+    }
+
+    /// Writes a completed scan corpus into the local database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot start, populate, or commit the write
+    /// transaction.
+    pub fn write_completed_corpus(&mut self, corpus: &Corpus) -> Result<(), LocalDatabaseError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let run_id = corpus.run_id();
+
+        transaction
+            .execute("INSERT OR REPLACE INTO scan_runs(id) VALUES (?1)", [run_id])
+            .map_err(LocalDatabaseError::Sqlite)?;
+
+        for (framework_id, version, _source_url) in corpus.frameworks() {
+            transaction
+                .execute(
+                    "INSERT OR REPLACE INTO frameworks(id, version) VALUES (?1, ?2)",
+                    params![framework_id, version],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+        }
+
+        for (_framework_id, control_id, _severity, _reference) in corpus.controls() {
+            transaction
+                .execute(
+                    "INSERT OR REPLACE INTO controls(id) VALUES (?1)",
+                    [control_id],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+        }
+
+        for (framework_id, result) in corpus.scoped_results() {
+            let result_id = format!(
+                "{}:{}:{}:{}",
+                run_id,
+                framework_id.unwrap_or("global"),
+                result.control_id(),
+                result.rule_id()
+            );
+            transaction
+                .execute(
+                    "INSERT OR REPLACE INTO control_results(id) VALUES (?1)",
+                    [result_id],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+        }
+
+        for evidence in corpus.evidence_records() {
+            transaction
+                .execute(
+                    "INSERT OR REPLACE INTO evidence_metadata(id, digest) VALUES (?1, ?2)",
+                    params![evidence.id, evidence.integrity],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+        }
+
+        transaction.commit().map_err(LocalDatabaseError::Sqlite)
     }
 }
 
