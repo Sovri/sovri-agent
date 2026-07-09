@@ -188,6 +188,16 @@ pub enum Classification {
     Unclassified,
 }
 
+impl Classification {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Classification::Secret => "Secret",
+            Classification::Sensitive => "Sensitive",
+            Classification::Unclassified => "Unclassified",
+        }
+    }
+}
+
 /// A collected evidence record the corpus holds, carrying the stable id it is
 /// filed under, its metadata, and the classification that decides its redaction
 /// status.
@@ -222,6 +232,8 @@ pub struct EvidenceRecord<'a> {
     pub locator: &'a str,
     /// Integrity metadata read from the persisted store.
     pub integrity: &'a str,
+    /// Confidentiality classification recorded by the persisted store.
+    pub classification: &'a str,
     /// Redaction status derived from the record classification.
     pub redaction_status: &'a str,
 }
@@ -350,6 +362,7 @@ impl Corpus {
                 kind: record.kind.as_str(),
                 locator: record.location.as_str(),
                 integrity: record.integrity.as_str(),
+                classification: record.classification.as_str(),
                 redaction_status: redaction_status(record.classification),
             })
             .collect()
