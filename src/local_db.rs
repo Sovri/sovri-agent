@@ -16,7 +16,7 @@ use std::path::Path;
 
 use crate::matrix::Corpus;
 use rusqlite::{params, Connection};
-use sovri_sdk::Status;
+use sovri_sdk::{ControlResult, Status};
 
 /// The schema version created by the first packaged migration.
 pub const INITIAL_SCHEMA_VERSION: u32 = 1;
@@ -27,6 +27,11 @@ const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[
         RUN_EVIDENCE_LINKS_SCHEMA_VERSION,
         "0002-run-evidence-links",
         RUN_EVIDENCE_LINKS_SCHEMA_SQL,
+    ),
+    PackagedMigration::new(
+        GAP_QUERY_FILTERS_SCHEMA_VERSION,
+        "0003-gap-query-filters",
+        GAP_QUERY_FILTERS_SCHEMA_SQL,
     ),
 ];
 
@@ -43,7 +48,14 @@ const INITIAL_SCHEMA_SQL: &str = "
       rule_id TEXT NOT NULL,
       evidence_id TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS compliance_gaps (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS compliance_gaps (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      control_id TEXT NOT NULL,
+      rule_id TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS evidence_metadata (
       id TEXT PRIMARY KEY,
       digest TEXT NOT NULL
@@ -65,6 +77,12 @@ const RUN_EVIDENCE_LINKS_SCHEMA_SQL: &str = "
     FROM evidence_metadata;
 ";
 
+const GAP_QUERY_FILTERS_SCHEMA_VERSION: u32 = 3;
+
+const GAP_QUERY_FILTERS_SCHEMA_SQL: &str = "";
+const GAP_QUERY_FILTER_COLUMNS: &[&str] =
+    &["run_id", "status", "severity", "control_id", "rule_id"];
+
 const MIGRATION_LEDGER_SQL: &str = "
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
@@ -78,6 +96,16 @@ const SCHEMA_VERSION_1_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
     RequiredSchemaColumn::new("evidence_metadata", "digest"),
 ];
 
+const SCHEMA_VERSION_3_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
+    RequiredSchemaColumn::new("frameworks", "version"),
+    RequiredSchemaColumn::new("evidence_metadata", "digest"),
+    RequiredSchemaColumn::new("compliance_gaps", "run_id"),
+    RequiredSchemaColumn::new("compliance_gaps", "status"),
+    RequiredSchemaColumn::new("compliance_gaps", "severity"),
+    RequiredSchemaColumn::new("compliance_gaps", "control_id"),
+    RequiredSchemaColumn::new("compliance_gaps", "rule_id"),
+];
+
 const NO_REQUIRED_SCHEMA_COLUMNS: &[RequiredSchemaColumn] = &[];
 
 const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
@@ -85,6 +113,10 @@ const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
     SchemaRequirements::new(
         RUN_EVIDENCE_LINKS_SCHEMA_VERSION,
         SCHEMA_VERSION_1_REQUIRED_COLUMNS,
+    ),
+    SchemaRequirements::new(
+        GAP_QUERY_FILTERS_SCHEMA_VERSION,
+        SCHEMA_VERSION_3_REQUIRED_COLUMNS,
     ),
 ];
 
@@ -137,6 +169,34 @@ impl PackagedMigration {
 /// A local `SQLite` database opened by `sovri-agent`.
 pub struct LocalDatabase {
     connection: Connection,
+}
+
+/// A persisted compliance gap returned by local database queries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalDatabaseGap {
+    control_id: String,
+    rule_id: String,
+    status: String,
+}
+
+impl LocalDatabaseGap {
+    /// Returns the control id for the compliance gap.
+    #[must_use]
+    pub fn control_id(&self) -> &str {
+        &self.control_id
+    }
+
+    /// Returns the rule id for the compliance gap.
+    #[must_use]
+    pub fn rule_id(&self) -> &str {
+        &self.rule_id
+    }
+
+    /// Returns the persisted result status for the compliance gap.
+    #[must_use]
+    pub fn status(&self) -> &str {
+        &self.status
+    }
 }
 
 impl LocalDatabase {
@@ -247,6 +307,39 @@ impl LocalDatabase {
             .map_err(LocalDatabaseError::Sqlite)
     }
 
+    /// Queries persisted compliance gaps by run, status, and severity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot prepare or run the gap-list query.
+    pub fn query_gaps(
+        &self,
+        run_id: &str,
+        status: &str,
+        severity: &str,
+    ) -> Result<Vec<LocalDatabaseGap>, LocalDatabaseError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT control_id, rule_id, status
+                 FROM compliance_gaps
+                 WHERE run_id = ?1 AND status = ?2 AND severity = ?3
+                 ORDER BY control_id, rule_id",
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let rows = statement
+            .query_map(params![run_id, status, severity], |row| {
+                Ok(LocalDatabaseGap {
+                    control_id: row.get(0)?,
+                    rule_id: row.get(1)?,
+                    status: row.get(2)?,
+                })
+            })
+            .map_err(LocalDatabaseError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(LocalDatabaseError::Sqlite)
+    }
+
     /// Writes a completed scan corpus into the local database.
     ///
     /// # Errors
@@ -325,21 +418,7 @@ impl LocalDatabase {
                 .map_err(LocalDatabaseError::Sqlite)?;
         }
 
-        for (framework_id, result) in scoped_results.iter().filter_map(|(framework_id, result)| {
-            framework_id.map(|framework_id| (framework_id, *result))
-        }) {
-            if is_gap_status(result.status()) {
-                let gap_id =
-                    compliance_gap_row_id(framework_id, result.control_id(), result.rule_id());
-                transaction
-                    .execute(
-                        "INSERT INTO compliance_gaps(id) VALUES (?1)
-                         ON CONFLICT(id) DO NOTHING",
-                        params![gap_id],
-                    )
-                    .map_err(LocalDatabaseError::Sqlite)?;
-            }
-        }
+        write_gap_rows(&transaction, run_id, &scoped_results)?;
 
         for evidence in corpus.evidence_records() {
             transaction
@@ -366,27 +445,73 @@ fn control_result_row_id(control_id: &str, rule_id: &str) -> String {
     id
 }
 
-fn compliance_gap_row_id(framework_id: &str, control_id: &str, rule_id: &str) -> String {
-    let framework_id_len = framework_id.len().to_string();
-    let control_id_len = control_id.len().to_string();
-    let mut id = String::with_capacity(
-        framework_id_len.len()
-            + framework_id.len()
-            + control_id_len.len()
-            + control_id.len()
-            + rule_id.len()
-            + 4,
-    );
-    id.push_str(&framework_id_len);
-    id.push(':');
-    id.push_str(framework_id);
-    id.push(':');
-    id.push_str(&control_id_len);
-    id.push(':');
-    id.push_str(control_id);
-    id.push(':');
-    id.push_str(rule_id);
-    id
+fn write_gap_rows(
+    transaction: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    scoped_results: &[(Option<&str>, &ControlResult)],
+) -> Result<(), LocalDatabaseError> {
+    for (framework_id, result) in scoped_results.iter().filter_map(|(framework_id, result)| {
+        framework_id.map(|framework_id| (framework_id, *result))
+    }) {
+        if is_gap_status(result.status()) {
+            let legacy_gap_id =
+                legacy_compliance_gap_row_id(framework_id, result.control_id(), result.rule_id());
+            let gap_id =
+                compliance_gap_row_id(run_id, framework_id, result.control_id(), result.rule_id());
+            transaction
+                .execute(
+                    "DELETE FROM compliance_gaps WHERE id = ?1",
+                    params![legacy_gap_id],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+            transaction
+                .execute(
+                    "INSERT INTO compliance_gaps(
+                       id,
+                       run_id,
+                       status,
+                       severity,
+                       control_id,
+                       rule_id
+                     )
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(id) DO NOTHING",
+                    params![
+                        gap_id,
+                        run_id,
+                        result.status().label(),
+                        result.severity(),
+                        result.control_id(),
+                        result.rule_id()
+                    ],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+        }
+    }
+    Ok(())
+}
+
+fn compliance_gap_row_id(
+    run_id: &str,
+    framework_id: &str,
+    control_id: &str,
+    rule_id: &str,
+) -> String {
+    format!(
+        "{}:{run_id}:{}:{framework_id}:{}:{control_id}:{}:{rule_id}",
+        run_id.len(),
+        framework_id.len(),
+        control_id.len(),
+        rule_id.len()
+    )
+}
+
+fn legacy_compliance_gap_row_id(framework_id: &str, control_id: &str, rule_id: &str) -> String {
+    format!(
+        "{}:{framework_id}:{}:{control_id}:{rule_id}",
+        framework_id.len(),
+        control_id.len()
+    )
 }
 
 fn is_gap_status(status: Status) -> bool {
@@ -600,6 +725,14 @@ fn migration_is_applicable(
         return schema_column_exists(connection, "evidence_metadata", "run_id");
     }
 
+    if migration.version == GAP_QUERY_FILTERS_SCHEMA_VERSION
+        && migration.name == "0003-gap-query-filters"
+        && migration.sql == GAP_QUERY_FILTERS_SCHEMA_SQL
+    {
+        return Ok(schema_column_exists(connection, "compliance_gaps", "id")?
+            && !schema_column_exists(connection, "compliance_gaps", "run_id")?);
+    }
+
     Ok(true)
 }
 
@@ -613,9 +746,17 @@ fn apply_packaged_migration(
     transaction
         .execute_batch(MIGRATION_LEDGER_SQL)
         .map_err(|source| migration_error(migration, source))?;
-    transaction
-        .execute_batch(migration.sql)
-        .map_err(|source| migration_error(migration, source))?;
+    if migration.version == GAP_QUERY_FILTERS_SCHEMA_VERSION
+        && migration.name == "0003-gap-query-filters"
+        && migration.sql == GAP_QUERY_FILTERS_SCHEMA_SQL
+    {
+        apply_gap_query_filters_migration(&transaction)
+            .map_err(|source| migration_error(migration, source))?;
+    } else {
+        transaction
+            .execute_batch(migration.sql)
+            .map_err(|source| migration_error(migration, source))?;
+    }
     transaction
         .execute(
             "INSERT INTO schema_migrations(version, name)
@@ -629,6 +770,34 @@ fn apply_packaged_migration(
     transaction
         .commit()
         .map_err(|source| migration_error(migration, source))
+}
+
+fn apply_gap_query_filters_migration(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<()> {
+    for column_name in GAP_QUERY_FILTER_COLUMNS {
+        if !transaction_schema_column_exists(transaction, "compliance_gaps", column_name)? {
+            let sql = format!("ALTER TABLE compliance_gaps ADD COLUMN {column_name} TEXT");
+            transaction.execute(&sql, [])?;
+        }
+    }
+
+    Ok(())
+}
+
+fn transaction_schema_column_exists(
+    transaction: &rusqlite::Transaction<'_>,
+    table_name: &str,
+    column_name: &str,
+) -> rusqlite::Result<bool> {
+    let count: i64 = transaction.query_row(
+        "SELECT COUNT(*)
+         FROM pragma_table_info(?1)
+         WHERE name = ?2",
+        params![table_name, column_name],
+        |row| row.get(0),
+    )?;
+    Ok(count == 1)
 }
 
 fn migration_error(migration: &PackagedMigration, source: rusqlite::Error) -> LocalDatabaseError {
