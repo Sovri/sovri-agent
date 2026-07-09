@@ -33,6 +33,12 @@ const SCHEMA_FORMAT: &str = "sovri.compliance-export/v1";
 const SCHEMA_VERSION: i64 = 1;
 /// The signature algorithm the verification block names.
 const ALGORITHM: &str = "Ed25519";
+/// The top-level member that carries verification metadata.
+const VERIFICATION_MEMBER_KEY: &str = "verification";
+/// The verification-block member that carries the signature algorithm.
+const ALGORITHM_MEMBER_KEY: &str = "algorithm";
+/// The verification-block member that carries the embedded public key.
+const PUBLIC_KEY_MEMBER_KEY: &str = "public_key";
 /// Hex length of the truncated public-key fingerprint carried as the key id.
 const KEY_ID_HEX_LEN: usize = 16;
 /// Evidence object member names used in the canonical payload.
@@ -82,14 +88,17 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
         ("scores", scores_object(&corpus.environment_score())),
     ]);
     let verification = Json::Object(vec![
-        ("algorithm", Json::Str(ALGORITHM.to_owned())),
+        (ALGORITHM_MEMBER_KEY, Json::Str(ALGORITHM.to_owned())),
         ("key_id", Json::Str(key_fingerprint(&public_key))),
         ("public_key", Json::Str(to_hex(&public_key))),
     ]);
 
     // The signature covers the canonical bytes of payload + verification, so the
     // embedded key and key id are authenticated and cannot be swapped silently.
-    let mut members = vec![("payload", payload), ("verification", verification)];
+    let mut members = vec![
+        ("payload", payload),
+        (VERIFICATION_MEMBER_KEY, verification),
+    ];
     let signed_bytes = canonical_object(&members);
     let digest = content_digest(signed_bytes.as_bytes());
     let signature = signing_key.sign(digest.as_bytes());
@@ -104,27 +113,33 @@ pub fn export(corpus: &Corpus, signing_seed: &[u8; 32]) -> String {
 /// Verification gates on the schema version first: the document must declare the
 /// supported `payload.schema.schema_version` (currently `1`). A version that is
 /// absent or unsupported is rejected before any further check, a distinct failure
-/// from a signature mismatch. It then checks the Ed25519 signature: it reconstructs
-/// the canonical `payload` + `verification` bytes the signature was computed over,
-/// recomputes their SHA-256 digest, and verifies the embedded signature against the
-/// embedded public key. Any change to the payload or the verification metadata
-/// after signing breaks the signature and is rejected.
+/// from a signature mismatch. It then gates on the declared
+/// `verification.algorithm` (currently `Ed25519`) before checking the signature:
+/// it reconstructs the canonical `payload` + `verification` bytes the signature
+/// was computed over, recomputes their SHA-256 digest, and verifies the embedded
+/// signature against the embedded public key. Any change to the payload or the
+/// verification metadata after signing breaks the signature and is rejected.
 ///
 /// # Errors
 ///
 /// Returns [`VerifyError::UnsupportedVersion`] when the document declares no
-/// supported `payload.schema.schema_version`, [`VerifyError::MissingVerificationKey`]
-/// when it embeds no verification public key, or [`VerifyError::InvalidSignature`]
-/// when the signature does not verify against the embedded public key over the
+/// supported `payload.schema.schema_version`,
+/// [`VerifyError::UnsupportedAlgorithm`] when it declares no supported
+/// `verification.algorithm`, [`VerifyError::MissingVerificationKey`] when it
+/// embeds no verification public key, or [`VerifyError::InvalidSignature`] when
+/// the signature does not verify against the embedded public key over the
 /// document's canonical payload and verification bytes.
 pub fn verify(document: &str) -> Result<(), VerifyError> {
     if declared_schema_version(document) != Some(SCHEMA_VERSION) {
         return Err(VerifyError::UnsupportedVersion);
     }
+    if declared_algorithm(document) != Some(ALGORITHM) {
+        return Err(VerifyError::UnsupportedAlgorithm);
+    }
     verify_signature(document)
 }
 
-/// Checks the Ed25519 signature of a schema-valid `document`.
+/// Checks the Ed25519 signature of a schema- and algorithm-valid `document`.
 ///
 /// Reconstructs the canonical `payload` + `verification` bytes the signature was
 /// computed over — the document with its `signature` member removed — recomputes
@@ -171,10 +186,133 @@ fn reconstruct_signed(document: &str) -> Option<(String, String)> {
 /// Returns the hex of the public key embedded in the document's `verification`
 /// block, or `None` when the member is absent.
 fn embedded_public_key(document: &str) -> Option<&str> {
-    let anchor = "\"public_key\":\"";
-    let start = document.find(anchor)? + anchor.len();
-    let len = document[start..].find('"')?;
-    Some(&document[start..start + len])
+    compact_object_string_member(verification_block(document)?, PUBLIC_KEY_MEMBER_KEY)
+}
+
+/// Reads the signature algorithm a compact export `document` declares, or `None`
+/// when the member is absent.
+fn declared_algorithm(document: &str) -> Option<&str> {
+    compact_object_string_member(verification_block(document)?, ALGORITHM_MEMBER_KEY)
+}
+
+/// Returns the compact top-level `verification` object slice, or `None` when it is
+/// absent or not a balanced object.
+fn verification_block(document: &str) -> Option<&str> {
+    compact_object_member(document, VERIFICATION_MEMBER_KEY)
+}
+
+/// Reads a compact JSON object member by key, or `None` when it is absent or
+/// unbalanced.
+fn compact_object_member<'a>(document: &'a str, member_key: &str) -> Option<&'a str> {
+    let anchor = format!("\"{member_key}\":{{");
+    let start = document.find(&anchor)? + anchor.len() - 1;
+    let end = compact_value_end(document, start)?;
+    Some(&document[start..=end])
+}
+
+/// Reads a direct compact JSON object string member by key, or `None` when the
+/// direct member is absent or is not a string.
+fn compact_object_string_member<'a>(object: &'a str, member_key: &str) -> Option<&'a str> {
+    if object.as_bytes().first().copied()? != b'{' {
+        return None;
+    }
+
+    let mut cursor = 1usize;
+    while cursor < object.len() {
+        match object.as_bytes().get(cursor).copied()? {
+            b',' => {
+                cursor += 1;
+                continue;
+            }
+            b'"' => {}
+            _ => return None,
+        }
+
+        let (key, key_end) = compact_string_at(object, cursor)?;
+        if object.as_bytes().get(key_end + 1).copied()? != b':' {
+            return None;
+        }
+        let value_start = key_end + 2;
+        let value_end = compact_value_end(object, value_start)?;
+        if key == member_key {
+            let (value, string_end) = compact_string_at(object, value_start)?;
+            return (string_end == value_end).then_some(value);
+        }
+        cursor = value_end + 1;
+    }
+
+    None
+}
+
+/// Reads the compact JSON string starting at `start`, returning its raw value and
+/// closing quote byte index.
+fn compact_string_at(document: &str, start: usize) -> Option<(&str, usize)> {
+    if document.as_bytes().get(start).copied()? != b'"' {
+        return None;
+    }
+
+    let mut escaped = false;
+    for (offset, ch) in document[start + 1..].char_indices() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            let end = start + 1 + offset;
+            return Some((&document[start + 1..end], end));
+        }
+    }
+
+    None
+}
+
+/// Returns the byte index where the compact JSON value starting at `start` ends.
+fn compact_value_end(document: &str, start: usize) -> Option<usize> {
+    match document.as_bytes().get(start).copied()? {
+        b'{' | b'[' => return compact_container_end(document, start),
+        b'"' => return compact_string_at(document, start).map(|(_, end)| end),
+        _ => {}
+    }
+
+    let len = document[start..]
+        .find([',', '}', ']'])
+        .unwrap_or(document[start..].len());
+    (len > 0).then_some(start + len - 1)
+}
+
+/// Returns the byte index where the compact object or array starting at `start`
+/// ends.
+fn compact_container_end(document: &str, start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, ch) in document[start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(start + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 /// Decodes an even-length lowercase-hex string into a fixed `N`-byte array, or
@@ -218,6 +356,10 @@ pub enum VerifyError {
     /// `payload.schema.schema_version` member is absent or carries a value the
     /// verifier does not support — so it cannot be read as a known export.
     UnsupportedVersion,
+    /// The document declares no supported signature algorithm — its
+    /// `verification.algorithm` member is absent or carries a value the verifier
+    /// does not support.
+    UnsupportedAlgorithm,
     /// The signature does not verify against the embedded public key over the
     /// document's canonical payload and verification bytes — the document was
     /// altered after signing, its verification metadata was swapped, or its
@@ -235,6 +377,9 @@ impl fmt::Display for VerifyError {
         match self {
             Self::UnsupportedVersion => {
                 f.write_str("the export declares no supported schema version")
+            }
+            Self::UnsupportedAlgorithm => {
+                f.write_str("the export declares an unsupported signature algorithm")
             }
             Self::InvalidSignature => {
                 f.write_str("the signature does not verify the export's payload")
