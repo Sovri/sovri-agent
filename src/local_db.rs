@@ -65,6 +65,9 @@ const MIGRATION_LEDGER_SQL: &str = "
     );
 ";
 
+const EMPTY_PACKAGED_MIGRATIONS_MESSAGE: &str =
+    "no packaged migrations supplied; cannot determine current schema version";
+
 const SCHEMA_VERSION_1_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
     RequiredSchemaColumn::new("frameworks", "version"),
     RequiredSchemaColumn::new("evidence_metadata", "digest"),
@@ -256,21 +259,27 @@ fn reject_newer_schema_version(
 fn current_packaged_schema_version(
     migrations: &[PackagedMigration],
 ) -> Result<u32, LocalDatabaseError> {
-    let mut versions = std::collections::BTreeSet::new();
+    let mut previous_version = None;
     for migration in migrations {
-        if !versions.insert(migration.version) {
-            return Err(LocalDatabaseError::Schema(format!(
-                "duplicate packaged migration version {}",
-                migration.version
-            )));
+        if let Some(version) = previous_version {
+            if migration.version == version {
+                return Err(LocalDatabaseError::Schema(format!(
+                    "duplicate packaged migration version {version}"
+                )));
+            }
+            if migration.version < version {
+                return Err(LocalDatabaseError::Schema(format!(
+                    "packaged migration version {} appears after version {version}; migrations must be ordered by ascending version",
+                    migration.version
+                )));
+            }
         }
+
+        previous_version = Some(migration.version);
     }
 
-    versions.last().copied().ok_or_else(|| {
-        LocalDatabaseError::Schema(
-            "no packaged migrations supplied; cannot determine current schema version".to_owned(),
-        )
-    })
+    previous_version
+        .ok_or_else(|| LocalDatabaseError::Schema(EMPTY_PACKAGED_MIGRATIONS_MESSAGE.to_owned()))
 }
 
 fn validate_current_schema(
@@ -595,11 +604,11 @@ mod tests {
     }
 
     #[test]
-    fn current_packaged_schema_version_uses_highest_unique_migration_version() {
+    fn current_packaged_schema_version_uses_final_ascending_migration_version() {
         let migrations = [
             PackagedMigration::new(1, "0001-initial", ""),
-            PackagedMigration::new(3, "0003-future", ""),
             PackagedMigration::new(2, "0002-middle", ""),
+            PackagedMigration::new(3, "0003-future", ""),
         ];
 
         assert_eq!(
@@ -617,7 +626,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("no packaged migrations supplied"),
+                .contains(EMPTY_PACKAGED_MIGRATIONS_MESSAGE),
             "empty migration stacks should be reported explicitly, got {error}"
         );
     }
@@ -637,6 +646,25 @@ mod tests {
                 .to_string()
                 .contains("duplicate packaged migration version 1"),
             "duplicate migration versions should be reported explicitly, got {error}"
+        );
+    }
+
+    #[test]
+    fn current_packaged_schema_version_rejects_out_of_order_migration_versions() {
+        let migrations = [
+            PackagedMigration::new(1, "0001-initial", ""),
+            PackagedMigration::new(3, "0003-future", ""),
+            PackagedMigration::new(2, "0002-middle", ""),
+        ];
+
+        let error = current_packaged_schema_version(&migrations)
+            .expect_err("out-of-order migration versions are rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("migrations must be ordered by ascending version"),
+            "out-of-order migration versions should be reported explicitly, got {error}"
         );
     }
 }
