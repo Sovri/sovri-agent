@@ -70,13 +70,12 @@ fn export_reconstruction_stops_on_a_digest_mismatch() {
     let store = mismatched_store(&fixture.store_path());
 
     // When the operator reconstructs the classified corpus from SQLite.
-    let reconstruction = database.reconstruct_corpus(&store, RUN_ID);
+    let reconstruction = database.validate_corpus_reconstruction(&store, RUN_ID);
 
     // Then reconstruction fails with the linked-evidence integrity error.
     let error = reconstruction
         .as_ref()
-        .err()
-        .expect("the mismatched corpus cannot be reconstructed");
+        .expect_err("the mismatched corpus cannot be reconstructed");
     assert!(error.is_integrity_error());
     assert_eq!(error.expected_digest(), Some(EXPECTED_DIGEST));
     assert_eq!(error.actual_digest(), Some(ACTUAL_DIGEST));

@@ -659,18 +659,17 @@ impl LocalDatabase {
         })
     }
 
-    /// Reconstructs a persisted run after validating all linked evidence against
-    /// the content-addressed store.
+    /// Validates all evidence linked to a run before corpus reconstruction.
     ///
     /// # Errors
     ///
     /// Returns an error if `SQLite` cannot read the run links or linked metadata,
     /// or if a backing-store digest differs from the persisted expected digest.
-    pub fn reconstruct_corpus(
+    pub fn validate_corpus_reconstruction(
         &self,
         store: &EvidenceStore,
         run_id: &str,
-    ) -> Result<Corpus, LocalDatabaseError> {
+    ) -> Result<(), LocalDatabaseError> {
         let mut statement = self
             .connection
             .prepare(
@@ -686,18 +685,10 @@ impl LocalDatabase {
             .collect::<Result<Vec<_>, _>>()
             .map_err(LocalDatabaseError::Sqlite)?;
 
-        let mut corpus = Corpus::new("").with_run_id(run_id);
         for evidence_id in evidence_ids {
-            if let Some(metadata) = self.read_linked_evidence(store, &evidence_id)? {
-                corpus = corpus.with_evidence_digest(
-                    metadata.id(),
-                    "",
-                    metadata.locator(),
-                    metadata.digest(),
-                );
-            }
+            self.read_linked_evidence(store, &evidence_id)?;
         }
-        Ok(corpus)
+        Ok(())
     }
 
     /// Writes a completed scan corpus into the local database.
