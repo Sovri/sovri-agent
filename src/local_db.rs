@@ -54,6 +54,26 @@ const SCHEMA_VERSION_1_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
     RequiredSchemaColumn::new("evidence_metadata", "digest"),
 ];
 
+const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[SchemaRequirements::new(
+    INITIAL_SCHEMA_VERSION,
+    SCHEMA_VERSION_1_REQUIRED_COLUMNS,
+)];
+
+#[derive(Clone, Copy, Debug)]
+struct SchemaRequirements {
+    version: u32,
+    required_columns: &'static [RequiredSchemaColumn],
+}
+
+impl SchemaRequirements {
+    const fn new(version: u32, required_columns: &'static [RequiredSchemaColumn]) -> Self {
+        SchemaRequirements {
+            version,
+            required_columns,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct RequiredSchemaColumn {
     table_name: &'static str,
@@ -198,7 +218,7 @@ fn validate_current_schema(connection: &Connection) -> Result<(), LocalDatabaseE
     let schema_version = connection_schema_version(connection)?;
     let mut missing_columns = Vec::new();
 
-    for required_column in required_schema_columns(schema_version) {
+    for required_column in required_schema_columns(schema_version)? {
         if !schema_column_exists(
             connection,
             required_column.table_name,
@@ -221,11 +241,29 @@ fn validate_current_schema(connection: &Connection) -> Result<(), LocalDatabaseE
     }
 }
 
-fn required_schema_columns(schema_version: u32) -> &'static [RequiredSchemaColumn] {
-    match schema_version {
-        INITIAL_SCHEMA_VERSION => SCHEMA_VERSION_1_REQUIRED_COLUMNS,
-        _ => &[],
-    }
+/// Returns the column requirements for schema versions this binary can safely
+/// interpret. Unknown versions are rejected instead of being treated as current.
+fn required_schema_columns(
+    schema_version: u32,
+) -> Result<&'static [RequiredSchemaColumn], LocalDatabaseError> {
+    SUPPORTED_SCHEMA_REQUIREMENTS
+        .iter()
+        .find(|requirements| requirements.version == schema_version)
+        .map(|requirements| requirements.required_columns)
+        .ok_or_else(|| {
+            LocalDatabaseError::Schema(format!(
+                "unsupported schema version {schema_version}; this agent supports up to {}",
+                max_supported_schema_version()
+            ))
+        })
+}
+
+fn max_supported_schema_version() -> u32 {
+    SUPPORTED_SCHEMA_REQUIREMENTS
+        .iter()
+        .map(|requirements| requirements.version)
+        .max()
+        .unwrap_or(0)
 }
 
 fn connection_schema_version(connection: &Connection) -> Result<u32, LocalDatabaseError> {
