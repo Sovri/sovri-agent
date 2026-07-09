@@ -395,19 +395,19 @@ impl LocalDatabase {
     ) -> Result<Vec<LocalDatabaseEvidence>, LocalDatabaseError> {
         let sql = match lookup {
             "id" => {
-                "SELECT id, COALESCE(locator, '')
+                "SELECT id, locator
                  FROM evidence_metadata
                  WHERE id = ?1
                  ORDER BY id"
             }
             "digest" => {
-                "SELECT id, COALESCE(locator, '')
+                "SELECT id, locator
                  FROM evidence_metadata
                  WHERE digest = ?1
                  ORDER BY id"
             }
             "control" => {
-                "SELECT DISTINCT evidence_metadata.id, COALESCE(evidence_metadata.locator, '')
+                "SELECT DISTINCT evidence_metadata.id, evidence_metadata.locator
                  FROM evidence_metadata
                  INNER JOIN control_results
                    ON control_results.evidence_id = evidence_metadata.id
@@ -515,6 +515,8 @@ impl LocalDatabase {
         for evidence in corpus.evidence_records() {
             transaction
                 .execute(
+                    // Rewrites fill locators for evidence rows created before
+                    // the locator migration existed.
                     "INSERT INTO evidence_metadata(id, digest, locator)
                      VALUES (?1, ?2, ?3)
                      ON CONFLICT(id) DO UPDATE SET
