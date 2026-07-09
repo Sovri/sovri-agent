@@ -26,11 +26,17 @@ const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[PackagedMigration::new(
 
 const INITIAL_SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS scan_runs (id TEXT PRIMARY KEY);
-    CREATE TABLE IF NOT EXISTS frameworks (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS frameworks (
+      id TEXT PRIMARY KEY,
+      version TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS controls (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS control_results (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS compliance_gaps (id TEXT PRIMARY KEY);
-    CREATE TABLE IF NOT EXISTS evidence_metadata (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS evidence_metadata (
+      id TEXT PRIMARY KEY,
+      digest TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS score_summaries (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY);
 ";
@@ -42,6 +48,48 @@ const MIGRATION_LEDGER_SQL: &str = "
       applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 ";
+
+const SCHEMA_VERSION_1_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
+    RequiredSchemaColumn::new("frameworks", "version"),
+    RequiredSchemaColumn::new("evidence_metadata", "digest"),
+];
+
+const NO_REQUIRED_SCHEMA_COLUMNS: &[RequiredSchemaColumn] = &[];
+
+const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[SchemaRequirements::new(
+    INITIAL_SCHEMA_VERSION,
+    SCHEMA_VERSION_1_REQUIRED_COLUMNS,
+)];
+
+#[derive(Clone, Copy, Debug)]
+struct SchemaRequirements {
+    version: u32,
+    required_columns: &'static [RequiredSchemaColumn],
+}
+
+impl SchemaRequirements {
+    const fn new(version: u32, required_columns: &'static [RequiredSchemaColumn]) -> Self {
+        SchemaRequirements {
+            version,
+            required_columns,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RequiredSchemaColumn {
+    table_name: &'static str,
+    column_name: &'static str,
+}
+
+impl RequiredSchemaColumn {
+    const fn new(table_name: &'static str, column_name: &'static str) -> Self {
+        RequiredSchemaColumn {
+            table_name,
+            column_name,
+        }
+    }
+}
 
 /// A packaged `SQLite` migration embedded in the agent binary.
 #[derive(Clone, Copy, Debug)]
@@ -91,6 +139,7 @@ impl LocalDatabase {
         }
         let mut connection = Connection::open(path).map_err(LocalDatabaseError::Sqlite)?;
         apply_packaged_migrations(&mut connection, migrations)?;
+        validate_current_schema(&connection, migrations)?;
         Ok(LocalDatabase { connection })
     }
 
@@ -167,6 +216,152 @@ fn apply_packaged_migrations(
     Ok(())
 }
 
+fn validate_current_schema(
+    connection: &Connection,
+    migrations: &[PackagedMigration],
+) -> Result<(), LocalDatabaseError> {
+    let schema_version = connection_schema_version(connection)?;
+    let mut missing_columns = Vec::new();
+
+    for required_column in required_schema_columns(schema_version, migrations)? {
+        if !schema_column_exists(
+            connection,
+            required_column.table_name,
+            required_column.column_name,
+        )? {
+            missing_columns.push(format!(
+                "{}.{}",
+                required_column.table_name, required_column.column_name
+            ));
+        }
+    }
+
+    if missing_columns.is_empty() {
+        Ok(())
+    } else {
+        Err(LocalDatabaseError::Schema(format!(
+            "schema version {schema_version} failed validation; missing {} required column(s): {}",
+            missing_columns.len(),
+            missing_columns.join(", ")
+        )))
+    }
+}
+
+/// Returns the column requirements for the schema version this database reports.
+/// Exact known versions use version-specific requirements. Caller-supplied
+/// newer migrations retain the latest known requirements, while versions not
+/// produced by the supplied migration stack are rejected.
+fn required_schema_columns(
+    schema_version: u32,
+    migrations: &[PackagedMigration],
+) -> Result<&'static [RequiredSchemaColumn], LocalDatabaseError> {
+    if schema_version == 0 {
+        return Err(LocalDatabaseError::Schema(
+            "schema version 0 is uninitialized; expected a migrated local database".to_owned(),
+        ));
+    }
+
+    if !uses_supported_schema_requirements(migrations) {
+        return if migration_version_is_supplied(schema_version, migrations) {
+            Ok(NO_REQUIRED_SCHEMA_COLUMNS)
+        } else {
+            Err(unsupported_schema_version(schema_version, migrations))
+        };
+    }
+
+    if let Some(requirements) = SUPPORTED_SCHEMA_REQUIREMENTS
+        .iter()
+        .find(|requirements| requirements.version == schema_version)
+    {
+        return Ok(requirements.required_columns);
+    }
+
+    let latest_requirements = latest_supported_schema_requirements();
+    if schema_version > latest_requirements.version
+        && migration_version_is_supplied(schema_version, migrations)
+    {
+        return Ok(latest_requirements.required_columns);
+    }
+
+    Err(unsupported_schema_version(schema_version, migrations))
+}
+
+fn uses_supported_schema_requirements(migrations: &[PackagedMigration]) -> bool {
+    migrations.iter().any(|migration| {
+        PACKAGED_MIGRATIONS.iter().any(|packaged_migration| {
+            migration.version == packaged_migration.version
+                && migration.name == packaged_migration.name
+                && migration.sql == packaged_migration.sql
+        })
+    })
+}
+
+fn migration_version_is_supplied(schema_version: u32, migrations: &[PackagedMigration]) -> bool {
+    migrations
+        .iter()
+        .any(|migration| migration.version == schema_version)
+}
+
+fn unsupported_schema_version(
+    schema_version: u32,
+    migrations: &[PackagedMigration],
+) -> LocalDatabaseError {
+    LocalDatabaseError::Schema(format!(
+        "unsupported schema version {schema_version}; supplied packaged migration versions: {}",
+        packaged_migration_versions(migrations)
+    ))
+}
+
+fn latest_supported_schema_requirements() -> &'static SchemaRequirements {
+    SUPPORTED_SCHEMA_REQUIREMENTS
+        .iter()
+        .max_by_key(|requirements| requirements.version)
+        .expect("at least one local database schema requirement is packaged")
+}
+
+fn packaged_migration_versions(migrations: &[PackagedMigration]) -> String {
+    let versions = migrations
+        .iter()
+        .map(|migration| migration.version)
+        .collect::<std::collections::BTreeSet<_>>();
+
+    if versions.is_empty() {
+        return "none".to_owned();
+    }
+
+    versions
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn connection_schema_version(connection: &Connection) -> Result<u32, LocalDatabaseError> {
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(LocalDatabaseError::Sqlite)?;
+    u32::try_from(version).map_err(|_| {
+        LocalDatabaseError::Schema(format!("schema version {version} cannot be negative"))
+    })
+}
+
+fn schema_column_exists(
+    connection: &Connection,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool, LocalDatabaseError> {
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM pragma_table_info(?1)
+             WHERE name = ?2",
+            params![table_name, column_name],
+            |row| row.get(0),
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(count == 1)
+}
+
 fn migration_is_applied(connection: &Connection, version: u32) -> Result<bool, LocalDatabaseError> {
     if !migration_ledger_exists(connection)? {
         return Ok(false);
@@ -239,6 +434,9 @@ pub enum LocalDatabaseError {
     Io(std::io::Error),
     /// `SQLite` failed while opening, migrating, or reading the database.
     Sqlite(rusqlite::Error),
+    /// The database reports a current schema version but is missing required
+    /// current-schema objects.
+    Schema(String),
     /// A named packaged migration failed and its transaction was rolled back.
     Migration {
         /// Packaged migration name, for example `0001-initial`.
@@ -257,6 +455,9 @@ impl fmt::Display for LocalDatabaseError {
             LocalDatabaseError::Sqlite(error) => {
                 write!(formatter, "local database sqlite error: {error}")
             }
+            LocalDatabaseError::Schema(error) => {
+                write!(formatter, "local database schema error: {error}")
+            }
             LocalDatabaseError::Migration { name, source } => {
                 write!(
                     formatter,
@@ -272,7 +473,47 @@ impl Error for LocalDatabaseError {
         match self {
             LocalDatabaseError::Io(error) => Some(error),
             LocalDatabaseError::Sqlite(error) => Some(error),
+            LocalDatabaseError::Schema(_) => None,
             LocalDatabaseError::Migration { source, .. } => Some(source),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_column_exists_is_false_for_missing_or_untrusted_names() {
+        let connection = Connection::open_in_memory().expect("in-memory database opens");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE frameworks (
+                  id TEXT PRIMARY KEY,
+                  version TEXT NOT NULL
+                );
+                ",
+            )
+            .expect("schema can be created");
+
+        assert!(schema_column_exists(&connection, "frameworks", "version")
+            .expect("existing column can be checked"));
+        assert!(
+            !schema_column_exists(&connection, "missing_table", "version")
+                .expect("missing table can be checked")
+        );
+        assert!(
+            !schema_column_exists(&connection, "frameworks", "missing_column")
+                .expect("missing column can be checked")
+        );
+        assert!(!schema_column_exists(
+            &connection,
+            "frameworks); DROP TABLE frameworks; --",
+            "version"
+        )
+        .expect("untrusted table name can be checked"));
+        assert!(schema_column_exists(&connection, "frameworks", "version")
+            .expect("untrusted table name was not executed as SQL"));
     }
 }
