@@ -92,7 +92,9 @@ impl LocalDatabase {
     ///
     /// # Errors
     ///
-    /// Returns an error if `SQLite` cannot read the migration ledger.
+    /// Returns an error if `SQLite` cannot prepare or run the migration-ledger
+    /// query, including when the `schema_migrations` table or its `version` /
+    /// `name` columns are missing, corrupted, or unreadable.
     pub fn applied_migrations(&self) -> Result<Vec<String>, LocalDatabaseError> {
         let mut statement = self
             .connection

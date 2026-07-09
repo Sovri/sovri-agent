@@ -48,8 +48,9 @@ fn packaged_migrations_are_sufficient_on_an_air_gapped_host() {
     let database = TempDatabase::new();
 
     // And no external migration directory is available.
+    let external_migrations = database.root.join("migrations");
     assert!(
-        !database.root.join("migrations").exists(),
+        !external_migrations.exists(),
         "the test host provides no external migration directory"
     );
     std::env::set_var("SOVRI_ENDPOINT", "https://cloud.sovri.example/not-used");
@@ -57,6 +58,10 @@ fn packaged_migrations_are_sufficient_on_an_air_gapped_host() {
 
     // When the operator opens the local database at "./tmp/sovri-mat-98.db".
     let opened = LocalDatabase::open(database.path()).expect("the local database opens");
+    assert!(
+        !external_migrations.exists(),
+        "opening the local database did not create an external migration directory"
+    );
 
     // Then migration "0001-initial" is applied from the packaged agent.
     let applied = opened
