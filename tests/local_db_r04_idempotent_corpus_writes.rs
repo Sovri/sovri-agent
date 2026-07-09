@@ -103,10 +103,71 @@ fn writing_the_same_corpus_twice_leaves_one_logical_run() {
     assert_eq!(evidence_metadata_row_count(database.path(), EVIDENCE_ID), 1);
 }
 
+#[test]
+fn writing_a_conflicting_framework_version_fails_without_replacing_the_existing_row() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+    local_database
+        .write_completed_corpus(&shopfront_consent_corpus())
+        .expect("the first corpus write succeeds");
+
+    let error = local_database
+        .write_completed_corpus(&shopfront_consent_corpus_with(
+            "conflicting-framework-version",
+            EVIDENCE_DIGEST,
+        ))
+        .expect_err("the conflicting framework version is rejected");
+
+    assert!(
+        error.to_string().contains("conflicting framework version"),
+        "the conflict error names the framework version mismatch, got {error}"
+    );
+    assert_eq!(
+        framework_version(database.path(), FRAMEWORK_ID),
+        FRAMEWORK_VERSION
+    );
+    assert_eq!(
+        framework_row_count(database.path(), FRAMEWORK_ID, FRAMEWORK_VERSION),
+        1
+    );
+}
+
+#[test]
+fn writing_a_conflicting_evidence_digest_fails_without_replacing_the_existing_row() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+    local_database
+        .write_completed_corpus(&shopfront_consent_corpus())
+        .expect("the first corpus write succeeds");
+
+    let error = local_database
+        .write_completed_corpus(&shopfront_consent_corpus_with(
+            FRAMEWORK_VERSION,
+            "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        ))
+        .expect_err("the conflicting evidence digest is rejected");
+
+    assert!(
+        error.to_string().contains("conflicting evidence digest"),
+        "the conflict error names the evidence digest mismatch, got {error}"
+    );
+    assert_eq!(
+        evidence_digest(database.path(), EVIDENCE_ID),
+        EVIDENCE_DIGEST
+    );
+    assert_eq!(evidence_metadata_row_count(database.path(), EVIDENCE_ID), 1);
+}
+
 fn shopfront_consent_corpus() -> Corpus {
+    shopfront_consent_corpus_with(FRAMEWORK_VERSION, EVIDENCE_DIGEST)
+}
+
+fn shopfront_consent_corpus_with(framework_version: &str, evidence_digest: &str) -> Corpus {
     Corpus::new(EXECUTED_AT)
         .with_run_id(RUN_ID)
-        .with_framework(FRAMEWORK_ID, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_framework(FRAMEWORK_ID, framework_version, FRAMEWORK_URL)
         .with_control(
             FRAMEWORK_ID,
             CONTROL_ID,
@@ -129,7 +190,7 @@ fn shopfront_consent_corpus() -> Corpus {
             EVIDENCE_ID,
             "file",
             "shopfront/dist/main.js",
-            EVIDENCE_DIGEST,
+            evidence_digest,
         )
 }
 
@@ -173,6 +234,17 @@ fn framework_row_count(path: &Path, framework_id: &str, version: &str) -> i64 {
         .expect("framework row count can be inspected")
 }
 
+fn framework_version(path: &Path, framework_id: &str) -> String {
+    let connection = Connection::open(path).expect("the database can be inspected");
+    connection
+        .query_row(
+            "SELECT version FROM frameworks WHERE id = ?1",
+            params![framework_id],
+            |row| row.get(0),
+        )
+        .expect("framework version can be inspected")
+}
+
 fn control_row_count(path: &Path, control_id: &str) -> i64 {
     let connection = Connection::open(path).expect("the database can be inspected");
     connection
@@ -204,4 +276,15 @@ fn evidence_metadata_row_count(path: &Path, evidence_id: &str) -> i64 {
             |row| row.get(0),
         )
         .expect("evidence metadata row count can be inspected")
+}
+
+fn evidence_digest(path: &Path, evidence_id: &str) -> String {
+    let connection = Connection::open(path).expect("the database can be inspected");
+    connection
+        .query_row(
+            "SELECT digest FROM evidence_metadata WHERE id = ?1",
+            params![evidence_id],
+            |row| row.get(0),
+        )
+        .expect("evidence digest can be inspected")
 }

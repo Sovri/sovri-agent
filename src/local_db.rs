@@ -238,50 +238,91 @@ impl LocalDatabase {
 
         transaction
             .execute(
-                "INSERT OR REPLACE INTO scan_runs(id) VALUES (?1)",
+                "INSERT INTO scan_runs(id) VALUES (?1)
+                 ON CONFLICT(id) DO NOTHING",
                 params![run_id],
             )
             .map_err(LocalDatabaseError::Sqlite)?;
 
         for (framework_id, version, _source_url) in corpus.frameworks() {
-            transaction
+            let rows_changed = transaction
                 .execute(
-                    "INSERT OR REPLACE INTO frameworks(id, version) VALUES (?1, ?2)",
+                    "INSERT INTO frameworks(id, version) VALUES (?1, ?2)
+                     ON CONFLICT(id) DO UPDATE SET version = excluded.version
+                     WHERE frameworks.version = excluded.version",
                     params![framework_id, version],
                 )
                 .map_err(LocalDatabaseError::Sqlite)?;
+            if rows_changed == 0 {
+                return Err(LocalDatabaseError::Schema(format!(
+                    "conflicting framework version for {framework_id}"
+                )));
+            }
         }
 
         for (_, control_id, _, _) in corpus.controls() {
             transaction
                 .execute(
-                    "INSERT OR REPLACE INTO controls(id) VALUES (?1)",
+                    "INSERT INTO controls(id) VALUES (?1)
+                     ON CONFLICT(id) DO NOTHING",
                     params![control_id],
                 )
                 .map_err(LocalDatabaseError::Sqlite)?;
         }
 
         for (_, result) in corpus.scoped_results() {
-            let result_id = format!("{}:{}:{}", run_id, result.control_id(), result.rule_id());
+            let result_id = control_result_id(run_id, result.control_id(), result.rule_id());
             transaction
                 .execute(
-                    "INSERT OR REPLACE INTO control_results(id) VALUES (?1)",
+                    "INSERT INTO control_results(id) VALUES (?1)
+                     ON CONFLICT(id) DO NOTHING",
                     params![result_id],
                 )
                 .map_err(LocalDatabaseError::Sqlite)?;
         }
 
         for evidence in corpus.evidence_records() {
-            transaction
+            let rows_changed = transaction
                 .execute(
-                    "INSERT OR REPLACE INTO evidence_metadata(id, digest) VALUES (?1, ?2)",
+                    "INSERT INTO evidence_metadata(id, digest) VALUES (?1, ?2)
+                     ON CONFLICT(id) DO UPDATE SET digest = excluded.digest
+                     WHERE evidence_metadata.digest = excluded.digest",
                     params![evidence.id, evidence.integrity],
                 )
                 .map_err(LocalDatabaseError::Sqlite)?;
+            if rows_changed == 0 {
+                return Err(LocalDatabaseError::Schema(format!(
+                    "conflicting evidence digest for {}",
+                    evidence.id
+                )));
+            }
         }
 
         transaction.commit().map_err(LocalDatabaseError::Sqlite)
     }
+}
+
+fn control_result_id(run_id: &str, control_id: &str, rule_id: &str) -> String {
+    let control_id_len = control_id.len().to_string();
+    let rule_id_len = rule_id.len().to_string();
+    let mut id = String::with_capacity(
+        run_id.len()
+            + control_id_len.len()
+            + control_id.len()
+            + rule_id_len.len()
+            + rule_id.len()
+            + 4,
+    );
+    id.push_str(run_id);
+    id.push(':');
+    id.push_str(&control_id_len);
+    id.push(':');
+    id.push_str(control_id);
+    id.push(':');
+    id.push_str(&rule_id_len);
+    id.push(':');
+    id.push_str(rule_id);
+    id
 }
 
 fn apply_packaged_migrations(
