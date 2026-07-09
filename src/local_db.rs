@@ -13,6 +13,7 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
+use crate::matrix::Corpus;
 use rusqlite::{params, Connection};
 
 /// The schema version created by the first packaged migration.
@@ -34,7 +35,12 @@ const INITIAL_SCHEMA_SQL: &str = "
       version TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS controls (id TEXT PRIMARY KEY);
-    CREATE TABLE IF NOT EXISTS control_results (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS control_results (
+      id TEXT PRIMARY KEY,
+      control_id TEXT NOT NULL,
+      rule_id TEXT NOT NULL,
+      evidence_id TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS compliance_gaps (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS evidence_metadata (
       id TEXT PRIMARY KEY,
@@ -220,6 +226,82 @@ impl LocalDatabase {
             .map_err(LocalDatabaseError::Sqlite)?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(LocalDatabaseError::Sqlite)
+    }
+
+    /// Writes a completed scan corpus into the local database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot start, populate, or commit the write
+    /// transaction.
+    pub fn write_completed_corpus(&mut self, corpus: &Corpus) -> Result<(), LocalDatabaseError> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let run_id = corpus.run_id();
+
+        transaction
+            .execute(
+                "INSERT INTO scan_runs(id) VALUES (?1)
+                 ON CONFLICT(id) DO NOTHING",
+                params![run_id],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+
+        for (framework_id, version, _source_url) in corpus.frameworks() {
+            transaction
+                .execute(
+                    "INSERT INTO frameworks(id, version) VALUES (?1, ?2)
+                     ON CONFLICT(id) DO NOTHING",
+                    params![framework_id, version],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+        }
+
+        for (_, control_id, _, _) in corpus.controls() {
+            transaction
+                .execute(
+                    "INSERT INTO controls(id) VALUES (?1)
+                     ON CONFLICT(id) DO NOTHING",
+                    params![control_id],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+        }
+
+        for (_, result) in corpus.scoped_results() {
+            let evidence_id = result
+                .evidence_refs()
+                .first()
+                .map(String::as_str)
+                .unwrap_or_default();
+            let result_id = format!("{}/{}", result.control_id(), result.rule_id());
+            transaction
+                .execute(
+                    "INSERT INTO control_results(id, control_id, rule_id, evidence_id)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(id) DO NOTHING",
+                    params![
+                        result_id,
+                        result.control_id(),
+                        result.rule_id(),
+                        evidence_id
+                    ],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+        }
+
+        for evidence in corpus.evidence_records() {
+            transaction
+                .execute(
+                    "INSERT INTO evidence_metadata(id, digest) VALUES (?1, ?2)
+                     ON CONFLICT(id) DO NOTHING",
+                    params![evidence.id, evidence.integrity],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+        }
+
+        transaction.commit().map_err(LocalDatabaseError::Sqlite)
     }
 }
 
