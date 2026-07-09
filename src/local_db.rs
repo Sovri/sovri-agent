@@ -481,68 +481,148 @@ fn apply_packaged_migration(
 }
 
 fn destructive_migration_operation(sql: &str) -> Option<String> {
-    let sql = sql_without_comments(sql);
-    sql.split(';').find_map(|statement| {
-        let table_name = dropped_table_name(statement)?;
-        if PERSISTED_CORPUS_TABLES.contains(&table_name.as_str()) {
-            Some(format!("DROP TABLE {table_name}"))
-        } else {
-            None
+    let tokens = sql_tokens(sql);
+    let mut index = 0;
+
+    while index + 2 < tokens.len() {
+        if !tokens[index].eq_ignore_ascii_case("DROP")
+            || !tokens[index + 1].eq_ignore_ascii_case("TABLE")
+        {
+            index += 1;
+            continue;
         }
-    })
+
+        let table_index = if tokens
+            .get(index + 2)
+            .is_some_and(|token| token.eq_ignore_ascii_case("IF"))
+            && tokens
+                .get(index + 3)
+                .is_some_and(|token| token.eq_ignore_ascii_case("EXISTS"))
+        {
+            index + 4
+        } else {
+            index + 2
+        };
+
+        if let Some(table_name) = tokens
+            .get(table_index)
+            .map(|table_name| canonical_sql_identifier(table_name))
+        {
+            if PERSISTED_CORPUS_TABLES.contains(&table_name.as_str()) {
+                return Some(format!("DROP TABLE {table_name}"));
+            }
+        }
+
+        index += 1;
+    }
+
+    None
 }
 
-fn sql_without_comments(sql: &str) -> String {
-    let mut without_comments = String::with_capacity(sql.len());
+fn sql_tokens(sql: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
     let mut characters = sql.chars().peekable();
 
     while let Some(character) = characters.next() {
         if character == '-' && characters.peek() == Some(&'-') {
             characters.next();
-            for comment_character in characters.by_ref() {
-                if comment_character == '\n' {
-                    without_comments.push(' ');
-                    break;
-                }
-            }
+            push_sql_token(&mut tokens, &mut token);
+            skip_line_comment(&mut characters);
         } else if character == '/' && characters.peek() == Some(&'*') {
             characters.next();
-            let mut previous_character = '\0';
-            for comment_character in characters.by_ref() {
-                if previous_character == '*' && comment_character == '/' {
-                    without_comments.push(' ');
-                    break;
-                }
-                previous_character = comment_character;
-            }
+            push_sql_token(&mut tokens, &mut token);
+            skip_block_comment(&mut characters);
+        } else if character == '\'' {
+            push_sql_token(&mut tokens, &mut token);
+            skip_single_quoted_literal(&mut characters);
+        } else if character == '"' {
+            push_sql_token(&mut tokens, &mut token);
+            tokens.push(collect_quoted_identifier(&mut characters, '"'));
+        } else if character == '`' {
+            push_sql_token(&mut tokens, &mut token);
+            tokens.push(collect_quoted_identifier(&mut characters, '`'));
+        } else if character == '[' {
+            push_sql_token(&mut tokens, &mut token);
+            tokens.push(collect_quoted_identifier(&mut characters, ']'));
+        } else if is_sql_token_character(character) {
+            token.push(character);
         } else {
-            without_comments.push(character);
+            push_sql_token(&mut tokens, &mut token);
         }
     }
 
-    without_comments
+    push_sql_token(&mut tokens, &mut token);
+    tokens
 }
 
-fn dropped_table_name(statement: &str) -> Option<String> {
-    let mut tokens = statement.split_whitespace();
-    let first = tokens.next()?;
-    let second = tokens.next()?;
-    if !first.eq_ignore_ascii_case("DROP") || !second.eq_ignore_ascii_case("TABLE") {
-        return None;
+fn push_sql_token(tokens: &mut Vec<String>, token: &mut String) {
+    if !token.is_empty() {
+        tokens.push(std::mem::take(token));
+    }
+}
+
+fn skip_line_comment(characters: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    for character in characters.by_ref() {
+        if character == '\n' {
+            break;
+        }
+    }
+}
+
+fn skip_block_comment(characters: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    let mut depth = 1;
+
+    while let Some(character) = characters.next() {
+        if character == '/' && characters.peek() == Some(&'*') {
+            characters.next();
+            depth += 1;
+        } else if character == '*' && characters.peek() == Some(&'/') {
+            characters.next();
+            depth -= 1;
+            if depth == 0 {
+                break;
+            }
+        }
+    }
+}
+
+fn skip_single_quoted_literal(characters: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while let Some(character) = characters.next() {
+        if character == '\'' {
+            if characters.peek() == Some(&'\'') {
+                characters.next();
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+fn collect_quoted_identifier(
+    characters: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    terminator: char,
+) -> String {
+    let mut identifier = String::new();
+
+    while let Some(character) = characters.next() {
+        if character == terminator {
+            if matches!(terminator, '"' | '`') && characters.peek() == Some(&terminator) {
+                characters.next();
+                identifier.push(terminator);
+            } else {
+                break;
+            }
+        } else {
+            identifier.push(character);
+        }
     }
 
-    let third = tokens.next()?;
-    let table = if third.eq_ignore_ascii_case("IF") {
-        let fourth = tokens.next()?;
-        if !fourth.eq_ignore_ascii_case("EXISTS") {
-            return None;
-        }
-        tokens.next()?
-    } else {
-        third
-    };
+    identifier
+}
 
-    Some(canonical_sql_identifier(table))
+fn is_sql_token_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '_' | '.')
 }
 
 fn canonical_sql_identifier(identifier: &str) -> String {

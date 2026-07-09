@@ -31,6 +31,17 @@ const OBFUSCATED_DESTRUCTIVE_PACKAGED_MIGRATIONS: &[PackagedMigration] = &[Packa
     "DROP/* destructive */ TABLE \"evidence_metadata\";",
 )];
 
+const STRING_LITERAL_MARKER_DESTRUCTIVE_PACKAGED_MIGRATIONS: &[PackagedMigration] =
+    &[PackagedMigration::new(
+        2,
+        "0002-string-marker-drop-evidence-metadata",
+        "
+        CREATE TABLE notes (body TEXT);
+        INSERT INTO notes(body) VALUES ('-- marker');
+        DROP TABLE evidence_metadata;
+        ",
+    )];
+
 struct TempDatabase {
     root: PathBuf,
     db_path: PathBuf,
@@ -239,5 +250,18 @@ fn a_comment_obfuscated_destructive_migration_is_rejected() {
         OBFUSCATED_DESTRUCTIVE_PACKAGED_MIGRATIONS,
     );
     assert_rejected_as_destructive(&error_message, "0002-commented-drop-evidence-metadata");
+    assert_single_run_and_evidence_preserved(database.path());
+}
+
+#[test]
+fn a_string_literal_comment_marker_does_not_hide_a_destructive_migration() {
+    let database = TempDatabase::new();
+    create_version_1_database_with_single_run_and_evidence(database.path());
+
+    let error_message = destructive_migration_rejection(
+        database.path(),
+        STRING_LITERAL_MARKER_DESTRUCTIVE_PACKAGED_MIGRATIONS,
+    );
+    assert_rejected_as_destructive(&error_message, "0002-string-marker-drop-evidence-metadata");
     assert_single_run_and_evidence_preserved(database.path());
 }
