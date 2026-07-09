@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sovri_agent::local_db::LocalDatabase;
+use sovri_agent::local_db::{LocalDatabase, ScoreSummaryRecord};
 use sovri_agent::matrix::{Classification, Corpus};
 use sovri_sdk::{ControlResult, Status};
 
@@ -86,23 +86,23 @@ fn score_summaries_are_persisted_with_the_run() {
         .expect("score summaries can be queried for the run");
 
     // Then the score summary for framework "gdpr-eprivacy" can be retrieved.
-    let gdpr_summary = summaries
+    summaries
         .iter()
         .find(|summary| summary.framework_id() == GDPR_FRAMEWORK)
         .expect("the gdpr-eprivacy score summary can be retrieved");
 
     // And the score summary for framework "iso-27001" can be retrieved.
-    let iso_summary = summaries
+    summaries
         .iter()
         .find(|summary| summary.framework_id() == ISO_FRAMEWORK)
         .expect("the iso-27001 score summary can be retrieved");
 
     // And the score summary includes counts for statuses "PASS", "FAIL", and "WARNING".
-    let pass_count: u32 = summaries.iter().map(|summary| summary.pass_count()).sum();
-    let fail_count: u32 = summaries.iter().map(|summary| summary.fail_count()).sum();
+    let pass_count: u32 = summaries.iter().map(ScoreSummaryRecord::pass_count).sum();
+    let fail_count: u32 = summaries.iter().map(ScoreSummaryRecord::fail_count).sum();
     let warning_count: u32 = summaries
         .iter()
-        .map(|summary| summary.warning_count())
+        .map(ScoreSummaryRecord::warning_count)
         .sum();
     assert_eq!(pass_count, 1, "PASS");
     assert_eq!(fail_count, 1, "FAIL");
