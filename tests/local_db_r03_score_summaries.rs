@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rusqlite::Connection;
 use sovri_agent::local_db::{LocalDatabase, ScoreSummaryRecord};
 use sovri_agent::matrix::{Classification, Corpus};
 use sovri_sdk::{ControlResult, Status};
@@ -137,6 +138,70 @@ fn temp_database_removes_directory_on_drop() {
     assert!(!root.exists());
 }
 
+#[test]
+fn legacy_score_summary_schema_is_repaired_before_querying() {
+    let database = TempDatabase::new();
+    create_legacy_score_summary_database(database.path());
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the legacy local database opens");
+
+    let summaries = local_database
+        .score_summaries_for_run(MIXED_RUN)
+        .expect("legacy score summary schema is repaired before querying");
+
+    assert!(summaries.is_empty());
+    assert_eq!(
+        score_summary_columns(database.path()),
+        [
+            "id",
+            "run_id",
+            "framework_id",
+            "pass_count",
+            "fail_count",
+            "warning_count"
+        ]
+    );
+
+    local_database
+        .write_completed_corpus(&mixed_completed_corpus())
+        .expect("the repaired schema accepts completed corpus summaries");
+    assert_eq!(
+        local_database
+            .score_summaries_for_run(MIXED_RUN)
+            .expect("the repaired schema returns score summaries")
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn rewriting_run_replaces_stale_score_summaries() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+    local_database
+        .write_completed_corpus(&mixed_completed_corpus())
+        .expect("the initial completed corpus is written");
+
+    local_database
+        .write_completed_corpus(&gdpr_only_completed_corpus())
+        .expect("the rewritten completed corpus is written");
+    let summaries = local_database
+        .score_summaries_for_run(MIXED_RUN)
+        .expect("score summaries can be queried for the rewritten run");
+
+    assert_eq!(
+        summaries
+            .iter()
+            .map(ScoreSummaryRecord::framework_id)
+            .collect::<Vec<_>>(),
+        [GDPR_FRAMEWORK]
+    );
+    assert_eq!(summaries[0].pass_count(), 1, "PASS");
+    assert_eq!(summaries[0].fail_count(), 1, "FAIL");
+    assert_eq!(summaries[0].warning_count(), 0, "WARNING");
+}
+
 fn mixed_completed_corpus() -> Corpus {
     Corpus::new(EXECUTED_AT)
         .with_run_id(MIXED_RUN)
@@ -201,6 +266,72 @@ fn mixed_completed_corpus() -> Corpus {
             Classification::Sensitive,
             SENSITIVE_EVIDENCE_DIGEST,
         )
+}
+
+fn gdpr_only_completed_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_run_id(MIXED_RUN)
+        .with_framework(GDPR_FRAMEWORK, GDPR_VERSION, GDPR_URL)
+        .with_control(
+            GDPR_FRAMEWORK,
+            CONSENT_CONTROL,
+            CONSENT_TITLE,
+            "major",
+            8,
+            CONSENT_REFERENCE,
+        )
+        .with_control_result(
+            GDPR_FRAMEWORK,
+            control_result(
+                CONSENT_CONTROL,
+                TRACKER_RULE,
+                "major",
+                Status::Fail,
+                PUBLIC_EVIDENCE_ID,
+            ),
+        )
+        .with_control_result(
+            GDPR_FRAMEWORK,
+            control_result(
+                CONSENT_CONTROL,
+                CMP_RULE,
+                "major",
+                Status::Pass,
+                PUBLIC_EVIDENCE_ID,
+            ),
+        )
+        .with_evidence_digest(
+            PUBLIC_EVIDENCE_ID,
+            "file",
+            "dist/main.js",
+            PUBLIC_EVIDENCE_DIGEST,
+        )
+}
+
+fn create_legacy_score_summary_database(path: &Path) {
+    fs::create_dir_all(path.parent().expect("database path has a parent"))
+        .expect("the legacy database directory is created");
+    let connection = Connection::open(path).expect("the legacy SQLite database opens");
+    connection
+        .execute_batch(
+            "
+            CREATE TABLE score_summaries (id TEXT PRIMARY KEY);
+            INSERT INTO score_summaries(id) VALUES ('legacy-score');
+            ",
+        )
+        .expect("the legacy score summary schema is created");
+}
+
+fn score_summary_columns(path: &Path) -> Vec<String> {
+    let connection = Connection::open(path).expect("the SQLite database opens");
+    let mut statement = connection
+        .prepare("SELECT name FROM pragma_table_info('score_summaries') ORDER BY cid")
+        .expect("score_summaries table info can be queried");
+    statement
+        .query_map([], |row| row.get(0))
+        .expect("score_summaries columns can be listed")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("score_summaries column names can be read")
 }
 
 fn control_result(

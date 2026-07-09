@@ -141,6 +141,7 @@ pub struct LocalDatabase {
 }
 
 /// Persisted status-count summary for one framework in a completed run.
+#[derive(Debug, PartialEq)]
 pub struct ScoreSummaryRecord {
     framework_id: String,
     pass_count: u32,
@@ -326,6 +327,13 @@ fn write_score_summaries(
 ) -> Result<(), LocalDatabaseError> {
     ensure_score_summary_schema(transaction)?;
     let run_id = corpus.run_id();
+    transaction
+        .execute(
+            "DELETE FROM score_summaries
+             WHERE run_id = ?1",
+            [run_id],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
     for (framework_id, counts) in score_summary_counts(corpus) {
         transaction
             .execute(
