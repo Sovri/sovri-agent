@@ -132,8 +132,8 @@ fn gap_row_count(path: &Path, rule_id: &str) -> i64 {
     let connection = Connection::open(path).expect("the database can be inspected");
     connection
         .query_row(
-            "SELECT COUNT(*) FROM compliance_gaps WHERE id = ?1",
-            params![gap_id(rule_id)],
+            "SELECT COUNT(*) FROM compliance_gaps WHERE id LIKE ?1",
+            params![format!("%:{rule_id}")],
             |row| row.get(0),
         )
         .expect("gap row count can be inspected")
@@ -179,8 +179,4 @@ fn logical_record_ids(connection: &Connection, table: &str) -> Vec<String> {
         .expect("logical record query can run");
     rows.collect::<Result<Vec<_>, _>>()
         .expect("logical record ids can be read")
-}
-
-fn gap_id(rule_id: &str) -> String {
-    format!("{FRAMEWORK_ID}:{CONTROL_ID}:{rule_id}")
 }

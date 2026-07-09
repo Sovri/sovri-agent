@@ -350,7 +350,26 @@ fn control_result_row_id(control_id: &str, rule_id: &str) -> String {
 }
 
 fn compliance_gap_row_id(framework_id: &str, control_id: &str, rule_id: &str) -> String {
-    format!("{framework_id}:{control_id}:{rule_id}")
+    let framework_id_len = framework_id.len().to_string();
+    let control_id_len = control_id.len().to_string();
+    let mut id = String::with_capacity(
+        framework_id_len.len()
+            + framework_id.len()
+            + control_id_len.len()
+            + control_id.len()
+            + rule_id.len()
+            + 4,
+    );
+    id.push_str(&framework_id_len);
+    id.push(':');
+    id.push_str(framework_id);
+    id.push(':');
+    id.push_str(&control_id_len);
+    id.push(':');
+    id.push_str(control_id);
+    id.push(':');
+    id.push_str(rule_id);
+    id
 }
 
 fn is_gap_status(status: Status) -> bool {
