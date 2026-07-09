@@ -51,10 +51,19 @@ impl LocalDatabase {
         Ok(LocalDatabase { connection })
     }
 
-    /// Returns the database schema version exposed by the packaged migration.
+    /// Returns the database schema version exposed by `SQLite`.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if an opened `SQLite` connection cannot read its
+    /// `user_version` pragma or reports a negative version.
     #[must_use]
     pub fn schema_version(&self) -> u32 {
-        INITIAL_SCHEMA_VERSION
+        let version = self
+            .connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .expect("an open SQLite connection exposes PRAGMA user_version");
+        u32::try_from(version).expect("SQLite schema version is non-negative")
     }
 
     /// Lists the application schema tables currently present in stable order.
