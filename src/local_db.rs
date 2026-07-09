@@ -41,7 +41,7 @@ const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[
     PackagedMigration::new(
         RESULT_SCORE_QUERY_SCOPE_SCHEMA_VERSION,
         "0005-result-score-query-scope",
-        RESULT_SCORE_QUERY_SCOPE_SCHEMA_SQL,
+        "",
     ),
 ];
 
@@ -105,8 +105,6 @@ const EVIDENCE_LOCATORS_SCHEMA_VERSION: u32 = 4;
 const EVIDENCE_LOCATORS_SCHEMA_SQL: &str = "";
 
 const RESULT_SCORE_QUERY_SCOPE_SCHEMA_VERSION: u32 = 5;
-
-const RESULT_SCORE_QUERY_SCOPE_SCHEMA_SQL: &str = "";
 
 const MIGRATION_LEDGER_SQL: &str = "
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -267,6 +265,12 @@ enum EvidenceLookup {
     Id,
     Digest,
     Control,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ControlResultScope {
+    run_id: String,
+    framework_id: String,
 }
 
 impl EvidenceLookup {
@@ -1045,7 +1049,6 @@ fn migration_is_applicable(
 
     if migration.version == RESULT_SCORE_QUERY_SCOPE_SCHEMA_VERSION
         && migration.name == "0005-result-score-query-scope"
-        && migration.sql == RESULT_SCORE_QUERY_SCOPE_SCHEMA_SQL
     {
         return Ok(schema_column_exists(connection, "control_results", "id")?
             && schema_column_exists(connection, "score_summaries", "id")?
@@ -1081,7 +1084,6 @@ fn apply_packaged_migration(
             .map_err(|source| migration_error(migration, source))?;
     } else if migration.version == RESULT_SCORE_QUERY_SCOPE_SCHEMA_VERSION
         && migration.name == "0005-result-score-query-scope"
-        && migration.sql == RESULT_SCORE_QUERY_SCOPE_SCHEMA_SQL
     {
         apply_result_score_query_scope_migration(&transaction)
             .map_err(|source| migration_error(migration, source))?;
@@ -1140,6 +1142,7 @@ fn apply_result_score_query_scope_migration(
             [],
         )?;
     }
+    let migrated_scopes = backfill_control_result_run_ids(transaction)?;
     transaction.execute(
         "CREATE TABLE IF NOT EXISTS score_summary_runs (
            run_id TEXT NOT NULL,
@@ -1148,8 +1151,74 @@ fn apply_result_score_query_scope_migration(
          )",
         [],
     )?;
+    backfill_score_summary_run_links(transaction, &migrated_scopes)?;
 
     Ok(())
+}
+
+fn backfill_control_result_run_ids(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<Vec<ControlResultScope>> {
+    let mut statement = transaction.prepare("SELECT id FROM control_results WHERE run_id = ''")?;
+    let row_ids = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut migrated_scopes = Vec::new();
+
+    for row_id in row_ids {
+        let row_id = row_id?;
+        if let Some(scope) = parse_control_result_scope_from_row_id(&row_id) {
+            transaction.execute(
+                "UPDATE control_results
+                 SET run_id = ?1
+                 WHERE id = ?2 AND run_id = ''",
+                params![&scope.run_id, &row_id],
+            )?;
+            migrated_scopes.push(scope);
+        }
+    }
+
+    Ok(migrated_scopes)
+}
+
+fn backfill_score_summary_run_links(
+    transaction: &rusqlite::Transaction<'_>,
+    migrated_scopes: &[ControlResultScope],
+) -> rusqlite::Result<()> {
+    for scope in migrated_scopes.iter().collect::<BTreeSet<_>>() {
+        let score_exists: i64 = transaction.query_row(
+            "SELECT COUNT(*)
+             FROM score_summaries
+             WHERE id = ?1",
+            params![&scope.framework_id],
+            |row| row.get(0),
+        )?;
+        if score_exists > 0 {
+            transaction.execute(
+                "INSERT INTO score_summary_runs(run_id, framework_id)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(run_id, framework_id) DO NOTHING",
+                params![&scope.run_id, &scope.framework_id],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_control_result_scope_from_row_id(row_id: &str) -> Option<ControlResultScope> {
+    let (run_id, remainder) = take_length_prefixed_field(row_id)?;
+    let (framework_id, _) = take_length_prefixed_field(remainder)?;
+    Some(ControlResultScope {
+        run_id: run_id.to_owned(),
+        framework_id: framework_id.to_owned(),
+    })
+}
+
+fn take_length_prefixed_field(input: &str) -> Option<(&str, &str)> {
+    let (length, remainder) = input.split_once(':')?;
+    let length = length.parse::<usize>().ok()?;
+    let value = remainder.get(..length)?;
+    let remainder = remainder.get(length..)?.strip_prefix(':')?;
+    Some((value, remainder))
 }
 
 fn transaction_schema_column_exists(

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rusqlite::{params, Connection};
 use sovri_agent::local_db::{LocalDatabase, LocalDatabaseError};
 use sovri_agent::matrix::Corpus;
 use sovri_sdk::{ControlResult, Status};
@@ -159,6 +160,68 @@ fn results_gaps_and_scores_use_stable_ordering() {
     );
 }
 
+#[test]
+fn unmatched_or_empty_run_queries_return_stable_empty_results() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+    local_database
+        .write_completed_corpus(&reverse_order_mixed_corpus())
+        .expect("the reverse-order mixed corpus write succeeds");
+
+    for run_id in ["", "missing-2026-06-24"] {
+        assert!(
+            local_database
+                .query_results(run_id)
+                .expect("the result rows can be queried")
+                .is_empty(),
+            "no results are returned for run id {run_id:?}"
+        );
+        assert!(
+            local_database
+                .query_score_summaries(run_id)
+                .expect("the score summaries can be queried")
+                .is_empty(),
+            "no score summaries are returned for run id {run_id:?}"
+        );
+    }
+}
+
+#[test]
+fn migrated_result_and_score_rows_remain_queryable_by_run() {
+    let database = TempDatabase::new();
+    create_legacy_version_4_database_without_query_scope(database.path());
+
+    let local_database =
+        LocalDatabase::open(database.path()).expect("the version 4 database reopens");
+
+    let results = local_database
+        .query_results(MIXED_RUN_ID)
+        .expect("the migrated result rows can be queried");
+    assert_eq!(
+        results
+            .iter()
+            .map(|row| (row.control_id(), row.rule_id()))
+            .collect::<Vec<_>>(),
+        vec![
+            (CONSENT_CONTROL_ID, CMP_RULE),
+            (CONSENT_CONTROL_ID, TRACKER_RULE),
+            (HOST_CONTROL_ID, SSH_RULE),
+        ]
+    );
+
+    let score_summaries = local_database
+        .query_score_summaries(MIXED_RUN_ID)
+        .expect("the migrated score summaries can be queried");
+    assert_eq!(
+        score_summaries
+            .iter()
+            .map(|row| row.framework_id().to_owned())
+            .collect::<Vec<_>>(),
+        vec![GDPR_FRAMEWORK_ID.to_owned(), ISO_FRAMEWORK_ID.to_owned()]
+    );
+}
+
 fn reverse_order_mixed_corpus() -> Corpus {
     Corpus::new(EXECUTED_AT)
         .with_run_id(MIXED_RUN_ID)
@@ -229,6 +292,102 @@ fn reverse_order_mixed_corpus() -> Corpus {
             "dist/main.js",
             CONSENT_EVIDENCE_DIGEST,
         )
+}
+
+fn create_legacy_version_4_database_without_query_scope(path: &Path) {
+    fs::create_dir_all(path.parent().expect("database path has a parent"))
+        .expect("legacy database parent can be created");
+    let connection = Connection::open(path).expect("legacy database can be created");
+    connection
+        .execute_batch(
+            "
+            CREATE TABLE scan_runs (id TEXT PRIMARY KEY);
+            CREATE TABLE frameworks (
+              id TEXT PRIMARY KEY,
+              version TEXT NOT NULL
+            );
+            CREATE TABLE controls (id TEXT PRIMARY KEY);
+            CREATE TABLE control_results (
+              id TEXT PRIMARY KEY,
+              control_id TEXT NOT NULL,
+              rule_id TEXT NOT NULL,
+              evidence_id TEXT NOT NULL
+            );
+            CREATE TABLE compliance_gaps (
+              id TEXT PRIMARY KEY,
+              run_id TEXT NOT NULL,
+              status TEXT NOT NULL,
+              severity TEXT NOT NULL,
+              control_id TEXT NOT NULL,
+              rule_id TEXT NOT NULL
+            );
+            CREATE TABLE evidence_metadata (
+              id TEXT PRIMARY KEY,
+              digest TEXT NOT NULL,
+              locator TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE score_summaries (id TEXT PRIMARY KEY);
+            CREATE TABLE exports (id TEXT PRIMARY KEY);
+            CREATE TABLE schema_migrations (
+              version INTEGER PRIMARY KEY,
+              name TEXT NOT NULL,
+              applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO schema_migrations(version, name)
+            VALUES
+              (1, '0001-initial'),
+              (2, '0002-run-evidence-links'),
+              (3, '0003-gap-query-filters'),
+              (4, '0004-evidence-locators');
+            PRAGMA user_version = 4;
+            ",
+        )
+        .expect("legacy version 4 schema can be seeded");
+    for framework_id in [ISO_FRAMEWORK_ID, GDPR_FRAMEWORK_ID] {
+        connection
+            .execute(
+                "INSERT INTO score_summaries(id) VALUES (?1)",
+                params![framework_id],
+            )
+            .expect("legacy score summary can be seeded");
+    }
+    for (framework_id, control_id, rule_id, evidence_id) in [
+        (ISO_FRAMEWORK_ID, HOST_CONTROL_ID, SSH_RULE, SSH_EVIDENCE_ID),
+        (
+            GDPR_FRAMEWORK_ID,
+            CONSENT_CONTROL_ID,
+            TRACKER_RULE,
+            CONSENT_EVIDENCE_ID,
+        ),
+        (
+            GDPR_FRAMEWORK_ID,
+            CONSENT_CONTROL_ID,
+            CMP_RULE,
+            CONSENT_EVIDENCE_ID,
+        ),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO control_results(id, control_id, rule_id, evidence_id)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    result_row_id(MIXED_RUN_ID, framework_id, control_id, rule_id),
+                    control_id,
+                    rule_id,
+                    evidence_id
+                ],
+            )
+            .expect("legacy control result can be seeded");
+    }
+}
+
+fn result_row_id(run_id: &str, framework_id: &str, control_id: &str, rule_id: &str) -> String {
+    format!(
+        "{}:{run_id}:{}:{framework_id}:{}:{control_id}:{rule_id}",
+        run_id.len(),
+        framework_id.len(),
+        control_id.len()
+    )
 }
 
 fn control_result(
