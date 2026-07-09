@@ -14,7 +14,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::matrix::Corpus;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, TransactionBehavior};
 
 /// The schema version created by the first packaged migration.
 pub const INITIAL_SCHEMA_VERSION: u32 = 1;
@@ -550,8 +550,7 @@ fn migration_is_applicable(
         && migration.name == "0003-control-results-run-id"
         && migration.sql == CONTROL_RESULTS_RUN_ID_SCHEMA_SQL
     {
-        return Ok(schema_column_exists(connection, "control_results", "id")?
-            && !schema_column_exists(connection, "control_results", "run_id")?);
+        return control_results_run_id_migration_is_needed(connection);
     }
 
     Ok(true)
@@ -561,6 +560,10 @@ fn apply_packaged_migration(
     connection: &mut Connection,
     migration: &PackagedMigration,
 ) -> Result<(), LocalDatabaseError> {
+    if is_control_results_run_id_migration(migration) {
+        return apply_control_results_run_id_migration(connection, migration);
+    }
+
     let transaction = connection
         .transaction()
         .map_err(LocalDatabaseError::Sqlite)?;
@@ -583,6 +586,49 @@ fn apply_packaged_migration(
     transaction
         .commit()
         .map_err(|source| migration_error(migration, source))
+}
+
+fn is_control_results_run_id_migration(migration: &PackagedMigration) -> bool {
+    migration.version == CONTROL_RESULTS_RUN_ID_SCHEMA_VERSION
+        && migration.name == "0003-control-results-run-id"
+        && migration.sql == CONTROL_RESULTS_RUN_ID_SCHEMA_SQL
+}
+
+fn apply_control_results_run_id_migration(
+    connection: &mut Connection,
+    migration: &PackagedMigration,
+) -> Result<(), LocalDatabaseError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(LocalDatabaseError::Sqlite)?;
+    transaction
+        .execute_batch(MIGRATION_LEDGER_SQL)
+        .map_err(|source| migration_error(migration, source))?;
+    if control_results_run_id_migration_is_needed(&transaction)? {
+        transaction
+            .execute_batch(migration.sql)
+            .map_err(|source| migration_error(migration, source))?;
+    }
+    transaction
+        .execute(
+            "INSERT INTO schema_migrations(version, name)
+             VALUES (?1, ?2)",
+            params![i64::from(migration.version), migration.name],
+        )
+        .map_err(|source| migration_error(migration, source))?;
+    transaction
+        .pragma_update(None, "user_version", i64::from(migration.version))
+        .map_err(|source| migration_error(migration, source))?;
+    transaction
+        .commit()
+        .map_err(|source| migration_error(migration, source))
+}
+
+fn control_results_run_id_migration_is_needed(
+    connection: &Connection,
+) -> Result<bool, LocalDatabaseError> {
+    Ok(schema_column_exists(connection, "control_results", "id")?
+        && !schema_column_exists(connection, "control_results", "run_id")?)
 }
 
 fn migration_error(migration: &PackagedMigration, source: rusqlite::Error) -> LocalDatabaseError {
