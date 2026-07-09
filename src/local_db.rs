@@ -15,7 +15,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::matrix::Corpus;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction};
+use sovri_sdk::{ControlResult, Status};
 
 /// The schema version created by the first packaged migration.
 pub const INITIAL_SCHEMA_VERSION: u32 = 1;
@@ -231,11 +232,12 @@ impl LocalDatabase {
     /// Returns an error when the corpus is incomplete or `SQLite` cannot start or
     /// finish the write transaction.
     pub fn write_completed_corpus(&mut self, corpus: &Corpus) -> Result<(), LocalDatabaseError> {
+        validate_completed_corpus(corpus)?;
         let transaction = self
             .connection
             .transaction()
             .map_err(LocalDatabaseError::Sqlite)?;
-        validate_completed_corpus(corpus)?;
+        write_completed_corpus_rows(&transaction, corpus)?;
         transaction.commit().map_err(LocalDatabaseError::Sqlite)
     }
 }
@@ -247,9 +249,12 @@ fn validate_completed_corpus(corpus: &Corpus) -> Result<(), LocalDatabaseError> 
         .map(|(framework_id, _version, _source_url)| framework_id)
         .collect::<BTreeSet<_>>();
     let mut missing_frameworks = BTreeSet::new();
+    let mut frameworks_with_content = BTreeSet::new();
 
     for (framework_id, _control_id, _severity, _reference) in corpus.controls() {
-        if !framework_metadata.contains(framework_id) {
+        if framework_metadata.contains(framework_id) {
+            frameworks_with_content.insert(framework_id);
+        } else {
             missing_frameworks.insert(framework_id);
         }
     }
@@ -258,22 +263,130 @@ fn validate_completed_corpus(corpus: &Corpus) -> Result<(), LocalDatabaseError> 
         let Some(framework_id) = framework_id else {
             continue;
         };
-        if !framework_metadata.contains(framework_id) {
+        if framework_metadata.contains(framework_id) {
+            frameworks_with_content.insert(framework_id);
+        } else {
             missing_frameworks.insert(framework_id);
         }
     }
 
-    if missing_frameworks.is_empty() {
-        return Ok(());
+    if !missing_frameworks.is_empty() {
+        return Err(LocalDatabaseError::Schema(format!(
+            "completed corpus missing framework metadata for {}",
+            join_framework_ids(&missing_frameworks)
+        )));
     }
 
-    let missing_frameworks = missing_frameworks
-        .into_iter()
-        .collect::<Vec<_>>()
-        .join(", ");
-    Err(LocalDatabaseError::Schema(format!(
-        "completed corpus missing framework metadata for {missing_frameworks}"
-    )))
+    let empty_frameworks = framework_metadata
+        .difference(&frameworks_with_content)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if !empty_frameworks.is_empty() {
+        return Err(LocalDatabaseError::Schema(format!(
+            "completed corpus has framework metadata without controls or results for {}",
+            join_framework_ids(&empty_frameworks)
+        )));
+    }
+
+    Ok(())
+}
+
+fn write_completed_corpus_rows(
+    transaction: &Transaction<'_>,
+    corpus: &Corpus,
+) -> Result<(), LocalDatabaseError> {
+    let run_id = corpus.run_id();
+    transaction
+        .execute("INSERT OR REPLACE INTO scan_runs(id) VALUES (?1)", [run_id])
+        .map_err(LocalDatabaseError::Sqlite)?;
+
+    for (framework_id, version, _source_url) in corpus.frameworks() {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO frameworks(id, version) VALUES (?1, ?2)",
+                params![framework_id, version],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+
+    for (_framework_id, control_id, _severity, _reference) in corpus.controls() {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO controls(id) VALUES (?1)",
+                [control_id],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+
+    let mut score_summary_ids = BTreeSet::new();
+    for (framework_id, result) in corpus.scoped_results() {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO control_results(id) VALUES (?1)",
+                [result_record_id(framework_id, result)],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+
+        if let Some(framework_id) = framework_id {
+            score_summary_ids.insert(framework_id);
+            if result_is_gap(result) {
+                transaction
+                    .execute(
+                        "INSERT OR REPLACE INTO compliance_gaps(id) VALUES (?1)",
+                        [result_record_id(Some(framework_id), result)],
+                    )
+                    .map_err(LocalDatabaseError::Sqlite)?;
+            }
+        }
+    }
+
+    for evidence in corpus.evidence_records() {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO evidence_metadata(id, digest) VALUES (?1, ?2)",
+                params![evidence.id, evidence.integrity],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+
+    for framework_id in score_summary_ids {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO score_summaries(id) VALUES (?1)",
+                [framework_id],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+
+    transaction
+        .execute("INSERT OR REPLACE INTO exports(id) VALUES (?1)", [run_id])
+        .map_err(LocalDatabaseError::Sqlite)?;
+
+    Ok(())
+}
+
+fn result_record_id(framework_id: Option<&str>, result: &ControlResult) -> String {
+    format!(
+        "{}:{}:{}",
+        framework_id.unwrap_or_default(),
+        result.control_id(),
+        result.rule_id()
+    )
+}
+
+fn result_is_gap(result: &ControlResult) -> bool {
+    matches!(result.status(), Status::Fail | Status::Warning)
+}
+
+fn join_framework_ids(framework_ids: &BTreeSet<&str>) -> String {
+    let mut message = String::new();
+    for framework_id in framework_ids {
+        if !message.is_empty() {
+            message.push_str(", ");
+        }
+        message.push_str(framework_id);
+    }
+    message
 }
 
 fn apply_packaged_migrations(

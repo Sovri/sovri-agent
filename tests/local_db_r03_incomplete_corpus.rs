@@ -113,6 +113,33 @@ fn an_incomplete_corpus_is_not_committed_as_a_completed_run() {
     assert_table_empty(database.path(), "exports");
 }
 
+#[test]
+fn framework_metadata_without_controls_or_results_is_not_committed() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+    let corpus = Corpus::new(EXECUTED_AT)
+        .with_run_id(MIXED_RUN)
+        .with_framework(
+            GDPR_FRAMEWORK,
+            "2016-679",
+            "https://eur-lex.europa.eu/eli/reg/2016/679/oj",
+        );
+
+    let write_result = local_database.write_completed_corpus(&corpus);
+
+    assert!(
+        write_result.is_err(),
+        "framework metadata alone is not a completed corpus"
+    );
+    assert_row_absent(database.path(), "scan_runs", MIXED_RUN);
+    assert_row_absent(database.path(), "frameworks", GDPR_FRAMEWORK);
+    assert_table_empty(database.path(), "controls");
+    assert_table_empty(database.path(), "control_results");
+    assert_table_empty(database.path(), "score_summaries");
+    assert_table_empty(database.path(), "exports");
+}
+
 fn incomplete_mixed_corpus() -> Corpus {
     Corpus::new(EXECUTED_AT)
         .with_run_id(MIXED_RUN)
