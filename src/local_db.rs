@@ -807,6 +807,10 @@ fn write_evidence_rows(
     run_id: &str,
     corpus: &Corpus,
 ) -> rusqlite::Result<()> {
+    transaction.execute(
+        "DELETE FROM run_evidence_links WHERE run_id = ?1",
+        params![run_id],
+    )?;
     for evidence in corpus.evidence_records() {
         transaction.execute(
             // Rewrites refresh content identity but preserve the first non-empty locator.
@@ -1441,6 +1445,45 @@ impl Error for LocalDatabaseError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rewriting_a_run_replaces_its_evidence_links() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory SQLite");
+        apply_packaged_migrations(&mut connection, PACKAGED_MIGRATIONS)
+            .expect("apply packaged migrations");
+        let mut database = LocalDatabase { connection };
+        database
+            .write_completed_corpus(
+                &Corpus::new("2026-06-24T13:16:28Z")
+                    .with_run_id("rewritten-run")
+                    .with_evidence("old-evidence", "old.locator")
+                    .with_evidence("kept-evidence", "kept.locator"),
+            )
+            .expect("write the original run");
+
+        database
+            .write_completed_corpus(
+                &Corpus::new("2026-06-24T13:16:28Z")
+                    .with_run_id("rewritten-run")
+                    .with_evidence("kept-evidence", "kept.locator"),
+            )
+            .expect("rewrite the run");
+
+        let links = database
+            .connection
+            .prepare(
+                "SELECT evidence_id
+                 FROM run_evidence_links
+                 WHERE run_id = 'rewritten-run'
+                 ORDER BY evidence_id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(links, vec!["kept-evidence"]);
+    }
 
     #[test]
     fn run_evidence_index_migration_backfills_a_recognized_v5_database() {
