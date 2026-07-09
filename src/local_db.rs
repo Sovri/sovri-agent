@@ -213,6 +213,24 @@ pub struct LocalDatabaseEvidence {
     locator: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EvidenceLookup {
+    Id,
+    Digest,
+    Control,
+}
+
+impl EvidenceLookup {
+    fn parse(lookup: &str) -> Option<Self> {
+        match lookup {
+            "id" => Some(EvidenceLookup::Id),
+            "digest" => Some(EvidenceLookup::Digest),
+            "control" => Some(EvidenceLookup::Control),
+            _ => None,
+        }
+    }
+}
+
 impl LocalDatabaseGap {
     /// Returns the control id for the compliance gap.
     #[must_use]
@@ -398,20 +416,23 @@ impl LocalDatabase {
         lookup: &str,
         value: &str,
     ) -> Result<Vec<LocalDatabaseEvidence>, LocalDatabaseError> {
+        let Some(lookup) = EvidenceLookup::parse(lookup) else {
+            return Ok(Vec::new());
+        };
         let sql = match lookup {
-            "id" => {
+            EvidenceLookup::Id => {
                 "SELECT id, locator
                  FROM evidence_metadata
                  WHERE id = ?1
                  ORDER BY id"
             }
-            "digest" => {
+            EvidenceLookup::Digest => {
                 "SELECT id, locator
                  FROM evidence_metadata
                  WHERE digest = ?1
                  ORDER BY id"
             }
-            "control" => {
+            EvidenceLookup::Control => {
                 "SELECT DISTINCT evidence_metadata.id, evidence_metadata.locator
                  FROM evidence_metadata
                  INNER JOIN control_results
@@ -419,7 +440,6 @@ impl LocalDatabase {
                  WHERE control_results.control_id = ?1
                  ORDER BY evidence_metadata.id"
             }
-            _ => return Ok(Vec::new()),
         };
         let mut statement = self
             .connection

@@ -209,6 +209,26 @@ fn repeated_evidence_write_does_not_replace_a_non_empty_locator() {
     );
 }
 
+#[test]
+fn unsupported_evidence_lookup_returns_an_empty_result() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+
+    local_database
+        .write_completed_corpus(&mixed_corpus())
+        .expect("the mixed corpus write succeeds");
+
+    let evidence = local_database
+        .query_evidence("invalid", CONSENT_EVIDENCE_ID)
+        .expect("unsupported lookup names do not fail the query");
+
+    assert!(
+        evidence.is_empty(),
+        "unsupported lookup names should return an empty result"
+    );
+}
+
 struct EvidenceQueryExample {
     lookup: &'static str,
     value: &'static str,
