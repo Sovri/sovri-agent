@@ -6,18 +6,19 @@ secrets.
 
 ## Status
 
-v0.4.0 — the V0.4 Linux scanner track on the `sovri-sdk` engine (`bin + lib`).
-Four host scanners — system, user, SSH, and Docker — capture the host's effective
-posture offline and grade it through the SDK engine, reporting an absent subsystem
-as `SKIPPED` rather than a false pass. The `scan` command runs a selected catalogue
-over them and prints the results and compliance gaps; the binary keeps the offline
-`selftest` command.
+v0.6.0 — the V0.6 reporting track on the `sovri-sdk` engine (`bin + lib`).
+The agent scans Linux host posture offline, persists evidence, and exports the
+persisted compliance corpus as deterministic PDF reports, SpreadsheetML
+workbooks, and offline-verifiable signed JSON. Host scanners — system, user, SSH,
+and Docker — capture the host's effective posture offline and grade it through
+the SDK engine, reporting an absent subsystem as `SKIPPED` rather than a false
+pass. The binary keeps the offline `selftest` command.
 
 ```sh
 cargo run -- selftest
-# sovri-agent 0.4.0: selftest ok (offline, no external services)
+# sovri-agent 0.6.0: selftest ok (offline, no external services)
 cargo run -- --version
-# sovri-agent 0.4.0 (sovri-sdk 0.2.0)
+# sovri-agent 0.6.0 (sovri-sdk 0.3.0)
 ```
 
 ## Library
@@ -30,14 +31,19 @@ The `sovri_agent` library wires the agent to the SDK engine:
 - `controls` — the self-contained selftest control proving the engine seam via
   `sovri_sdk::Engine::execute`.
 - `evidence` — a relay re-exporting the SDK evidence contract.
+- `report` — deterministic PDF compliance reporting from a persisted corpus.
+- `matrix` — SpreadsheetML compliance matrix export.
+- `signed_json` — canonical signed JSON export and offline verification.
 - `sdk_version()` — the linked SDK contract version.
 
 ## Development
 
-This crate builds, tests, and lints with the standard Rust toolchain. Its only
-dependency is the first-party `sovri-sdk`, pinned by git tag; there are no
-third-party runtime crates and no secrets are required. CI fetches the SDK from
-its pinned tag. To co-develop against a sibling `sovri-sdk-rust` checkout, copy
+This crate builds, tests, and lints with the standard Rust toolchain. Runtime
+dependencies are limited to the first-party `sovri-sdk`, pinned by git revision,
+and `ed25519-dalek` for signed JSON. PDF and SpreadsheetML export remain
+hand-emitted with no third-party runtime dependency, and no secrets are required.
+CI fetches the SDK from its pinned revision. To co-develop against a sibling
+`sovri-sdk-rust` checkout, copy
 `.cargo/config.toml.example` to `.cargo/config.toml` and the build uses that path
 instead.
 
