@@ -9,25 +9,55 @@
 //! metadata.
 
 use std::error::Error;
-use std::fmt::{self, Write as _};
+use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
 /// The schema version created by the first packaged migration.
 pub const INITIAL_SCHEMA_VERSION: u32 = 1;
 
-const REQUIRED_SCHEMA_TABLES: &[&str] = &[
-    "scan_runs",
-    "frameworks",
-    "controls",
-    "control_results",
-    "compliance_gaps",
-    "evidence_metadata",
-    "score_summaries",
-    "exports",
-];
+const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[PackagedMigration::new(
+    INITIAL_SCHEMA_VERSION,
+    "0001-initial",
+    INITIAL_SCHEMA_SQL,
+)];
+
+const INITIAL_SCHEMA_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS scan_runs (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS frameworks (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS controls (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS control_results (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS compliance_gaps (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS evidence_metadata (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS score_summaries (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY);
+";
+
+const MIGRATION_LEDGER_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+";
+
+/// A packaged `SQLite` migration embedded in the agent binary.
+#[derive(Clone, Copy, Debug)]
+pub struct PackagedMigration {
+    version: u32,
+    name: &'static str,
+    sql: &'static str,
+}
+
+impl PackagedMigration {
+    /// Creates a packaged migration descriptor.
+    #[must_use]
+    pub const fn new(version: u32, name: &'static str, sql: &'static str) -> Self {
+        PackagedMigration { version, name, sql }
+    }
+}
 
 /// A local `SQLite` database opened by `sovri-agent`.
 pub struct LocalDatabase {
@@ -40,14 +70,27 @@ impl LocalDatabase {
     /// # Errors
     ///
     /// Returns an error if the parent directory cannot be created, `SQLite` cannot
-    /// open the file, or the packaged initial schema cannot be applied.
+    /// open the file, or packaged migrations cannot be applied.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, LocalDatabaseError> {
+        Self::open_with_packaged_migrations(path, PACKAGED_MIGRATIONS)
+    }
+
+    /// Opens or creates a local `SQLite` database with the supplied packaged migrations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the parent directory cannot be created, `SQLite` cannot
+    /// open the file, or a packaged migration cannot be applied.
+    pub fn open_with_packaged_migrations(
+        path: impl AsRef<Path>,
+        migrations: &[PackagedMigration],
+    ) -> Result<Self, LocalDatabaseError> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(LocalDatabaseError::Io)?;
         }
-        let connection = Connection::open(path).map_err(LocalDatabaseError::Sqlite)?;
-        apply_initial_schema(&connection)?;
+        let mut connection = Connection::open(path).map_err(LocalDatabaseError::Sqlite)?;
+        apply_packaged_migrations(&mut connection, migrations)?;
         Ok(LocalDatabase { connection })
     }
 
@@ -112,35 +155,81 @@ impl LocalDatabase {
     }
 }
 
-fn apply_initial_schema(connection: &Connection) -> Result<(), LocalDatabaseError> {
-    connection
-        .execute_batch(&initial_schema_sql())
-        .map_err(LocalDatabaseError::Sqlite)
+fn apply_packaged_migrations(
+    connection: &mut Connection,
+    migrations: &[PackagedMigration],
+) -> Result<(), LocalDatabaseError> {
+    for migration in migrations {
+        if !migration_is_applied(connection, migration.version)? {
+            apply_packaged_migration(connection, migration)?;
+        }
+    }
+    Ok(())
 }
 
-fn initial_schema_sql() -> String {
-    let mut sql = String::from(
-        "BEGIN;
-         CREATE TABLE IF NOT EXISTS schema_migrations (
-           version INTEGER PRIMARY KEY,
-           name TEXT NOT NULL,
-           applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-         );
-         INSERT OR IGNORE INTO schema_migrations(version, name)
-           VALUES (1, '0001-initial');
-         PRAGMA user_version = 1;",
-    );
-    for table in REQUIRED_SCHEMA_TABLES {
-        write!(
-            sql,
-            "CREATE TABLE IF NOT EXISTS {table} (
-               id TEXT PRIMARY KEY
-             );",
-        )
-        .expect("writing SQL to a String cannot fail");
+fn migration_is_applied(connection: &Connection, version: u32) -> Result<bool, LocalDatabaseError> {
+    if !migration_ledger_exists(connection)? {
+        return Ok(false);
     }
-    sql.push_str("COMMIT;");
-    sql
+
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM schema_migrations
+             WHERE version = ?1",
+            params![i64::from(version)],
+            |row| row.get(0),
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(count > 0)
+}
+
+fn migration_ledger_exists(connection: &Connection) -> Result<bool, LocalDatabaseError> {
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM sqlite_schema
+             WHERE type = 'table' AND name = 'schema_migrations'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(count == 1)
+}
+
+fn apply_packaged_migration(
+    connection: &mut Connection,
+    migration: &PackagedMigration,
+) -> Result<(), LocalDatabaseError> {
+    let transaction = connection
+        .transaction()
+        .map_err(LocalDatabaseError::Sqlite)?;
+    transaction
+        .execute_batch(MIGRATION_LEDGER_SQL)
+        .map_err(|source| migration_error(migration, source))?;
+    transaction
+        .execute_batch(migration.sql)
+        .map_err(|source| migration_error(migration, source))?;
+    transaction
+        .execute(
+            "INSERT INTO schema_migrations(version, name)
+             VALUES (?1, ?2)",
+            params![i64::from(migration.version), migration.name],
+        )
+        .map_err(|source| migration_error(migration, source))?;
+    transaction
+        .pragma_update(None, "user_version", i64::from(migration.version))
+        .map_err(|source| migration_error(migration, source))?;
+    transaction
+        .commit()
+        .map_err(|source| migration_error(migration, source))
+}
+
+fn migration_error(migration: &PackagedMigration, source: rusqlite::Error) -> LocalDatabaseError {
+    LocalDatabaseError::Migration {
+        name: migration.name.to_owned(),
+        source,
+    }
 }
 
 /// Errors returned by local database operations.
@@ -150,6 +239,13 @@ pub enum LocalDatabaseError {
     Io(std::io::Error),
     /// `SQLite` failed while opening, migrating, or reading the database.
     Sqlite(rusqlite::Error),
+    /// A named packaged migration failed and its transaction was rolled back.
+    Migration {
+        /// Packaged migration name, for example `0001-initial`.
+        name: String,
+        /// Underlying `SQLite` error that failed the migration.
+        source: rusqlite::Error,
+    },
 }
 
 impl fmt::Display for LocalDatabaseError {
@@ -161,6 +257,12 @@ impl fmt::Display for LocalDatabaseError {
             LocalDatabaseError::Sqlite(error) => {
                 write!(formatter, "local database sqlite error: {error}")
             }
+            LocalDatabaseError::Migration { name, source } => {
+                write!(
+                    formatter,
+                    "local database migration {name} failed: {source}"
+                )
+            }
         }
     }
 }
@@ -170,6 +272,7 @@ impl Error for LocalDatabaseError {
         match self {
             LocalDatabaseError::Io(error) => Some(error),
             LocalDatabaseError::Sqlite(error) => Some(error),
+            LocalDatabaseError::Migration { source, .. } => Some(source),
         }
     }
 }
