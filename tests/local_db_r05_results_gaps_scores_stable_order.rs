@@ -222,6 +222,38 @@ fn migrated_result_and_score_rows_remain_queryable_by_run() {
     );
 }
 
+#[test]
+fn partial_migration_run_ids_are_repaired_from_stable_result_ids() {
+    let database = TempDatabase::new();
+    create_legacy_version_4_database_without_query_scope(database.path());
+    seed_partial_query_scope_migration_state(database.path());
+
+    let local_database =
+        LocalDatabase::open(database.path()).expect("the partial migration database reopens");
+
+    assert!(
+        local_database
+            .query_results("wrong-run")
+            .expect("wrong-run results can be queried")
+            .is_empty(),
+        "stale partial-migration run ids are repaired"
+    );
+    assert!(
+        local_database
+            .query_results("")
+            .expect("empty-run results can be queried")
+            .is_empty(),
+        "malformed legacy result ids are not exposed as empty-run results"
+    );
+    assert_eq!(
+        local_database
+            .query_results(MIXED_RUN_ID)
+            .expect("the repaired result rows can be queried")
+            .len(),
+        3
+    );
+}
+
 fn reverse_order_mixed_corpus() -> Corpus {
     Corpus::new(EXECUTED_AT)
         .with_run_id(MIXED_RUN_ID)
@@ -388,6 +420,24 @@ fn result_row_id(run_id: &str, framework_id: &str, control_id: &str, rule_id: &s
         framework_id.len(),
         control_id.len()
     )
+}
+
+fn seed_partial_query_scope_migration_state(path: &Path) {
+    let connection = Connection::open(path).expect("legacy database can be reopened");
+    connection
+        .execute(
+            "ALTER TABLE control_results
+             ADD COLUMN run_id TEXT NOT NULL DEFAULT 'wrong-run'",
+            [],
+        )
+        .expect("partial migration run_id column can be seeded");
+    connection
+        .execute(
+            "INSERT INTO control_results(id, run_id, control_id, rule_id, evidence_id)
+             VALUES ('malformed-result-row', '', 'malformed-control', 'malformed-rule', 'malformed-evidence')",
+            [],
+        )
+        .expect("malformed legacy control result can be seeded");
 }
 
 fn control_result(

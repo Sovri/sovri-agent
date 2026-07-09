@@ -491,6 +491,10 @@ impl LocalDatabase {
         &self,
         run_id: &str,
     ) -> Result<Vec<LocalDatabaseResult>, LocalDatabaseError> {
+        if run_id.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut statement = self
             .connection
             .prepare(
@@ -521,6 +525,10 @@ impl LocalDatabase {
         &self,
         run_id: &str,
     ) -> Result<Vec<LocalDatabaseScoreSummary>, LocalDatabaseError> {
+        if run_id.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut statement = self
             .connection
             .prepare(
@@ -733,10 +741,7 @@ fn write_control_result_rows(
                  )
                  VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(id) DO UPDATE SET
-                   run_id = CASE
-                     WHEN control_results.run_id = '' THEN excluded.run_id
-                     ELSE control_results.run_id
-                   END,
+                   run_id = excluded.run_id,
                    control_id = excluded.control_id,
                    rule_id = excluded.rule_id,
                    evidence_id = excluded.evidence_id",
@@ -1164,7 +1169,7 @@ fn apply_result_score_query_scope_migration(
 fn backfill_control_result_run_ids(
     transaction: &rusqlite::Transaction<'_>,
 ) -> rusqlite::Result<Vec<ControlResultScope>> {
-    let mut statement = transaction.prepare("SELECT id FROM control_results WHERE run_id = ''")?;
+    let mut statement = transaction.prepare("SELECT id FROM control_results")?;
     let row_ids = statement.query_map([], |row| row.get::<_, String>(0))?;
     let mut migrated_scopes = Vec::new();
 
@@ -1174,7 +1179,7 @@ fn backfill_control_result_run_ids(
             transaction.execute(
                 "UPDATE control_results
                  SET run_id = ?1
-                 WHERE id = ?2 AND run_id = ''",
+                 WHERE id = ?2",
                 params![&scope.run_id, &row_id],
             )?;
             migrated_scopes.push(scope);
