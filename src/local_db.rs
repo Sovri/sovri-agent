@@ -262,16 +262,19 @@ fn current_packaged_schema_version(
     let mut previous_version = None;
     for migration in migrations {
         if let Some(version) = previous_version {
-            if migration.version == version {
-                return Err(LocalDatabaseError::Schema(format!(
-                    "duplicate packaged migration version {version}"
-                )));
-            }
-            if migration.version < version {
-                return Err(LocalDatabaseError::Schema(format!(
-                    "packaged migration version {} appears after version {version}; migrations must be ordered by ascending version",
-                    migration.version
-                )));
+            match migration.version.cmp(&version) {
+                std::cmp::Ordering::Less => {
+                    return Err(LocalDatabaseError::Schema(format!(
+                        "packaged migration version {} appears after version {version}; migrations must be ordered by ascending version",
+                        migration.version
+                    )));
+                }
+                std::cmp::Ordering::Equal => {
+                    return Err(LocalDatabaseError::Schema(format!(
+                        "duplicate packaged migration version {version}"
+                    )));
+                }
+                std::cmp::Ordering::Greater => {}
             }
         }
 

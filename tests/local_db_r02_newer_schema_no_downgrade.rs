@@ -97,6 +97,15 @@ fn create_version_3_database_with_single_run_and_evidence(path: &Path) {
         .expect("evidence can be seeded");
 }
 
+fn create_empty_zero_schema_database(path: &Path) {
+    fs::create_dir_all(path.parent().expect("database path has a parent"))
+        .expect("database parent can be created");
+    let connection = Connection::open(path).expect("zero-version database can be created");
+    connection
+        .execute_batch("PRAGMA user_version = 0;")
+        .expect("zero-version schema can be seeded");
+}
+
 fn raw_schema_version(path: &Path) -> u32 {
     let connection = Connection::open(path).expect("database can be inspected");
     let version: i64 = connection
@@ -214,4 +223,57 @@ fn a_database_newer_than_the_packaged_agent_is_not_downgraded() {
 
     // And run "shopfront-2026-06-24" remains unchanged.
     assert!(run_exists(database.path(), RUN_ID));
+}
+
+#[test]
+fn a_zero_schema_database_applies_packaged_migrations() {
+    let database = TempDatabase::new();
+    create_empty_zero_schema_database(database.path());
+    assert_eq!(raw_schema_version(database.path()), 0);
+
+    let opened = LocalDatabase::open_with_packaged_migrations(
+        database.path(),
+        PACKAGED_AGENT_SCHEMA_2_MIGRATIONS,
+    )
+    .expect("zero-version database receives packaged migrations");
+
+    assert_eq!(
+        opened.schema_version(),
+        PACKAGED_AGENT_CURRENT_SCHEMA_VERSION
+    );
+    drop(opened);
+    assert_eq!(raw_schema_version(database.path()), 2);
+    assert_eq!(applied_migration_versions(database.path()), vec![1, 2]);
+    assert!(table_exists(database.path(), "packaged_agent_v1_marker"));
+    assert!(table_exists(database.path(), "packaged_agent_v2_marker"));
+}
+
+#[test]
+fn a_database_at_the_packaged_agent_schema_version_reopens() {
+    let database = TempDatabase::new();
+    let opened = LocalDatabase::open_with_packaged_migrations(
+        database.path(),
+        PACKAGED_AGENT_SCHEMA_2_MIGRATIONS,
+    )
+    .expect("packaged schema database can be created");
+    assert_eq!(
+        opened.schema_version(),
+        PACKAGED_AGENT_CURRENT_SCHEMA_VERSION
+    );
+    drop(opened);
+
+    let reopened = LocalDatabase::open_with_packaged_migrations(
+        database.path(),
+        PACKAGED_AGENT_SCHEMA_2_MIGRATIONS,
+    )
+    .expect("matching schema database reopens");
+
+    assert_eq!(
+        reopened.schema_version(),
+        PACKAGED_AGENT_CURRENT_SCHEMA_VERSION
+    );
+    drop(reopened);
+    assert_eq!(applied_migration_versions(database.path()), vec![1, 2]);
+    assert!(table_exists(database.path(), "packaged_agent_v1_marker"));
+    assert!(table_exists(database.path(), "packaged_agent_v2_marker"));
 }
