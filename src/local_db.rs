@@ -8,6 +8,7 @@
 //! evidence bytes; this module stores only local `SQLite` rows and integrity
 //! metadata.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -15,6 +16,7 @@ use std::path::Path;
 
 use crate::matrix::Corpus;
 use rusqlite::{params, Connection};
+use sovri_sdk::Status;
 
 /// The schema version created by the first packaged migration.
 pub const INITIAL_SCHEMA_VERSION: u32 = 1;
@@ -240,6 +242,7 @@ impl LocalDatabase {
             .transaction()
             .map_err(LocalDatabaseError::Sqlite)?;
         let run_id = corpus.run_id();
+        let scoped_results = corpus.scoped_results();
 
         transaction
             .execute(
@@ -269,7 +272,21 @@ impl LocalDatabase {
                 .map_err(LocalDatabaseError::Sqlite)?;
         }
 
-        for (_, result) in corpus.scoped_results() {
+        for framework_id in scoped_results
+            .iter()
+            .filter_map(|(framework_id, _)| *framework_id)
+            .collect::<BTreeSet<_>>()
+        {
+            transaction
+                .execute(
+                    "INSERT INTO score_summaries(id) VALUES (?1)
+                     ON CONFLICT(id) DO NOTHING",
+                    params![framework_id],
+                )
+                .map_err(LocalDatabaseError::Sqlite)?;
+        }
+
+        for (_, result) in &scoped_results {
             let evidence_id = result
                 .evidence_refs()
                 .first()
@@ -289,6 +306,22 @@ impl LocalDatabase {
                     ],
                 )
                 .map_err(LocalDatabaseError::Sqlite)?;
+        }
+
+        for (framework_id, result) in scoped_results.iter().filter_map(|(framework_id, result)| {
+            framework_id.map(|framework_id| (framework_id, *result))
+        }) {
+            if is_gap_status(result.status()) {
+                let gap_id =
+                    compliance_gap_row_id(framework_id, result.control_id(), result.rule_id());
+                transaction
+                    .execute(
+                        "INSERT INTO compliance_gaps(id) VALUES (?1)
+                         ON CONFLICT(id) DO NOTHING",
+                        params![gap_id],
+                    )
+                    .map_err(LocalDatabaseError::Sqlite)?;
+            }
         }
 
         for evidence in corpus.evidence_records() {
@@ -314,6 +347,33 @@ fn control_result_row_id(control_id: &str, rule_id: &str) -> String {
     id.push(':');
     id.push_str(rule_id);
     id
+}
+
+fn compliance_gap_row_id(framework_id: &str, control_id: &str, rule_id: &str) -> String {
+    let framework_id_len = framework_id.len().to_string();
+    let control_id_len = control_id.len().to_string();
+    let mut id = String::with_capacity(
+        framework_id_len.len()
+            + framework_id.len()
+            + control_id_len.len()
+            + control_id.len()
+            + rule_id.len()
+            + 4,
+    );
+    id.push_str(&framework_id_len);
+    id.push(':');
+    id.push_str(framework_id);
+    id.push(':');
+    id.push_str(&control_id_len);
+    id.push(':');
+    id.push_str(control_id);
+    id.push(':');
+    id.push_str(rule_id);
+    id
+}
+
+fn is_gap_status(status: Status) -> bool {
+    matches!(status, Status::Fail | Status::Warning)
 }
 
 fn apply_packaged_migrations(
