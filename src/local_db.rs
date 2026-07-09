@@ -35,6 +35,14 @@ const INITIAL_SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY);
 ";
 
+const MIGRATION_LEDGER_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+";
+
 /// A packaged `SQLite` migration embedded in the agent binary.
 #[derive(Clone, Copy, Debug)]
 pub struct PackagedMigration {
@@ -151,7 +159,6 @@ fn apply_packaged_migrations(
     connection: &mut Connection,
     migrations: &[PackagedMigration],
 ) -> Result<(), LocalDatabaseError> {
-    ensure_migration_ledger(connection)?;
     for migration in migrations {
         if !migration_is_applied(connection, migration.version)? {
             apply_packaged_migration(connection, migration)?;
@@ -160,19 +167,11 @@ fn apply_packaged_migrations(
     Ok(())
 }
 
-fn ensure_migration_ledger(connection: &Connection) -> Result<(), LocalDatabaseError> {
-    connection
-        .execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_migrations (
-               version INTEGER PRIMARY KEY,
-               name TEXT NOT NULL,
-               applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-             );",
-        )
-        .map_err(LocalDatabaseError::Sqlite)
-}
-
 fn migration_is_applied(connection: &Connection, version: u32) -> Result<bool, LocalDatabaseError> {
+    if !migration_ledger_exists(connection)? {
+        return Ok(false);
+    }
+
     let count: i64 = connection
         .query_row(
             "SELECT COUNT(*)
@@ -185,6 +184,19 @@ fn migration_is_applied(connection: &Connection, version: u32) -> Result<bool, L
     Ok(count > 0)
 }
 
+fn migration_ledger_exists(connection: &Connection) -> Result<bool, LocalDatabaseError> {
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM sqlite_schema
+             WHERE type = 'table' AND name = 'schema_migrations'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(count == 1)
+}
+
 fn apply_packaged_migration(
     connection: &mut Connection,
     migration: &PackagedMigration,
@@ -192,6 +204,9 @@ fn apply_packaged_migration(
     let transaction = connection
         .transaction()
         .map_err(LocalDatabaseError::Sqlite)?;
+    transaction
+        .execute_batch(MIGRATION_LEDGER_SQL)
+        .map_err(|source| migration_error(migration, source))?;
     transaction
         .execute_batch(migration.sql)
         .map_err(|source| migration_error(migration, source))?;

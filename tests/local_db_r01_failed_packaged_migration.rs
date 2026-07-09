@@ -112,6 +112,23 @@ fn committed_rows(connection: &Connection, table_name: &str) -> i64 {
         .expect("corpus row count can be inspected after a failed migration")
 }
 
+fn applied_migration_exists(connection: &Connection, migration_name: &str) -> bool {
+    if !table_exists(connection, "schema_migrations") {
+        return false;
+    }
+
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM schema_migrations
+             WHERE name = ?1",
+            [migration_name],
+            |row| row.get(0),
+        )
+        .expect("migration ledger can be inspected after a failed migration");
+    count == 1
+}
+
 #[test]
 fn a_failed_packaged_migration_is_rolled_back() {
     // Given the packaged agent contains migration "0001-initial".
@@ -138,6 +155,10 @@ fn a_failed_packaged_migration_is_rolled_back() {
 
     // And the database does not expose schema version 2.
     assert_ne!(schema_version(&connection), 2);
+    assert!(
+        !applied_migration_exists(&connection, "0002-broken"),
+        "the failed migration was recorded in schema_migrations"
+    );
 
     // And table "partial_migration_marker" does not exist.
     assert!(
