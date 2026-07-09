@@ -72,7 +72,7 @@ const RUN_EVIDENCE_LINKS_SCHEMA_SQL: &str = "
 const CONTROL_RESULTS_RUN_ID_SCHEMA_VERSION: u32 = 3;
 
 const CONTROL_RESULTS_RUN_ID_SCHEMA_SQL: &str = "
-    ALTER TABLE control_results ADD COLUMN run_id TEXT;
+    ALTER TABLE control_results ADD COLUMN run_id TEXT NOT NULL DEFAULT '';
 ";
 
 const MIGRATION_LEDGER_SQL: &str = "
@@ -344,9 +344,13 @@ fn apply_packaged_migrations(
     migrations: &[PackagedMigration],
 ) -> Result<(), LocalDatabaseError> {
     for migration in migrations {
-        if !migration_is_applied(connection, migration.version)?
-            && migration_is_applicable(connection, migration)?
-        {
+        if migration_is_applied(connection, migration.version)? {
+            continue;
+        }
+
+        if is_control_results_run_id_migration(migration) {
+            apply_control_results_run_id_migration_if_needed(connection, migration)?;
+        } else if migration_is_applicable(connection, migration)? {
             apply_packaged_migration(connection, migration)?;
         }
     }
@@ -546,13 +550,6 @@ fn migration_is_applicable(
         return schema_column_exists(connection, "evidence_metadata", "run_id");
     }
 
-    if migration.version == CONTROL_RESULTS_RUN_ID_SCHEMA_VERSION
-        && migration.name == "0003-control-results-run-id"
-        && migration.sql == CONTROL_RESULTS_RUN_ID_SCHEMA_SQL
-    {
-        return control_results_run_id_migration_is_needed(connection);
-    }
-
     Ok(true)
 }
 
@@ -560,12 +557,8 @@ fn apply_packaged_migration(
     connection: &mut Connection,
     migration: &PackagedMigration,
 ) -> Result<(), LocalDatabaseError> {
-    if is_control_results_run_id_migration(migration) {
-        return apply_control_results_run_id_migration(connection, migration);
-    }
-
     let transaction = connection
-        .transaction()
+        .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(LocalDatabaseError::Sqlite)?;
     transaction
         .execute_batch(MIGRATION_LEDGER_SQL)
@@ -594,21 +587,26 @@ fn is_control_results_run_id_migration(migration: &PackagedMigration) -> bool {
         && migration.sql == CONTROL_RESULTS_RUN_ID_SCHEMA_SQL
 }
 
-fn apply_control_results_run_id_migration(
+fn apply_control_results_run_id_migration_if_needed(
     connection: &mut Connection,
     migration: &PackagedMigration,
 ) -> Result<(), LocalDatabaseError> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(LocalDatabaseError::Sqlite)?;
+    let has_control_results = schema_column_exists(&transaction, "control_results", "id")?;
+    let has_run_id = schema_column_exists(&transaction, "control_results", "run_id")?;
+    if !has_control_results || has_run_id {
+        return transaction
+            .commit()
+            .map_err(|source| migration_error(migration, source));
+    }
     transaction
         .execute_batch(MIGRATION_LEDGER_SQL)
         .map_err(|source| migration_error(migration, source))?;
-    if control_results_run_id_migration_is_needed(&transaction)? {
-        transaction
-            .execute_batch(migration.sql)
-            .map_err(|source| migration_error(migration, source))?;
-    }
+    transaction
+        .execute_batch(migration.sql)
+        .map_err(|source| migration_error(migration, source))?;
     transaction
         .execute(
             "INSERT INTO schema_migrations(version, name)
@@ -622,13 +620,6 @@ fn apply_control_results_run_id_migration(
     transaction
         .commit()
         .map_err(|source| migration_error(migration, source))
-}
-
-fn control_results_run_id_migration_is_needed(
-    connection: &Connection,
-) -> Result<bool, LocalDatabaseError> {
-    Ok(schema_column_exists(connection, "control_results", "id")?
-        && !schema_column_exists(connection, "control_results", "run_id")?)
 }
 
 fn migration_error(migration: &PackagedMigration, source: rusqlite::Error) -> LocalDatabaseError {
