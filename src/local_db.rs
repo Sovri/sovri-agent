@@ -28,6 +28,11 @@ const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[
         "0002-run-evidence-links",
         RUN_EVIDENCE_LINKS_SCHEMA_SQL,
     ),
+    PackagedMigration::new(
+        RESULT_QUERY_FILTERS_SCHEMA_VERSION,
+        "0003-result-query-filters",
+        RESULT_QUERY_FILTERS_SCHEMA_SQL,
+    ),
 ];
 
 const INITIAL_SCHEMA_SQL: &str = "
@@ -39,8 +44,10 @@ const INITIAL_SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS controls (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS control_results (
       id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
       control_id TEXT NOT NULL,
       rule_id TEXT NOT NULL,
+      status TEXT NOT NULL,
       evidence_id TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS compliance_gaps (id TEXT PRIMARY KEY);
@@ -65,6 +72,15 @@ const RUN_EVIDENCE_LINKS_SCHEMA_SQL: &str = "
     FROM evidence_metadata;
 ";
 
+const RESULT_QUERY_FILTERS_SCHEMA_VERSION: u32 = 3;
+
+const RESULT_QUERY_FILTERS_SCHEMA_SQL: &str = "
+    ALTER TABLE control_results
+    ADD COLUMN run_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE control_results
+    ADD COLUMN status TEXT NOT NULL DEFAULT '';
+";
+
 const MIGRATION_LEDGER_SQL: &str = "
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
@@ -84,6 +100,10 @@ const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
     SchemaRequirements::new(INITIAL_SCHEMA_VERSION, SCHEMA_VERSION_1_REQUIRED_COLUMNS),
     SchemaRequirements::new(
         RUN_EVIDENCE_LINKS_SCHEMA_VERSION,
+        SCHEMA_VERSION_1_REQUIRED_COLUMNS,
+    ),
+    SchemaRequirements::new(
+        RESULT_QUERY_FILTERS_SCHEMA_VERSION,
         SCHEMA_VERSION_1_REQUIRED_COLUMNS,
     ),
 ];
@@ -247,6 +267,35 @@ impl LocalDatabase {
             .map_err(LocalDatabaseError::Sqlite)
     }
 
+    /// Queries persisted result rule ids by run, control, and status.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot prepare or run the result-list query.
+    pub fn query_results(
+        &self,
+        run_id: &str,
+        control_id: &str,
+        status: &str,
+    ) -> Result<Vec<String>, LocalDatabaseError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT rule_id
+                 FROM control_results
+                 WHERE run_id = ?1 AND control_id = ?2 AND status = ?3
+                 ORDER BY rule_id",
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let rows = statement
+            .query_map(params![run_id, control_id, status], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(LocalDatabaseError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(LocalDatabaseError::Sqlite)
+    }
+
     /// Writes a completed scan corpus into the local database.
     ///
     /// # Errors
@@ -312,13 +361,15 @@ impl LocalDatabase {
             let result_id = control_result_row_id(result.control_id(), result.rule_id());
             transaction
                 .execute(
-                    "INSERT INTO control_results(id, control_id, rule_id, evidence_id)
-                     VALUES (?1, ?2, ?3, ?4)
+                    "INSERT INTO control_results(id, run_id, control_id, rule_id, status, evidence_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                      ON CONFLICT(id) DO NOTHING",
                     params![
                         result_id,
+                        run_id,
                         result.control_id(),
                         result.rule_id(),
+                        status_text(result.status()),
                         evidence_id
                     ],
                 )
@@ -391,6 +442,16 @@ fn compliance_gap_row_id(framework_id: &str, control_id: &str, rule_id: &str) ->
 
 fn is_gap_status(status: Status) -> bool {
     matches!(status, Status::Fail | Status::Warning)
+}
+
+fn status_text(status: Status) -> &'static str {
+    match status {
+        Status::Pass => "PASS",
+        Status::Fail => "FAIL",
+        Status::Warning => "WARNING",
+        Status::Skipped => "SKIPPED",
+        Status::Error => "ERROR",
+    }
 }
 
 fn apply_packaged_migrations(
@@ -559,6 +620,22 @@ fn schema_column_exists(
     Ok(count == 1)
 }
 
+fn schema_table_exists(
+    connection: &Connection,
+    table_name: &str,
+) -> Result<bool, LocalDatabaseError> {
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM sqlite_schema
+             WHERE type = 'table' AND name = ?1",
+            [table_name],
+            |row| row.get(0),
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(count == 1)
+}
+
 fn migration_is_applied(connection: &Connection, version: u32) -> Result<bool, LocalDatabaseError> {
     if !migration_ledger_exists(connection)? {
         return Ok(false);
@@ -598,6 +675,15 @@ fn migration_is_applicable(
         && migration.sql == RUN_EVIDENCE_LINKS_SCHEMA_SQL
     {
         return schema_column_exists(connection, "evidence_metadata", "run_id");
+    }
+
+    if migration.version == RESULT_QUERY_FILTERS_SCHEMA_VERSION
+        && migration.name == "0003-result-query-filters"
+        && migration.sql == RESULT_QUERY_FILTERS_SCHEMA_SQL
+    {
+        return Ok(schema_table_exists(connection, "control_results")?
+            && !schema_column_exists(connection, "control_results", "run_id")?
+            && !schema_column_exists(connection, "control_results", "status")?);
     }
 
     Ok(true)
