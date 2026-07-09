@@ -89,28 +89,32 @@ fn an_incomplete_corpus_is_not_committed_as_a_completed_run() {
     );
 
     // And run "mixed-2026-06-24" is not visible as a completed run.
-    assert_row_absent(database.path(), "scan_runs", MIXED_RUN);
+    assert_row_absent(database.path(), TestTable::ScanRuns, MIXED_RUN);
 
     // And no framework row for "gdpr-eprivacy" is committed for run "mixed-2026-06-24".
-    assert_row_absent(database.path(), "frameworks", GDPR_FRAMEWORK);
+    assert_row_absent(database.path(), TestTable::Frameworks, GDPR_FRAMEWORK);
 
     // And no control row for "consent.tracker.prior-consent" is committed for run "mixed-2026-06-24".
-    assert_table_empty(database.path(), "controls");
+    assert_table_empty(database.path(), TestTable::Controls);
 
     // And no result row for "consent.detect-trackers-without-consent-evidence" is committed.
-    assert_table_empty(database.path(), "control_results");
+    assert_table_empty(database.path(), TestTable::ControlResults);
 
     // And no partial compliance gap for "consent.tracker.prior-consent" is committed.
-    assert_table_empty(database.path(), "compliance_gaps");
+    assert_table_empty(database.path(), TestTable::ComplianceGaps);
 
     // And no evidence metadata row for "ev-0001" is committed for run "mixed-2026-06-24".
-    assert_row_absent(database.path(), "evidence_metadata", PUBLIC_EVIDENCE_ID);
+    assert_row_absent(
+        database.path(),
+        TestTable::EvidenceMetadata,
+        PUBLIC_EVIDENCE_ID,
+    );
 
     // And no score summary is committed for run "mixed-2026-06-24".
-    assert_table_empty(database.path(), "score_summaries");
+    assert_table_empty(database.path(), TestTable::ScoreSummaries);
 
     // And no export record is committed for run "mixed-2026-06-24".
-    assert_table_empty(database.path(), "exports");
+    assert_table_empty(database.path(), TestTable::Exports);
 }
 
 #[test]
@@ -132,12 +136,12 @@ fn framework_metadata_without_controls_or_results_is_not_committed() {
         write_result.is_err(),
         "framework metadata alone is not a completed corpus"
     );
-    assert_row_absent(database.path(), "scan_runs", MIXED_RUN);
-    assert_row_absent(database.path(), "frameworks", GDPR_FRAMEWORK);
-    assert_table_empty(database.path(), "controls");
-    assert_table_empty(database.path(), "control_results");
-    assert_table_empty(database.path(), "score_summaries");
-    assert_table_empty(database.path(), "exports");
+    assert_row_absent(database.path(), TestTable::ScanRuns, MIXED_RUN);
+    assert_row_absent(database.path(), TestTable::Frameworks, GDPR_FRAMEWORK);
+    assert_table_empty(database.path(), TestTable::Controls);
+    assert_table_empty(database.path(), TestTable::ControlResults);
+    assert_table_empty(database.path(), TestTable::ScoreSummaries);
+    assert_table_empty(database.path(), TestTable::Exports);
 }
 
 fn incomplete_mixed_corpus() -> Corpus {
@@ -227,34 +231,87 @@ fn control_result(
     builder.build().expect("the mixed fixture result validates")
 }
 
-fn assert_row_absent(path: &Path, table_name: &str, id: &str) {
+#[derive(Clone, Copy)]
+enum TestTable {
+    ScanRuns,
+    Frameworks,
+    Controls,
+    ControlResults,
+    ComplianceGaps,
+    EvidenceMetadata,
+    ScoreSummaries,
+    Exports,
+}
+
+impl TestTable {
+    const fn label(self) -> &'static str {
+        match self {
+            TestTable::ScanRuns => "scan_runs",
+            TestTable::Frameworks => "frameworks",
+            TestTable::Controls => "controls",
+            TestTable::ControlResults => "control_results",
+            TestTable::ComplianceGaps => "compliance_gaps",
+            TestTable::EvidenceMetadata => "evidence_metadata",
+            TestTable::ScoreSummaries => "score_summaries",
+            TestTable::Exports => "exports",
+        }
+    }
+
+    const fn count_by_id_sql(self) -> &'static str {
+        match self {
+            TestTable::ScanRuns => "SELECT COUNT(*) FROM scan_runs WHERE id = ?1",
+            TestTable::Frameworks => "SELECT COUNT(*) FROM frameworks WHERE id = ?1",
+            TestTable::Controls => "SELECT COUNT(*) FROM controls WHERE id = ?1",
+            TestTable::ControlResults => "SELECT COUNT(*) FROM control_results WHERE id = ?1",
+            TestTable::ComplianceGaps => "SELECT COUNT(*) FROM compliance_gaps WHERE id = ?1",
+            TestTable::EvidenceMetadata => "SELECT COUNT(*) FROM evidence_metadata WHERE id = ?1",
+            TestTable::ScoreSummaries => "SELECT COUNT(*) FROM score_summaries WHERE id = ?1",
+            TestTable::Exports => "SELECT COUNT(*) FROM exports WHERE id = ?1",
+        }
+    }
+
+    const fn count_all_sql(self) -> &'static str {
+        match self {
+            TestTable::ScanRuns => "SELECT COUNT(*) FROM scan_runs",
+            TestTable::Frameworks => "SELECT COUNT(*) FROM frameworks",
+            TestTable::Controls => "SELECT COUNT(*) FROM controls",
+            TestTable::ControlResults => "SELECT COUNT(*) FROM control_results",
+            TestTable::ComplianceGaps => "SELECT COUNT(*) FROM compliance_gaps",
+            TestTable::EvidenceMetadata => "SELECT COUNT(*) FROM evidence_metadata",
+            TestTable::ScoreSummaries => "SELECT COUNT(*) FROM score_summaries",
+            TestTable::Exports => "SELECT COUNT(*) FROM exports",
+        }
+    }
+}
+
+fn assert_row_absent(path: &Path, table: TestTable, id: &str) {
     assert_eq!(
-        row_count(path, table_name, id),
+        row_count(path, table, id),
         0,
-        "{table_name} should not contain row {id:?}"
+        "{} should not contain row {id:?}",
+        table.label()
     );
 }
 
-fn assert_table_empty(path: &Path, table_name: &str) {
+fn assert_table_empty(path: &Path, table: TestTable) {
     assert_eq!(
-        table_row_count(path, table_name),
+        table_row_count(path, table),
         0,
-        "{table_name} should remain empty after the rejected write"
+        "{} should remain empty after the rejected write",
+        table.label()
     );
 }
 
-fn row_count(path: &Path, table_name: &str, id: &str) -> i64 {
+fn row_count(path: &Path, table: TestTable, id: &str) -> i64 {
     let connection = Connection::open(path).expect("the database can be inspected");
-    let sql = format!("SELECT COUNT(*) FROM {table_name} WHERE id = ?1");
     connection
-        .query_row(&sql, [id], |row| row.get(0))
+        .query_row(table.count_by_id_sql(), [id], |row| row.get(0))
         .expect("row count can be inspected")
 }
 
-fn table_row_count(path: &Path, table_name: &str) -> i64 {
+fn table_row_count(path: &Path, table: TestTable) -> i64 {
     let connection = Connection::open(path).expect("the database can be inspected");
-    let sql = format!("SELECT COUNT(*) FROM {table_name}");
     connection
-        .query_row(&sql, [], |row| row.get(0))
+        .query_row(table.count_all_sql(), [], |row| row.get(0))
         .expect("table row count can be inspected")
 }

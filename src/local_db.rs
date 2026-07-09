@@ -68,6 +68,8 @@ const MIGRATION_LEDGER_SQL: &str = "
     );
 ";
 
+const GLOBAL_RESULT_SCOPE: &str = "global";
+
 const SCHEMA_VERSION_1_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
     RequiredSchemaColumn::new("frameworks", "version"),
     RequiredSchemaColumn::new("evidence_metadata", "digest"),
@@ -296,9 +298,7 @@ fn write_completed_corpus_rows(
     corpus: &Corpus,
 ) -> Result<(), LocalDatabaseError> {
     let run_id = corpus.run_id();
-    transaction
-        .execute("INSERT OR REPLACE INTO scan_runs(id) VALUES (?1)", [run_id])
-        .map_err(LocalDatabaseError::Sqlite)?;
+    insert_id_row(transaction, LocalDbTable::ScanRuns, run_id)?;
 
     for (framework_id, version, _source_url) in corpus.frameworks() {
         transaction
@@ -310,32 +310,25 @@ fn write_completed_corpus_rows(
     }
 
     for (_framework_id, control_id, _severity, _reference) in corpus.controls() {
-        transaction
-            .execute(
-                "INSERT OR REPLACE INTO controls(id) VALUES (?1)",
-                [control_id],
-            )
-            .map_err(LocalDatabaseError::Sqlite)?;
+        insert_id_row(transaction, LocalDbTable::Controls, control_id)?;
     }
 
     let mut score_summary_ids = BTreeSet::new();
     for (framework_id, result) in corpus.scoped_results() {
-        transaction
-            .execute(
-                "INSERT OR REPLACE INTO control_results(id) VALUES (?1)",
-                [result_record_id(framework_id, result)],
-            )
-            .map_err(LocalDatabaseError::Sqlite)?;
+        insert_id_row(
+            transaction,
+            LocalDbTable::ControlResults,
+            &result_record_id(framework_id, result),
+        )?;
 
         if let Some(framework_id) = framework_id {
             score_summary_ids.insert(framework_id);
             if result_is_gap(result) {
-                transaction
-                    .execute(
-                        "INSERT OR REPLACE INTO compliance_gaps(id) VALUES (?1)",
-                        [result_record_id(Some(framework_id), result)],
-                    )
-                    .map_err(LocalDatabaseError::Sqlite)?;
+                insert_id_row(
+                    transaction,
+                    LocalDbTable::ComplianceGaps,
+                    &result_record_id(Some(framework_id), result),
+                )?;
             }
         }
     }
@@ -350,32 +343,70 @@ fn write_completed_corpus_rows(
     }
 
     for framework_id in score_summary_ids {
-        transaction
-            .execute(
-                "INSERT OR REPLACE INTO score_summaries(id) VALUES (?1)",
-                [framework_id],
-            )
-            .map_err(LocalDatabaseError::Sqlite)?;
+        insert_id_row(transaction, LocalDbTable::ScoreSummaries, framework_id)?;
     }
 
-    transaction
-        .execute("INSERT OR REPLACE INTO exports(id) VALUES (?1)", [run_id])
-        .map_err(LocalDatabaseError::Sqlite)?;
+    insert_id_row(transaction, LocalDbTable::Exports, run_id)?;
 
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum LocalDbTable {
+    ScanRuns,
+    Controls,
+    ControlResults,
+    ComplianceGaps,
+    ScoreSummaries,
+    Exports,
+}
+
+impl LocalDbTable {
+    const fn name(self) -> &'static str {
+        match self {
+            LocalDbTable::ScanRuns => "scan_runs",
+            LocalDbTable::Controls => "controls",
+            LocalDbTable::ControlResults => "control_results",
+            LocalDbTable::ComplianceGaps => "compliance_gaps",
+            LocalDbTable::ScoreSummaries => "score_summaries",
+            LocalDbTable::Exports => "exports",
+        }
+    }
+}
+
+fn insert_id_row(
+    transaction: &Transaction<'_>,
+    table: LocalDbTable,
+    id: &str,
+) -> Result<(), LocalDatabaseError> {
+    let sql = format!("INSERT OR REPLACE INTO {}(id) VALUES (?1)", table.name());
+    transaction
+        .execute(&sql, [id])
+        .map_err(LocalDatabaseError::Sqlite)?;
     Ok(())
 }
 
 fn result_record_id(framework_id: Option<&str>, result: &ControlResult) -> String {
     format!(
         "{}:{}:{}",
-        framework_id.unwrap_or_default(),
+        framework_id.unwrap_or(GLOBAL_RESULT_SCOPE),
         result.control_id(),
         result.rule_id()
     )
 }
 
 fn result_is_gap(result: &ControlResult) -> bool {
-    matches!(result.status(), Status::Fail | Status::Warning)
+    result.status().is_compliance_gap()
+}
+
+trait ComplianceGapStatus {
+    fn is_compliance_gap(&self) -> bool;
+}
+
+impl ComplianceGapStatus for Status {
+    fn is_compliance_gap(&self) -> bool {
+        matches!(*self, Status::Fail | Status::Warning)
+    }
 }
 
 fn join_framework_ids(framework_ids: &BTreeSet<&str>) -> String {
