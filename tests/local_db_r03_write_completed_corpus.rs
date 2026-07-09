@@ -1,0 +1,381 @@
+// Copyright 2026 Sovri contributors
+// SPDX-License-Identifier: Apache-2.0
+
+//! R-03 -- writing a completed corpus persists every required section. Covers
+//! issue #341.
+
+mod matrix_support;
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use matrix_support::{
+    consent_corpus, CONTROL, CONTROL_REFERENCE, CONTROL_TITLE, EXECUTED_AT, FRAMEWORK,
+    FRAMEWORK_URL, FRAMEWORK_VERSION, STORED_EVIDENCE_ID, STORED_EVIDENCE_INTEGRITY,
+    STORED_EVIDENCE_KIND, STORED_EVIDENCE_LOCATION,
+};
+use sovri_agent::local_db::LocalDatabase;
+use sovri_agent::matrix::{Classification, Corpus};
+use sovri_sdk::{ControlResult, Status};
+
+const SHOPFRONT_RUN: &str = "shopfront-2026-06-24";
+const MIXED_RUN: &str = "mixed-2026-06-24";
+const CLASSIFIED_EVIDENCE_RUN: &str = "classified-evidence-2026-06-24";
+const STORED_RECORD_RUN: &str = "stored-record-2026-06-24";
+
+const ISO_27001_FRAMEWORK: &str = "iso-27001";
+const ISO_27001_VERSION: &str = "2022";
+const ISO_27001_URL: &str = "https://www.iso.org/standard/27001";
+const SSH_CONTROL: &str = "host.ssh.permit-root-login";
+const SSH_CONTROL_TITLE: &str = "Disallow SSH root login";
+const SSH_CONTROL_REFERENCE: &str = "iso-27001:2022:A.8.2";
+const TRACKER_RULE: &str = "consent.detect-trackers-without-consent-evidence";
+const CMP_RULE: &str = "consent.detect-cmp-misconfiguration";
+const SSH_RULE: &str = "host.ssh.detect-permit-root-login";
+const PUBLIC_EVIDENCE_ID: &str = "ev-0001";
+const SENSITIVE_EVIDENCE_ID: &str = "ev-0008";
+const PUBLIC_EVIDENCE_LOCATOR: &str = "dist/main.js";
+const SENSITIVE_EVIDENCE_LOCATOR: &str = "config/users.yaml:12";
+const PUBLIC_EVIDENCE_DIGEST: &str =
+    "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+const SENSITIVE_EVIDENCE_DIGEST: &str =
+    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+struct TempDatabase {
+    root: PathBuf,
+    db_path: PathBuf,
+}
+
+impl TempDatabase {
+    fn new() -> Self {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "sovri-agent-mat98-r03-{}-{now}-{unique}",
+            std::process::id()
+        ));
+        TempDatabase {
+            db_path: root.join("tmp").join("sovri-mat-98.db"),
+            root,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.db_path
+    }
+}
+
+impl Drop for TempDatabase {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+struct CompletedCorpusCase {
+    run: &'static str,
+    corpus: Corpus,
+    framework_count: usize,
+    control_count: usize,
+    result_count: usize,
+    gap_count: usize,
+    evidence_count: usize,
+    score_count: usize,
+}
+
+#[test]
+fn writing_a_completed_corpus_persists_every_required_section() {
+    for case in completed_corpus_examples() {
+        let database = TempDatabase::new();
+        // Given an open local database at "./tmp/sovri-mat-98.db".
+        let mut local_database =
+            LocalDatabase::open(database.path()).expect("the local database opens");
+
+        // Given completed scan corpus "<run>" is available locally.
+        let corpus = case.corpus;
+
+        // When the completed corpus "<run>" is written to SQLite.
+        local_database
+            .write_completed_corpus(&corpus)
+            .expect("the completed corpus is written to SQLite");
+
+        // Then run "<run>" can be retrieved with executed-at "2026-06-24T13:16:28Z".
+        assert_eq!(
+            local_database
+                .completed_run_executed_at(case.run)
+                .expect("the completed run can be retrieved")
+                .as_deref(),
+            Some(EXECUTED_AT),
+            "run {:?} should be retrievable with executed-at {:?}",
+            case.run,
+            EXECUTED_AT
+        );
+
+        // And <framework_count> framework records can be retrieved for run "<run>".
+        assert_eq!(
+            local_database
+                .framework_records_for_run(case.run)
+                .expect("framework records can be retrieved")
+                .len(),
+            case.framework_count,
+            "framework record count for {:?}",
+            case.run
+        );
+
+        // And <control_count> control records can be retrieved for run "<run>".
+        assert_eq!(
+            local_database
+                .control_records_for_run(case.run)
+                .expect("control records can be retrieved")
+                .len(),
+            case.control_count,
+            "control record count for {:?}",
+            case.run
+        );
+
+        // And <result_count> control results can be retrieved for run "<run>".
+        assert_eq!(
+            local_database
+                .control_result_records_for_run(case.run)
+                .expect("control results can be retrieved")
+                .len(),
+            case.result_count,
+            "control result count for {:?}",
+            case.run
+        );
+
+        // And <gap_count> compliance gaps can be retrieved for run "<run>".
+        assert_eq!(
+            local_database
+                .compliance_gap_records_for_run(case.run)
+                .expect("compliance gaps can be retrieved")
+                .len(),
+            case.gap_count,
+            "compliance gap count for {:?}",
+            case.run
+        );
+
+        // And <evidence_count> evidence metadata records can be retrieved for run "<run>".
+        assert_eq!(
+            local_database
+                .evidence_metadata_records_for_run(case.run)
+                .expect("evidence metadata records can be retrieved")
+                .len(),
+            case.evidence_count,
+            "evidence metadata count for {:?}",
+            case.run
+        );
+
+        // And <score_count> score summaries can be retrieved for run "<run>".
+        assert_eq!(
+            local_database
+                .score_summary_records_for_run(case.run)
+                .expect("score summaries can be retrieved")
+                .len(),
+            case.score_count,
+            "score summary count for {:?}",
+            case.run
+        );
+    }
+}
+
+fn completed_corpus_examples() -> Vec<CompletedCorpusCase> {
+    vec![
+        CompletedCorpusCase {
+            run: SHOPFRONT_RUN,
+            corpus: consent_corpus().with_run_id(SHOPFRONT_RUN),
+            framework_count: 1,
+            control_count: 1,
+            result_count: 2,
+            gap_count: 1,
+            evidence_count: 1,
+            score_count: 1,
+        },
+        CompletedCorpusCase {
+            run: MIXED_RUN,
+            corpus: mixed_completed_corpus().with_run_id(MIXED_RUN),
+            framework_count: 2,
+            control_count: 2,
+            result_count: 3,
+            gap_count: 2,
+            evidence_count: 2,
+            score_count: 2,
+        },
+        CompletedCorpusCase {
+            run: CLASSIFIED_EVIDENCE_RUN,
+            corpus: classified_evidence_completed_corpus().with_run_id(CLASSIFIED_EVIDENCE_RUN),
+            framework_count: 1,
+            control_count: 1,
+            result_count: 2,
+            gap_count: 0,
+            evidence_count: 2,
+            score_count: 1,
+        },
+        CompletedCorpusCase {
+            run: STORED_RECORD_RUN,
+            corpus: stored_record_completed_corpus().with_run_id(STORED_RECORD_RUN),
+            framework_count: 1,
+            control_count: 1,
+            result_count: 1,
+            gap_count: 0,
+            evidence_count: 1,
+            score_count: 1,
+        },
+    ]
+}
+
+fn mixed_completed_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_framework(ISO_27001_FRAMEWORK, ISO_27001_VERSION, ISO_27001_URL)
+        .with_control(
+            FRAMEWORK,
+            CONTROL,
+            CONTROL_TITLE,
+            "major",
+            8,
+            CONTROL_REFERENCE,
+        )
+        .with_control(
+            ISO_27001_FRAMEWORK,
+            SSH_CONTROL,
+            SSH_CONTROL_TITLE,
+            "minor",
+            8,
+            SSH_CONTROL_REFERENCE,
+        )
+        .with_control_result(
+            FRAMEWORK,
+            control_result(
+                CONTROL,
+                TRACKER_RULE,
+                "major",
+                Status::Fail,
+                PUBLIC_EVIDENCE_ID,
+            ),
+        )
+        .with_control_result(
+            FRAMEWORK,
+            control_result(CONTROL, CMP_RULE, "major", Status::Pass, PUBLIC_EVIDENCE_ID),
+        )
+        .with_control_result(
+            ISO_27001_FRAMEWORK,
+            control_result(
+                SSH_CONTROL,
+                SSH_RULE,
+                "minor",
+                Status::Warning,
+                SENSITIVE_EVIDENCE_ID,
+            ),
+        )
+        // Public evidence metadata: ev-0001 | dist/main.js |
+        // sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad | Public.
+        .with_evidence_digest(
+            PUBLIC_EVIDENCE_ID,
+            "file",
+            PUBLIC_EVIDENCE_LOCATOR,
+            PUBLIC_EVIDENCE_DIGEST,
+        )
+        // Sensitive evidence metadata: ev-0008 | config/users.yaml:12 |
+        // sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 | Sensitive.
+        .with_classified_evidence(
+            SENSITIVE_EVIDENCE_ID,
+            "config",
+            SENSITIVE_EVIDENCE_LOCATOR,
+            Classification::Sensitive,
+            SENSITIVE_EVIDENCE_DIGEST,
+        )
+}
+
+fn classified_evidence_completed_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_control(
+            FRAMEWORK,
+            CONTROL,
+            CONTROL_TITLE,
+            "major",
+            8,
+            CONTROL_REFERENCE,
+        )
+        .with_control_result(
+            FRAMEWORK,
+            control_result(CONTROL, TRACKER_RULE, "major", Status::Pass, "ev-0007"),
+        )
+        .with_control_result(
+            FRAMEWORK,
+            control_result(
+                CONTROL,
+                CMP_RULE,
+                "major",
+                Status::Pass,
+                SENSITIVE_EVIDENCE_ID,
+            ),
+        )
+        .with_classified_evidence(
+            "ev-0007",
+            "config",
+            ".env.example:3",
+            Classification::Secret,
+            PUBLIC_EVIDENCE_DIGEST,
+        )
+        .with_classified_evidence(
+            SENSITIVE_EVIDENCE_ID,
+            "config",
+            SENSITIVE_EVIDENCE_LOCATOR,
+            Classification::Sensitive,
+            SENSITIVE_EVIDENCE_DIGEST,
+        )
+}
+
+fn stored_record_completed_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_control(
+            FRAMEWORK,
+            CONTROL,
+            CONTROL_TITLE,
+            "major",
+            8,
+            CONTROL_REFERENCE,
+        )
+        .with_control_result(
+            FRAMEWORK,
+            control_result(CONTROL, CMP_RULE, "major", Status::Pass, STORED_EVIDENCE_ID),
+        )
+        .with_evidence_digest(
+            STORED_EVIDENCE_ID,
+            STORED_EVIDENCE_KIND,
+            STORED_EVIDENCE_LOCATION,
+            STORED_EVIDENCE_INTEGRITY,
+        )
+}
+
+fn control_result(
+    control_id: &str,
+    rule_id: &str,
+    severity: &str,
+    status: Status,
+    evidence_id: &str,
+) -> ControlResult {
+    let mut builder = ControlResult::builder()
+        .control_id(control_id)
+        .rule_id(rule_id)
+        .status(status)
+        .severity(severity)
+        .weight(8)
+        .evidence_refs([evidence_id])
+        .executed_at(EXECUTED_AT)
+        .execution_metadata("engine_version=0.3.0");
+    if status != Status::Pass {
+        builder = builder.reason("Observed during the completed corpus run.");
+    }
+    builder
+        .build()
+        .expect("the completed corpus fixture result validates")
+}
