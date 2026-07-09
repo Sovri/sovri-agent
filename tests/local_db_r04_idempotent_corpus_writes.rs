@@ -160,6 +160,27 @@ fn writing_a_conflicting_evidence_digest_fails_without_replacing_the_existing_ro
     assert_eq!(evidence_metadata_row_count(database.path(), EVIDENCE_ID), 1);
 }
 
+#[test]
+fn writing_a_corpus_with_no_frameworks_or_controls_records_only_the_run() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+    let corpus = Corpus::new(EXECUTED_AT).with_run_id("empty-2026-06-24");
+
+    local_database
+        .write_completed_corpus(&corpus)
+        .expect("the empty corpus write succeeds");
+    local_database
+        .write_completed_corpus(&corpus)
+        .expect("the repeated empty corpus write succeeds");
+
+    assert_eq!(run_row_count(database.path(), "empty-2026-06-24"), 1);
+    assert_eq!(table_row_count(database.path(), "frameworks"), 0);
+    assert_eq!(table_row_count(database.path(), "controls"), 0);
+    assert_eq!(table_row_count(database.path(), "control_results"), 0);
+    assert_eq!(table_row_count(database.path(), "evidence_metadata"), 0);
+}
+
 fn shopfront_consent_corpus() -> Corpus {
     shopfront_consent_corpus_with(FRAMEWORK_VERSION, EVIDENCE_DIGEST)
 }
@@ -287,4 +308,18 @@ fn evidence_digest(path: &Path, evidence_id: &str) -> String {
             |row| row.get(0),
         )
         .expect("evidence digest can be inspected")
+}
+
+fn table_row_count(path: &Path, table: &str) -> i64 {
+    let sql = match table {
+        "frameworks" => "SELECT COUNT(*) FROM frameworks",
+        "controls" => "SELECT COUNT(*) FROM controls",
+        "control_results" => "SELECT COUNT(*) FROM control_results",
+        "evidence_metadata" => "SELECT COUNT(*) FROM evidence_metadata",
+        _ => panic!("unexpected table {table}"),
+    };
+    let connection = Connection::open(path).expect("the database can be inspected");
+    connection
+        .query_row(sql, [], |row| row.get(0))
+        .expect("table row count can be inspected")
 }
