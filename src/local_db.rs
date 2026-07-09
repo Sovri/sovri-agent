@@ -645,9 +645,11 @@ impl LocalDatabase {
                  ORDER BY id"
             }
             EvidenceLookup::Control => {
-                "SELECT DISTINCT evidence_metadata.id, evidence_metadata.digest,
-                                 evidence_metadata.locator,
-                                 evidence_metadata.classification
+                "SELECT DISTINCT
+                   evidence_metadata.id,
+                   evidence_metadata.digest,
+                   evidence_metadata.locator,
+                   evidence_metadata.classification
                  FROM evidence_metadata
                  INNER JOIN control_results
                    ON control_results.evidence_id = evidence_metadata.id

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sovri_agent::local_db::{LocalDatabase, LocalDatabaseEvidence};
+use sovri_agent::local_db::LocalDatabase;
 use sovri_agent::matrix::Corpus;
 use sovri_sdk::{Classification, Evidence, EvidenceKind};
 
@@ -153,16 +153,3 @@ fn exposed_field_names(debug: &str) -> Vec<&str> {
         .filter_map(|field| field.split_once(':').map(|(name, _)| name.trim()))
         .collect()
 }
-
-#[allow(dead_code)]
-trait ProtectedEvidenceProjection {
-    fn classification(&self) -> &str {
-        panic!("LocalDatabaseEvidence::classification is not implemented")
-    }
-
-    fn redaction_status(&self) -> &str {
-        panic!("LocalDatabaseEvidence::redaction_status is not implemented")
-    }
-}
-
-impl ProtectedEvidenceProjection for LocalDatabaseEvidence {}
