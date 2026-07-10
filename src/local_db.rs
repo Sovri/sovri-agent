@@ -8,6 +8,7 @@
 //! evidence bytes; this module stores only local `SQLite` rows and integrity
 //! metadata.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -1220,8 +1221,8 @@ impl LocalDatabase {
     ///
     /// # Errors
     ///
-    /// Returns an error if the corpus has no run id or `SQLite` cannot start,
-    /// populate, or commit the write transaction.
+    /// Returns an error if the corpus has no run id, is incomplete, or `SQLite`
+    /// cannot start, populate, or commit the write transaction.
     pub fn write_completed_corpus(&mut self, corpus: &Corpus) -> Result<(), LocalDatabaseError> {
         let run_id = corpus.run_id();
         if run_id.trim().is_empty() {
@@ -1229,6 +1230,7 @@ impl LocalDatabase {
                 "completed corpus run_id cannot be empty".to_owned(),
             ));
         }
+        validate_completed_corpus(corpus)?;
         let transaction = self
             .connection
             .transaction()
@@ -1302,6 +1304,65 @@ impl LocalDatabase {
 
         transaction.commit().map_err(LocalDatabaseError::Sqlite)
     }
+}
+
+fn validate_completed_corpus(corpus: &Corpus) -> Result<(), LocalDatabaseError> {
+    let framework_metadata = corpus
+        .frameworks()
+        .into_iter()
+        .map(|(framework_id, _version, _source_url)| framework_id)
+        .collect::<BTreeSet<_>>();
+    let mut missing_frameworks = BTreeSet::new();
+    let mut frameworks_with_content = BTreeSet::new();
+
+    let referenced_frameworks = corpus
+        .controls()
+        .into_iter()
+        .map(|(framework_id, _control_id, _severity, _reference)| framework_id)
+        .chain(
+            corpus
+                .scoped_results()
+                .into_iter()
+                .filter_map(|(framework_id, _result)| framework_id),
+        );
+    for framework_id in referenced_frameworks {
+        if framework_metadata.contains(framework_id) {
+            frameworks_with_content.insert(framework_id);
+        } else {
+            missing_frameworks.insert(framework_id);
+        }
+    }
+
+    if !missing_frameworks.is_empty() {
+        return Err(LocalDatabaseError::Schema(format!(
+            "completed corpus missing framework metadata for {}",
+            join_framework_ids(&missing_frameworks)
+        )));
+    }
+
+    let empty_frameworks = framework_metadata
+        .difference(&frameworks_with_content)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if !empty_frameworks.is_empty() {
+        return Err(LocalDatabaseError::Schema(format!(
+            "completed corpus has framework metadata without controls or results for {}",
+            join_framework_ids(&empty_frameworks)
+        )));
+    }
+
+    Ok(())
+}
+
+fn join_framework_ids(framework_ids: &BTreeSet<&str>) -> String {
+    let mut message = String::new();
+    for framework_id in framework_ids {
+        if !message.is_empty() {
+            message.push_str(", ");
+        }
+        message.push_str(framework_id);
+    }
+    message
 }
 
 fn write_score_summaries(
