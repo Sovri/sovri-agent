@@ -1990,6 +1990,12 @@ fn destructive_migration_operation(sql: &str) -> Option<String> {
                 if drops_column {
                     return Some(format!("ALTER TABLE {table_name} DROP COLUMN"));
                 }
+                let renames_table_or_column = tokens
+                    .get(operation_index)
+                    .is_some_and(|token| token.eq_ignore_ascii_case("RENAME"));
+                if renames_table_or_column {
+                    return Some(format!("ALTER TABLE {table_name} RENAME"));
+                }
             }
         }
 
