@@ -286,6 +286,27 @@ fn colon_delimited_run_and_framework_ids_do_not_collide() {
 }
 
 #[test]
+fn long_and_special_character_ids_round_trip() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+    let run_id = format!("run:{}:é/尾", "r".repeat(4_096));
+    let framework_id = format!("framework:{}:ß?#", "f".repeat(4_096));
+
+    local_database
+        .write_completed_corpus(&single_framework_completed_corpus(&run_id, &framework_id))
+        .expect("the completed corpus with long special-character ids is written");
+
+    let summaries = local_database
+        .score_summaries_for_run(&run_id)
+        .expect("the long run id can be queried");
+
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].framework_id(), framework_id);
+    assert_eq!(summaries[0].pass_count(), 1);
+}
+
+#[test]
 fn empty_framework_ids_do_not_create_score_summaries() {
     let database = TempDatabase::new();
     let mut local_database =
@@ -317,6 +338,30 @@ fn unrepairable_score_summary_schema_error_is_propagated() {
     assert!(
         error.to_string().contains("view"),
         "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn unrepairable_score_summary_schema_error_is_propagated_during_write() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+    replace_score_summary_table_with_view(database.path());
+
+    let error = local_database
+        .write_completed_corpus(&mixed_completed_corpus())
+        .expect_err("the unrepairable score summary schema rejects the write");
+
+    assert!(
+        error.to_string().contains("view"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        local_database
+            .query_run(MIXED_RUN)
+            .expect("runs can be queried after the failed write")
+            .is_empty(),
+        "the failed write must roll back the partial run"
     );
 }
 

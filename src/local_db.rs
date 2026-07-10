@@ -1330,14 +1330,10 @@ fn write_score_summaries(
                    pass_count,
                    fail_count,
                    warning_count
-                 )
+                )
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
-                    format!(
-                        "{}:{run_id}:{}:{framework_id}",
-                        run_id.len(),
-                        framework_id.len()
-                    ),
+                    score_summary_row_id(run_id, &framework_id),
                     run_id,
                     framework_id,
                     counts.pass,
@@ -1348,6 +1344,16 @@ fn write_score_summaries(
             .map_err(LocalDatabaseError::Sqlite)?;
     }
     Ok(())
+}
+
+fn score_summary_row_id(run_id: &str, framework_id: &str) -> String {
+    // Length-prefix both identifiers so delimiters inside either value cannot
+    // make two distinct (run, framework) pairs produce the same row id.
+    format!(
+        "{}:{run_id}:{}:{framework_id}",
+        run_id.len(),
+        framework_id.len()
+    )
 }
 
 fn score_summary_counts(corpus: &Corpus) -> std::collections::BTreeMap<String, ScoreSummaryCounts> {
