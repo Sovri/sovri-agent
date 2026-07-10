@@ -286,6 +286,23 @@ fn colon_delimited_run_and_framework_ids_do_not_collide() {
 }
 
 #[test]
+fn empty_framework_ids_do_not_create_score_summaries() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+
+    local_database
+        .write_completed_corpus(&single_framework_completed_corpus(MIXED_RUN, ""))
+        .expect("the completed corpus with an empty framework id is written");
+
+    let summaries = local_database
+        .score_summaries_for_run(MIXED_RUN)
+        .expect("score summaries can be queried for the run");
+
+    assert!(summaries.is_empty());
+}
+
+#[test]
 fn unrepairable_score_summary_schema_error_is_propagated() {
     let database = TempDatabase::new();
     LocalDatabase::open(database.path()).expect("the local database opens");

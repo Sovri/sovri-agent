@@ -1353,7 +1353,8 @@ fn write_score_summaries(
 fn score_summary_counts(corpus: &Corpus) -> std::collections::BTreeMap<String, ScoreSummaryCounts> {
     let mut summaries = std::collections::BTreeMap::new();
     for (framework_id, result) in corpus.scoped_results() {
-        let Some(framework_id) = framework_id else {
+        let Some(framework_id) = framework_id.filter(|framework_id| !framework_id.is_empty())
+        else {
             continue;
         };
         let summary: &mut ScoreSummaryCounts =
