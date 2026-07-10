@@ -174,7 +174,7 @@ struct Control {
 /// record, so that value never reaches the export. The classification decides the
 /// record's redaction status on the Evidence sheet: a classified record renders
 /// `redacted`, an unclassified record `none`.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Classification {
     /// A secret value — a key, token, or credential — the store dropped, so the
     /// record's Evidence row is reduced to metadata and marked `redacted`.
@@ -194,6 +194,15 @@ impl Classification {
             Classification::Secret => "Secret",
             Classification::Sensitive => "Sensitive",
             Classification::Unclassified => "Unclassified",
+        }
+    }
+
+    pub(crate) fn from_persisted(value: &str) -> Option<Self> {
+        match value {
+            "Secret" => Some(Classification::Secret),
+            "Sensitive" => Some(Classification::Sensitive),
+            "Unclassified" => Some(Classification::Unclassified),
+            _ => None,
         }
     }
 }
@@ -444,6 +453,14 @@ impl Corpus {
     ) -> Self {
         self.results.push(ScopedResult {
             framework_id: Some(framework_id.into()),
+            result,
+        });
+        self
+    }
+
+    pub(crate) fn with_unscoped_control_result(mut self, result: ControlResult) -> Self {
+        self.results.push(ScopedResult {
+            framework_id: None,
             result,
         });
         self

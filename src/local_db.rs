@@ -53,10 +53,18 @@ const PACKAGED_MIGRATIONS: &[PackagedMigration] = &[
         "0007-evidence-classifications",
         EVIDENCE_CLASSIFICATIONS_SCHEMA_SQL,
     ),
+    PackagedMigration::new(
+        EXPORT_RECONSTRUCTION_SCHEMA_VERSION,
+        "0008-export-reconstruction",
+        EXPORT_RECONSTRUCTION_SCHEMA_SQL,
+    ),
 ];
 
 const INITIAL_SCHEMA_SQL: &str = "
-    CREATE TABLE IF NOT EXISTS scan_runs (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS scan_runs (
+      id TEXT PRIMARY KEY,
+      executed_at TEXT NOT NULL DEFAULT ''
+    );
     CREATE TABLE IF NOT EXISTS frameworks (
       id TEXT PRIMARY KEY,
       version TEXT NOT NULL
@@ -68,7 +76,13 @@ const INITIAL_SCHEMA_SQL: &str = "
       control_id TEXT NOT NULL,
       rule_id TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT '',
-      evidence_id TEXT NOT NULL
+      evidence_id TEXT NOT NULL,
+      framework_id TEXT NOT NULL DEFAULT '',
+      severity TEXT NOT NULL DEFAULT '',
+      weight INTEGER NOT NULL DEFAULT 0,
+      reason TEXT,
+      executed_at TEXT NOT NULL DEFAULT '',
+      execution_metadata TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS compliance_gaps (
       id TEXT PRIMARY KEY,
@@ -88,6 +102,17 @@ const INITIAL_SCHEMA_SQL: &str = "
       run_id TEXT NOT NULL,
       evidence_id TEXT NOT NULL,
       PRIMARY KEY (run_id, evidence_id)
+    );
+    CREATE TABLE IF NOT EXISTS run_framework_links (
+      run_id TEXT NOT NULL,
+      framework_id TEXT NOT NULL,
+      PRIMARY KEY (run_id, framework_id)
+    );
+    CREATE TABLE IF NOT EXISTS run_control_links (
+      run_id TEXT NOT NULL,
+      framework_id TEXT NOT NULL,
+      control_id TEXT NOT NULL,
+      PRIMARY KEY (run_id, framework_id, control_id)
     );
     CREATE TABLE IF NOT EXISTS score_summaries (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY);
@@ -145,6 +170,10 @@ const EVIDENCE_CLASSIFICATIONS_SCHEMA_SQL: &str = "
     ALTER TABLE evidence_metadata
     ADD COLUMN classification TEXT NOT NULL DEFAULT 'Unclassified';
 ";
+
+const EXPORT_RECONSTRUCTION_SCHEMA_VERSION: u32 = 8;
+
+const EXPORT_RECONSTRUCTION_SCHEMA_SQL: &str = "";
 
 const MIGRATION_LEDGER_SQL: &str = "
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -235,6 +264,37 @@ const SCHEMA_VERSION_7_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
     RequiredSchemaColumn::new("run_evidence_links", "evidence_id"),
 ];
 
+const SCHEMA_VERSION_8_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
+    RequiredSchemaColumn::new("scan_runs", "executed_at"),
+    RequiredSchemaColumn::new("frameworks", "version"),
+    RequiredSchemaColumn::new("control_results", "run_id"),
+    RequiredSchemaColumn::new("control_results", "control_id"),
+    RequiredSchemaColumn::new("control_results", "rule_id"),
+    RequiredSchemaColumn::new("control_results", "status"),
+    RequiredSchemaColumn::new("control_results", "evidence_id"),
+    RequiredSchemaColumn::new("control_results", "framework_id"),
+    RequiredSchemaColumn::new("control_results", "severity"),
+    RequiredSchemaColumn::new("control_results", "weight"),
+    RequiredSchemaColumn::new("control_results", "reason"),
+    RequiredSchemaColumn::new("control_results", "executed_at"),
+    RequiredSchemaColumn::new("control_results", "execution_metadata"),
+    RequiredSchemaColumn::new("evidence_metadata", "digest"),
+    RequiredSchemaColumn::new("evidence_metadata", "locator"),
+    RequiredSchemaColumn::new("evidence_metadata", "classification"),
+    RequiredSchemaColumn::new("compliance_gaps", "run_id"),
+    RequiredSchemaColumn::new("compliance_gaps", "status"),
+    RequiredSchemaColumn::new("compliance_gaps", "severity"),
+    RequiredSchemaColumn::new("compliance_gaps", "control_id"),
+    RequiredSchemaColumn::new("compliance_gaps", "rule_id"),
+    RequiredSchemaColumn::new("run_evidence_links", "run_id"),
+    RequiredSchemaColumn::new("run_evidence_links", "evidence_id"),
+    RequiredSchemaColumn::new("run_framework_links", "run_id"),
+    RequiredSchemaColumn::new("run_framework_links", "framework_id"),
+    RequiredSchemaColumn::new("run_control_links", "run_id"),
+    RequiredSchemaColumn::new("run_control_links", "framework_id"),
+    RequiredSchemaColumn::new("run_control_links", "control_id"),
+];
+
 const NO_REQUIRED_SCHEMA_COLUMNS: &[RequiredSchemaColumn] = &[];
 
 const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
@@ -262,6 +322,10 @@ const SUPPORTED_SCHEMA_REQUIREMENTS: &[SchemaRequirements] = &[
     SchemaRequirements::new(
         EVIDENCE_CLASSIFICATIONS_SCHEMA_VERSION,
         SCHEMA_VERSION_7_REQUIRED_COLUMNS,
+    ),
+    SchemaRequirements::new(
+        EXPORT_RECONSTRUCTION_SCHEMA_VERSION,
+        SCHEMA_VERSION_8_REQUIRED_COLUMNS,
     ),
 ];
 
@@ -338,6 +402,19 @@ pub struct LocalDatabaseEvidence {
     digest: String,
     locator: String,
     classification: String,
+}
+
+struct PersistedExportResult {
+    framework_id: String,
+    control_id: String,
+    rule_id: String,
+    status: String,
+    evidence_id: String,
+    severity: String,
+    weight: u32,
+    reason: Option<String>,
+    executed_at: String,
+    execution_metadata: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -421,9 +498,9 @@ impl LocalDatabaseEvidence {
     /// Returns the redaction status derived from the persisted classification.
     #[must_use]
     pub fn redaction_status(&self) -> &str {
-        match self.classification.as_str() {
-            "Unclassified" => "none",
-            _ => "redacted",
+        match Classification::from_persisted(&self.classification) {
+            Some(Classification::Unclassified) => "none",
+            Some(Classification::Secret | Classification::Sensitive) | None => "redacted",
         }
     }
 }
@@ -707,95 +784,61 @@ impl LocalDatabase {
     }
 
     fn reconstruct_export_corpus(&self, run_id: &str) -> Result<Corpus, LocalDatabaseError> {
-        let run_exists = self
-            .connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM scan_runs WHERE id = ?1)",
-                params![run_id],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(LocalDatabaseError::Sqlite)?;
-        if !run_exists {
-            return Err(LocalDatabaseError::MissingRun(run_id.to_owned()));
-        }
-
-        let frameworks = {
-            let mut statement = self
-                .connection
-                .prepare("SELECT id, version FROM frameworks ORDER BY id")
-                .map_err(LocalDatabaseError::Sqlite)?;
-            let rows = statement
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(LocalDatabaseError::Sqlite)?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(LocalDatabaseError::Sqlite)?
+        let executed_at = match self.connection.query_row(
+            "SELECT executed_at FROM scan_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(executed_at) => executed_at,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(LocalDatabaseError::MissingRun(run_id.to_owned()));
+            }
+            Err(error) => return Err(LocalDatabaseError::Sqlite(error)),
         };
-        let control_framework = frameworks
-            .first()
-            .map(|(id, _)| id.as_str())
-            .unwrap_or_default()
-            .to_owned();
-        let mut corpus = Corpus::new("").with_run_id(run_id);
+
+        let frameworks = export_framework_rows(&self.connection, run_id)?;
+        let mut corpus = Corpus::new(&executed_at).with_run_id(run_id);
         for (id, version) in frameworks {
             corpus = corpus.with_framework(id, version, "");
         }
 
-        let controls = {
-            let mut statement = self
-                .connection
-                .prepare("SELECT id FROM controls ORDER BY id")
-                .map_err(LocalDatabaseError::Sqlite)?;
-            let rows = statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(LocalDatabaseError::Sqlite)?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(LocalDatabaseError::Sqlite)?
-        };
-        for control_id in controls {
-            corpus = corpus.with_control(&control_framework, control_id, "", "", 0, "");
+        let results = export_result_rows(&self.connection, run_id)?;
+
+        let controls = export_control_rows(&self.connection, run_id)?;
+        for (framework_id, control_id) in controls {
+            let result = results.iter().find(|result| {
+                result.framework_id == framework_id && result.control_id == control_id
+            });
+            let severity = result.map_or("", |result| result.severity.as_str());
+            let weight = result.map_or(0, |result| result.weight);
+            corpus = corpus.with_control(framework_id, control_id, "", severity, weight, "");
         }
 
-        let evidence = {
-            let mut statement = self
-                .connection
-                .prepare(
-                    "SELECT evidence_metadata.id,
-                            evidence_metadata.digest,
-                            evidence_metadata.locator,
-                            evidence_metadata.classification
-                     FROM evidence_metadata
-                     INNER JOIN run_evidence_links
-                       ON run_evidence_links.evidence_id = evidence_metadata.id
-                     WHERE run_evidence_links.run_id = ?1
-                     ORDER BY evidence_metadata.id",
-                )
-                .map_err(LocalDatabaseError::Sqlite)?;
-            let rows = statement
-                .query_map(params![run_id], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                })
-                .map_err(LocalDatabaseError::Sqlite)?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(LocalDatabaseError::Sqlite)?
-        };
+        for persisted in results {
+            let result = reconstruct_control_result(&persisted, &executed_at)?;
+            corpus = if persisted.framework_id.is_empty() {
+                corpus.with_unscoped_control_result(result)
+            } else {
+                corpus.with_control_result(persisted.framework_id, result)
+            };
+        }
+
+        let evidence = export_evidence_rows(&self.connection, run_id)?;
         for (id, digest, locator, classification) in evidence {
-            corpus = match classification.as_str() {
-                "Unclassified" => corpus.with_evidence_digest(id, "", locator, digest),
-                "Sensitive" => corpus.with_classified_evidence(
+            corpus = match Classification::from_persisted(&classification)
+                .unwrap_or(Classification::Secret)
+            {
+                Classification::Unclassified => {
+                    corpus.with_evidence_digest(id, "", locator, digest)
+                }
+                Classification::Sensitive => corpus.with_classified_evidence(
                     id,
                     "",
                     locator,
                     Classification::Sensitive,
                     digest,
                 ),
-                _ => {
+                Classification::Secret => {
                     corpus.with_classified_evidence(id, "", locator, Classification::Secret, digest)
                 }
             };
@@ -892,33 +935,7 @@ impl LocalDatabase {
         let run_id = corpus.run_id();
         let scoped_results = corpus.scoped_results();
 
-        transaction
-            .execute(
-                "INSERT INTO scan_runs(id) VALUES (?1)
-                 ON CONFLICT(id) DO NOTHING",
-                params![run_id],
-            )
-            .map_err(LocalDatabaseError::Sqlite)?;
-
-        for (framework_id, version, _source_url) in corpus.frameworks() {
-            transaction
-                .execute(
-                    "INSERT INTO frameworks(id, version) VALUES (?1, ?2)
-                     ON CONFLICT(id) DO NOTHING",
-                    params![framework_id, version],
-                )
-                .map_err(LocalDatabaseError::Sqlite)?;
-        }
-
-        for (_, control_id, _, _) in corpus.controls() {
-            transaction
-                .execute(
-                    "INSERT INTO controls(id) VALUES (?1)
-                     ON CONFLICT(id) DO NOTHING",
-                    params![control_id],
-                )
-                .map_err(LocalDatabaseError::Sqlite)?;
-        }
+        write_run_catalog(&transaction, run_id, corpus)?;
 
         for framework_id in scoped_results
             .iter()
@@ -954,19 +971,38 @@ impl LocalDatabase {
                        control_id,
                        rule_id,
                        status,
-                       evidence_id
+                       evidence_id,
+                       framework_id,
+                       severity,
+                       weight,
+                       reason,
+                       executed_at,
+                       execution_metadata
                      )
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                      ON CONFLICT(id) DO UPDATE SET
                        run_id = COALESCE(NULLIF(control_results.run_id, ''), excluded.run_id),
-                       status = COALESCE(NULLIF(control_results.status, ''), excluded.status)",
+                       status = excluded.status,
+                       evidence_id = excluded.evidence_id,
+                       framework_id = excluded.framework_id,
+                       severity = excluded.severity,
+                       weight = excluded.weight,
+                       reason = excluded.reason,
+                       executed_at = excluded.executed_at,
+                       execution_metadata = excluded.execution_metadata",
                     params![
                         result_id,
                         run_id,
                         result.control_id(),
                         result.rule_id(),
                         result.status().label(),
-                        evidence_id
+                        evidence_id,
+                        framework_id.unwrap_or_default(),
+                        result.severity(),
+                        result.weight(),
+                        result.reason(),
+                        result.executed_at(),
+                        result.execution_metadata()
                     ],
                 )
                 .map_err(LocalDatabaseError::Sqlite)?;
@@ -977,6 +1013,245 @@ impl LocalDatabase {
         write_evidence_rows(&transaction, run_id, corpus).map_err(LocalDatabaseError::Sqlite)?;
 
         transaction.commit().map_err(LocalDatabaseError::Sqlite)
+    }
+}
+
+fn write_run_catalog(
+    transaction: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    corpus: &Corpus,
+) -> Result<(), LocalDatabaseError> {
+    transaction
+        .execute(
+            "INSERT INTO scan_runs(id, executed_at) VALUES (?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET
+               executed_at = COALESCE(NULLIF(excluded.executed_at, ''), scan_runs.executed_at)",
+            params![run_id, corpus.executed_at()],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    for table in ["run_framework_links", "run_control_links"] {
+        transaction
+            .execute(
+                &format!("DELETE FROM {table} WHERE run_id = ?1"),
+                params![run_id],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+
+    for (framework_id, version, _source_url) in corpus.frameworks() {
+        transaction
+            .execute(
+                "INSERT INTO frameworks(id, version) VALUES (?1, ?2)
+                 ON CONFLICT(id) DO NOTHING",
+                params![framework_id, version],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        transaction
+            .execute(
+                "INSERT INTO run_framework_links(run_id, framework_id)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(run_id, framework_id) DO NOTHING",
+                params![run_id, framework_id],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+
+    for (framework_id, control_id, _, _) in corpus.controls() {
+        transaction
+            .execute(
+                "INSERT INTO controls(id) VALUES (?1)
+                 ON CONFLICT(id) DO NOTHING",
+                params![control_id],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        transaction
+            .execute(
+                "INSERT INTO run_control_links(run_id, framework_id, control_id)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(run_id, framework_id, control_id) DO NOTHING",
+                params![run_id, framework_id, control_id],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+    Ok(())
+}
+
+fn export_framework_rows(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<Vec<(String, String)>, LocalDatabaseError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT frameworks.id, frameworks.version
+             FROM frameworks
+             INNER JOIN run_framework_links
+               ON run_framework_links.framework_id = frameworks.id
+             WHERE run_framework_links.run_id = ?1
+             ORDER BY frameworks.id",
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    let rows = statement
+        .query_map(params![run_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(LocalDatabaseError::Sqlite)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(LocalDatabaseError::Sqlite)
+}
+
+fn export_result_rows(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<Vec<PersistedExportResult>, LocalDatabaseError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT framework_id,
+                    control_id,
+                    rule_id,
+                    status,
+                    evidence_id,
+                    severity,
+                    weight,
+                    reason,
+                    executed_at,
+                    execution_metadata
+             FROM control_results
+             WHERE run_id = ?1
+             ORDER BY control_id, rule_id, framework_id",
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    let rows = statement
+        .query_map(params![run_id], |row| {
+            Ok(PersistedExportResult {
+                framework_id: row.get(0)?,
+                control_id: row.get(1)?,
+                rule_id: row.get(2)?,
+                status: row.get(3)?,
+                evidence_id: row.get(4)?,
+                severity: row.get(5)?,
+                weight: row.get(6)?,
+                reason: row.get(7)?,
+                executed_at: row.get(8)?,
+                execution_metadata: row.get(9)?,
+            })
+        })
+        .map_err(LocalDatabaseError::Sqlite)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(LocalDatabaseError::Sqlite)
+}
+
+fn export_control_rows(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<Vec<(String, String)>, LocalDatabaseError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT run_control_links.framework_id, controls.id
+             FROM controls
+             INNER JOIN run_control_links
+               ON run_control_links.control_id = controls.id
+             WHERE run_control_links.run_id = ?1
+             ORDER BY run_control_links.framework_id, controls.id",
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    let rows = statement
+        .query_map(params![run_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(LocalDatabaseError::Sqlite)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(LocalDatabaseError::Sqlite)
+}
+
+type ExportEvidenceRow = (String, String, String, String);
+
+fn export_evidence_rows(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<Vec<ExportEvidenceRow>, LocalDatabaseError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT evidence_metadata.id,
+                    evidence_metadata.digest,
+                    evidence_metadata.locator,
+                    evidence_metadata.classification
+             FROM evidence_metadata
+             INNER JOIN run_evidence_links
+               ON run_evidence_links.evidence_id = evidence_metadata.id
+             WHERE run_evidence_links.run_id = ?1
+             ORDER BY evidence_metadata.id",
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    let rows = statement
+        .query_map(params![run_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(LocalDatabaseError::Sqlite)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(LocalDatabaseError::Sqlite)
+}
+
+fn reconstruct_control_result(
+    persisted: &PersistedExportResult,
+    run_executed_at: &str,
+) -> Result<ControlResult, LocalDatabaseError> {
+    let status = persisted_status(&persisted.status)?;
+    let executed_at = if persisted.executed_at.is_empty() {
+        run_executed_at
+    } else {
+        &persisted.executed_at
+    };
+    let executed_at = if executed_at.is_empty() {
+        "1970-01-01T00:00:00Z"
+    } else {
+        executed_at
+    };
+    let evidence_refs = if persisted.evidence_id.is_empty() {
+        Vec::new()
+    } else {
+        vec![persisted.evidence_id.as_str()]
+    };
+    let mut builder = ControlResult::builder()
+        .control_id(&persisted.control_id)
+        .rule_id(&persisted.rule_id)
+        .status(status)
+        .severity(&persisted.severity)
+        .weight(persisted.weight)
+        .evidence_refs(evidence_refs)
+        .executed_at(executed_at)
+        .execution_metadata(&persisted.execution_metadata);
+    if let Some(reason) = persisted
+        .reason
+        .as_deref()
+        .filter(|reason| !reason.trim().is_empty())
+    {
+        builder = builder.reason(reason);
+    } else if status != Status::Pass {
+        builder = builder.reason(status.description());
+    }
+    builder.build().map_err(|error| {
+        LocalDatabaseError::Schema(format!(
+            "persisted result {}:{} is invalid: {error}",
+            persisted.control_id, persisted.rule_id
+        ))
+    })
+}
+
+fn persisted_status(label: &str) -> Result<Status, LocalDatabaseError> {
+    match label {
+        "PASS" => Ok(Status::Pass),
+        "FAIL" => Ok(Status::Fail),
+        "WARNING" => Ok(Status::Warning),
+        "SKIPPED" => Ok(Status::Skipped),
+        "ERROR" => Ok(Status::Error),
+        _ => Err(LocalDatabaseError::Schema(format!(
+            "persisted control result has unsupported status {label:?}"
+        ))),
     }
 }
 
@@ -1391,6 +1666,20 @@ fn migration_is_applicable(
         );
     }
 
+    if migration.version == EXPORT_RECONSTRUCTION_SCHEMA_VERSION
+        && migration.name == "0008-export-reconstruction"
+        && migration.sql == EXPORT_RECONSTRUCTION_SCHEMA_SQL
+    {
+        let schema_version = connection_schema_version(connection)?;
+        return Ok(
+            (INITIAL_SCHEMA_VERSION..EXPORT_RECONSTRUCTION_SCHEMA_VERSION)
+                .contains(&schema_version)
+                && migration_is_applied(connection, schema_version)?
+                && schema_has_required_columns(connection, SCHEMA_VERSION_7_REQUIRED_COLUMNS)?
+                && !schema_has_required_columns(connection, SCHEMA_VERSION_8_REQUIRED_COLUMNS)?,
+        );
+    }
+
     Ok(true)
 }
 
@@ -1421,6 +1710,12 @@ fn apply_packaged_migration(
         && migration.sql == RESULT_QUERY_FILTERS_SCHEMA_SQL
     {
         apply_result_query_filters_migration(&transaction)
+            .map_err(|source| migration_error(migration, source))?;
+    } else if migration.version == EXPORT_RECONSTRUCTION_SCHEMA_VERSION
+        && migration.name == "0008-export-reconstruction"
+        && migration.sql == EXPORT_RECONSTRUCTION_SCHEMA_SQL
+    {
+        apply_export_reconstruction_migration(&transaction)
             .map_err(|source| migration_error(migration, source))?;
     } else {
         transaction
@@ -1506,6 +1801,187 @@ fn apply_result_query_filters_migration(
     Ok(())
 }
 
+fn apply_export_reconstruction_migration(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<()> {
+    ensure_export_reconstruction_schema(transaction)?;
+    backfill_export_catalog_links(transaction)?;
+    backfill_export_result_metadata(transaction)
+}
+
+fn ensure_export_reconstruction_schema(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<()> {
+    add_column_if_missing(
+        transaction,
+        "scan_runs",
+        "executed_at",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    for (column_name, definition) in [
+        ("framework_id", "TEXT NOT NULL DEFAULT ''"),
+        ("severity", "TEXT NOT NULL DEFAULT ''"),
+        ("weight", "INTEGER NOT NULL DEFAULT 0"),
+        ("reason", "TEXT"),
+        ("executed_at", "TEXT NOT NULL DEFAULT ''"),
+        ("execution_metadata", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        add_column_if_missing(transaction, "control_results", column_name, definition)?;
+    }
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS run_framework_links (
+           run_id TEXT NOT NULL,
+           framework_id TEXT NOT NULL,
+           PRIMARY KEY (run_id, framework_id)
+         );
+         CREATE TABLE IF NOT EXISTS run_control_links (
+           run_id TEXT NOT NULL,
+           framework_id TEXT NOT NULL,
+           control_id TEXT NOT NULL,
+           PRIMARY KEY (run_id, framework_id, control_id)
+         );",
+    )?;
+    Ok(())
+}
+
+fn backfill_export_catalog_links(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    let persisted_results = {
+        let mut statement = transaction.prepare(
+            "SELECT id, run_id, control_id
+             FROM control_results
+             ORDER BY id",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for (row_id, persisted_run_id, persisted_control_id) in persisted_results {
+        let Some((encoded_run_id, framework_id, encoded_control_id, _)) =
+            control_result_identity(&row_id)
+        else {
+            continue;
+        };
+        let run_id = if persisted_run_id.is_empty() {
+            encoded_run_id
+        } else {
+            &persisted_run_id
+        };
+        let control_id = if persisted_control_id.is_empty() {
+            encoded_control_id
+        } else {
+            &persisted_control_id
+        };
+        transaction.execute(
+            "UPDATE control_results
+             SET framework_id = ?1
+             WHERE id = ?2 AND framework_id = ''",
+            params![framework_id, row_id],
+        )?;
+        if !framework_id.is_empty() {
+            transaction.execute(
+                "INSERT OR IGNORE INTO run_framework_links(run_id, framework_id)
+                 VALUES (?1, ?2)",
+                params![run_id, framework_id],
+            )?;
+        }
+        transaction.execute(
+            "INSERT OR IGNORE INTO run_control_links(run_id, framework_id, control_id)
+             VALUES (?1, ?2, ?3)",
+            params![run_id, framework_id, control_id],
+        )?;
+    }
+
+    backfill_single_run_catalog_links(transaction)
+}
+
+fn backfill_single_run_catalog_links(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<()> {
+    let run_ids = {
+        let mut statement = transaction.prepare("SELECT id FROM scan_runs ORDER BY id")?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    if let [run_id] = run_ids.as_slice() {
+        transaction.execute(
+            "INSERT OR IGNORE INTO run_framework_links(run_id, framework_id)
+             SELECT ?1, id FROM frameworks",
+            params![run_id],
+        )?;
+        let framework_ids = {
+            let mut statement = transaction.prepare("SELECT id FROM frameworks ORDER BY id")?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        if let [framework_id] = framework_ids.as_slice() {
+            transaction.execute(
+                "INSERT OR IGNORE INTO run_control_links(run_id, framework_id, control_id)
+                 SELECT ?1, ?2, id FROM controls",
+                params![run_id, framework_id],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn backfill_export_result_metadata(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        "UPDATE control_results
+         SET severity = COALESCE(
+           (
+             SELECT compliance_gaps.severity
+             FROM compliance_gaps
+             WHERE compliance_gaps.run_id = control_results.run_id
+               AND compliance_gaps.control_id = control_results.control_id
+               AND compliance_gaps.rule_id = control_results.rule_id
+             ORDER BY compliance_gaps.id
+             LIMIT 1
+           ),
+           severity
+         )
+         WHERE severity = ''",
+        [],
+    )?;
+    transaction.execute(
+        "UPDATE control_results
+         SET executed_at = COALESCE(
+           (SELECT scan_runs.executed_at FROM scan_runs WHERE scan_runs.id = control_results.run_id),
+           executed_at
+         )
+         WHERE executed_at = ''",
+        [],
+    )?;
+    Ok(())
+}
+
+fn add_column_if_missing(
+    transaction: &rusqlite::Transaction<'_>,
+    table_name: &str,
+    column_name: &str,
+    definition: &str,
+) -> rusqlite::Result<()> {
+    if !transaction_schema_column_exists(transaction, table_name, column_name)? {
+        transaction.execute(
+            &format!("ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"),
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 fn backfill_control_result_run_ids(
     transaction: &rusqlite::Transaction<'_>,
 ) -> rusqlite::Result<()> {
@@ -1527,10 +2003,19 @@ fn backfill_control_result_run_ids(
 }
 
 fn control_result_run_id(row_id: &str) -> Option<&str> {
+    control_result_identity(row_id).map(|(run_id, _, _, _)| run_id)
+}
+
+fn control_result_identity(row_id: &str) -> Option<(&str, &str, &str, &str)> {
     let (run_id, remainder) = take_length_prefixed_field(row_id)?;
-    let (_, remainder) = take_length_prefixed_field(remainder)?;
-    let (_, rule_id) = take_length_prefixed_field(remainder)?;
-    (!run_id.is_empty() && !rule_id.is_empty()).then_some(run_id)
+    let (framework_id, remainder) = take_length_prefixed_field(remainder)?;
+    let (control_id, rule_id) = take_length_prefixed_field(remainder)?;
+    (!run_id.is_empty() && !control_id.is_empty() && !rule_id.is_empty()).then_some((
+        run_id,
+        framework_id,
+        control_id,
+        rule_id,
+    ))
 }
 
 fn take_length_prefixed_field(input: &str) -> Option<(&str, &str)> {
@@ -1836,6 +2321,81 @@ mod tests {
                 ("existing-run".to_owned(), "standalone-evidence".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn export_reconstruction_migration_backfills_a_recognized_v7_database() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory SQLite");
+        connection
+            .execute_batch(INITIAL_SCHEMA_SQL)
+            .expect("create the current table shapes");
+        connection
+            .execute_batch(
+                "DROP TABLE run_framework_links;
+                 DROP TABLE run_control_links;
+                 ALTER TABLE scan_runs DROP COLUMN executed_at;
+                 ALTER TABLE control_results DROP COLUMN framework_id;
+                 ALTER TABLE control_results DROP COLUMN severity;
+                 ALTER TABLE control_results DROP COLUMN weight;
+                 ALTER TABLE control_results DROP COLUMN reason;
+                 ALTER TABLE control_results DROP COLUMN executed_at;
+                 ALTER TABLE control_results DROP COLUMN execution_metadata;
+                 CREATE TABLE schema_migrations (
+                   version INTEGER PRIMARY KEY,
+                   name TEXT NOT NULL,
+                   applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                 );
+                 INSERT INTO schema_migrations(version, name) VALUES
+                   (1, '0001-initial'),
+                   (2, '0002-run-evidence-links'),
+                   (3, '0003-gap-query-filters'),
+                   (4, '0004-evidence-locators'),
+                   (5, '0005-result-query-filters'),
+                   (6, '0006-run-evidence-index'),
+                   (7, '0007-evidence-classifications');
+                 INSERT INTO scan_runs(id) VALUES ('legacy-run');
+                 INSERT INTO frameworks(id, version) VALUES ('gdpr-eprivacy', '2016-679');
+                 INSERT INTO controls(id) VALUES ('control');
+                 INSERT INTO control_results(
+                   id, run_id, control_id, rule_id, status, evidence_id
+                 ) VALUES (
+                   '10:legacy-run:13:gdpr-eprivacy:7:control:rule',
+                   'legacy-run', 'control', 'rule', 'FAIL', ''
+                 );
+                 INSERT INTO compliance_gaps(
+                   id, run_id, status, severity, control_id, rule_id
+                 ) VALUES (
+                   'legacy-gap', 'legacy-run', 'FAIL', 'major', 'control', 'rule'
+                 );
+                 PRAGMA user_version = 7;",
+            )
+            .expect("record a recognized v7 schema");
+
+        apply_packaged_migrations(&mut connection, PACKAGED_MIGRATIONS)
+            .expect("apply the export reconstruction migration");
+
+        assert_eq!(connection_schema_version(&connection).unwrap(), 8);
+        let result_metadata: (String, String) = connection
+            .query_row(
+                "SELECT framework_id, severity FROM control_results WHERE run_id = 'legacy-run'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read backfilled result metadata");
+        assert_eq!(
+            result_metadata,
+            ("gdpr-eprivacy".to_owned(), "major".to_owned())
+        );
+        let catalog_links: (i64, i64) = connection
+            .query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM run_framework_links WHERE run_id = 'legacy-run'),
+                   (SELECT COUNT(*) FROM run_control_links WHERE run_id = 'legacy-run')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read backfilled catalog links");
+        assert_eq!(catalog_links, (1, 1));
     }
 
     #[test]
