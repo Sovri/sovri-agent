@@ -480,6 +480,12 @@ fn concurrent_writes_to_the_same_run_are_serialized() {
             .expect("the concurrent run evidence can be retrieved"),
         vec![PUBLIC_EVIDENCE_ID.to_owned()]
     );
+    assert_eq!(
+        local_database
+            .score_summary_records_for_run(CONCURRENT_RUN)
+            .expect("the concurrent run score summaries can be retrieved"),
+        vec![FRAMEWORK.to_owned()]
+    );
 }
 
 #[test]

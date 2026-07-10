@@ -82,7 +82,10 @@ fn a_repeated_write_cannot_duplicate_gaps_or_scores() {
     assert_eq!(gap_row_count(database.path(), TRACKER_RULE), 1);
 
     // And exactly 1 score summary exists for framework "gdpr-eprivacy".
-    assert_eq!(score_summary_count(database.path(), FRAMEWORK_ID), 1);
+    assert_eq!(
+        score_summary_count(database.path(), RUN_ID, FRAMEWORK_ID),
+        1
+    );
 
     // And no duplicate logical record is returned by run, evidence, result, gap, or score queries.
     assert_no_duplicate_logical_records(database.path());
@@ -139,12 +142,14 @@ fn gap_row_count(path: &Path, rule_id: &str) -> i64 {
         .expect("gap row count can be inspected")
 }
 
-fn score_summary_count(path: &Path, framework_id: &str) -> i64 {
+fn score_summary_count(path: &Path, run_id: &str, framework_id: &str) -> i64 {
     let connection = Connection::open(path).expect("the database can be inspected");
     connection
         .query_row(
-            "SELECT COUNT(*) FROM score_summaries WHERE id = ?1",
-            params![framework_id],
+            "SELECT COUNT(*)
+             FROM score_summaries
+             WHERE run_id = ?1 AND framework_id = ?2",
+            params![run_id, framework_id],
             |row| row.get(0),
         )
         .expect("score summary count can be inspected")

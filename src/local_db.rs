@@ -8,14 +8,13 @@
 //! evidence bytes; this module stores only local `SQLite` rows and integrity
 //! metadata.
 
-use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::path::Path;
 
 use crate::matrix::{Classification, Corpus};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use sovri_sdk::{ControlResult, EvidenceStore, Status};
 
 /// The schema version created by the first packaged migration.
@@ -124,7 +123,14 @@ const INITIAL_SCHEMA_SQL: &str = "
       reference TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (run_id, framework_id, control_id)
     );
-    CREATE TABLE IF NOT EXISTS score_summaries (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS score_summaries (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      framework_id TEXT NOT NULL,
+      pass_count INTEGER NOT NULL,
+      fail_count INTEGER NOT NULL,
+      warning_count INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY);
 ";
 
@@ -426,6 +432,52 @@ impl PackagedMigration {
 /// A local `SQLite` database opened by `sovri-agent`.
 pub struct LocalDatabase {
     connection: Connection,
+}
+
+/// Persisted status-count summary for one framework in a completed run.
+#[derive(Debug, PartialEq)]
+pub struct ScoreSummaryRecord {
+    /// Framework identifier this summary belongs to.
+    framework_id: String,
+    /// Number of PASS results counted for the framework in this run.
+    pass_count: u32,
+    /// Number of FAIL results counted for the framework in this run.
+    fail_count: u32,
+    /// Number of WARNING results counted for the framework in this run.
+    warning_count: u32,
+}
+
+impl ScoreSummaryRecord {
+    /// Returns the framework this summary belongs to.
+    #[must_use]
+    pub fn framework_id(&self) -> &str {
+        &self.framework_id
+    }
+
+    /// Returns the number of PASS results counted for the framework.
+    #[must_use]
+    pub fn pass_count(&self) -> u32 {
+        self.pass_count
+    }
+
+    /// Returns the number of FAIL results counted for the framework.
+    #[must_use]
+    pub fn fail_count(&self) -> u32 {
+        self.fail_count
+    }
+
+    /// Returns the number of WARNING results counted for the framework.
+    #[must_use]
+    pub fn warning_count(&self) -> u32 {
+        self.warning_count
+    }
+}
+
+#[derive(Default)]
+struct ScoreSummaryCounts {
+    pass: u32,
+    fail: u32,
+    warning: u32,
 }
 
 /// A persisted compliance gap returned by local database queries.
@@ -798,7 +850,7 @@ impl LocalDatabase {
         )
     }
 
-    /// Retrieves score-summary record ids for a run.
+    /// Retrieves the framework identifiers represented by score summaries for a run.
     ///
     /// # Errors
     ///
@@ -807,18 +859,48 @@ impl LocalDatabase {
         &self,
         run_id: &str,
     ) -> Result<Vec<String>, LocalDatabaseError> {
+        ensure_score_summary_schema(&self.connection)?;
         query_run_scoped_ids(
             &self.connection,
-            "SELECT score_summaries.id
+            "SELECT framework_id
              FROM score_summaries
-             INNER JOIN control_results
-               ON control_results.framework_id = score_summaries.id
-             WHERE control_results.run_id = ?1
-               AND control_results.framework_id <> ''
-             GROUP BY score_summaries.id
-             ORDER BY score_summaries.id",
+             WHERE run_id = ?1
+             ORDER BY framework_id",
             run_id,
         )
+    }
+
+    /// Retrieves score summaries for a completed run in stable framework order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot read the score summaries.
+    pub fn score_summaries_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<ScoreSummaryRecord>, LocalDatabaseError> {
+        ensure_score_summary_schema(&self.connection)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT framework_id, pass_count, fail_count, warning_count
+                 FROM score_summaries
+                 WHERE run_id = ?1
+                 ORDER BY framework_id",
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let rows = statement
+            .query_map([run_id], |row| {
+                Ok(ScoreSummaryRecord {
+                    framework_id: row.get(0)?,
+                    pass_count: row.get(1)?,
+                    fail_count: row.get(2)?,
+                    warning_count: row.get(3)?,
+                })
+            })
+            .map_err(LocalDatabaseError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(LocalDatabaseError::Sqlite)
     }
 
     /// Queries persisted scan run ids in stable order.
@@ -1155,20 +1237,7 @@ impl LocalDatabase {
 
         write_run_catalog(&transaction, run_id, corpus)?;
         clear_run_outcomes(&transaction, run_id)?;
-
-        for framework_id in scoped_results
-            .iter()
-            .filter_map(|(framework_id, _)| *framework_id)
-            .collect::<BTreeSet<_>>()
-        {
-            transaction
-                .execute(
-                    "INSERT INTO score_summaries(id) VALUES (?1)
-                     ON CONFLICT(id) DO NOTHING",
-                    params![framework_id],
-                )
-                .map_err(LocalDatabaseError::Sqlite)?;
-        }
+        write_score_summaries(&transaction, corpus)?;
 
         for (framework_id, result) in &scoped_results {
             let evidence_id = result
@@ -1233,6 +1302,322 @@ impl LocalDatabase {
 
         transaction.commit().map_err(LocalDatabaseError::Sqlite)
     }
+}
+
+fn write_score_summaries(
+    transaction: &Transaction<'_>,
+    corpus: &Corpus,
+) -> Result<(), LocalDatabaseError> {
+    add_missing_score_summary_columns(transaction)?;
+    let run_id = corpus.run_id();
+    transaction
+        .execute(
+            "DELETE FROM score_summaries
+             WHERE run_id = ?1",
+            [run_id],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    for (framework_id, counts) in score_summary_counts(corpus) {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO score_summaries(
+                   id,
+                   run_id,
+                   framework_id,
+                   pass_count,
+                   fail_count,
+                   warning_count
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    score_summary_row_id(run_id, &framework_id),
+                    run_id,
+                    framework_id,
+                    counts.pass,
+                    counts.fail,
+                    counts.warning,
+                ],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+    Ok(())
+}
+
+fn score_summary_row_id(run_id: &str, framework_id: &str) -> String {
+    // Length-prefix both identifiers so delimiters inside either value cannot
+    // make two distinct (run, framework) pairs produce the same row id.
+    format!(
+        "{}:{run_id}:{}:{framework_id}",
+        run_id.len(),
+        framework_id.len()
+    )
+}
+
+fn score_summary_counts(corpus: &Corpus) -> std::collections::BTreeMap<String, ScoreSummaryCounts> {
+    let mut summaries = std::collections::BTreeMap::new();
+    for (framework_id, result) in corpus.scoped_results() {
+        let Some(framework_id) = framework_id.filter(|framework_id| !framework_id.is_empty())
+        else {
+            continue;
+        };
+        let summary: &mut ScoreSummaryCounts =
+            summaries.entry(framework_id.to_owned()).or_default();
+        match result.status() {
+            Status::Pass => summary.pass += 1,
+            Status::Fail => summary.fail += 1,
+            Status::Warning => summary.warning += 1,
+            // R-03 defines persisted score summaries in terms of these three
+            // scored outcomes; SKIPPED and ERROR remain in control_results.
+            Status::Skipped | Status::Error => {}
+        }
+    }
+    summaries
+}
+
+fn ensure_score_summary_schema(connection: &Connection) -> Result<(), LocalDatabaseError> {
+    if score_summary_schema_is_current(connection)? {
+        return Ok(());
+    }
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(LocalDatabaseError::Sqlite)?;
+    let transaction =
+        Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+            .map_err(LocalDatabaseError::Sqlite)?;
+    add_missing_score_summary_columns(&transaction)?;
+    transaction.commit().map_err(LocalDatabaseError::Sqlite)
+}
+
+fn score_summary_schema_is_current(connection: &Connection) -> Result<bool, LocalDatabaseError> {
+    let column_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM pragma_table_info('score_summaries')
+             WHERE name IN (
+               'run_id',
+               'framework_id',
+               'pass_count',
+               'fail_count',
+               'warning_count'
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    if column_count != 5 {
+        return Ok(false);
+    }
+    Ok(score_summary_columns_are_not_null(connection)?
+        && !legacy_score_summary_rows_exist(connection)?)
+}
+
+fn add_missing_score_summary_columns(connection: &Connection) -> Result<(), LocalDatabaseError> {
+    let mut schema_repaired = false;
+    if !schema_column_exists(connection, "score_summaries", "run_id")? {
+        connection
+            .execute(
+                "ALTER TABLE score_summaries
+                 ADD COLUMN run_id TEXT",
+                [],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        schema_repaired = true;
+    }
+    if !schema_column_exists(connection, "score_summaries", "framework_id")? {
+        connection
+            .execute(
+                "ALTER TABLE score_summaries
+                 ADD COLUMN framework_id TEXT",
+                [],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        schema_repaired = true;
+    }
+    if !schema_column_exists(connection, "score_summaries", "pass_count")? {
+        connection
+            .execute(
+                "ALTER TABLE score_summaries
+                 ADD COLUMN pass_count INTEGER",
+                [],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        schema_repaired = true;
+    }
+    if !schema_column_exists(connection, "score_summaries", "fail_count")? {
+        connection
+            .execute(
+                "ALTER TABLE score_summaries
+                 ADD COLUMN fail_count INTEGER",
+                [],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        schema_repaired = true;
+    }
+    if !schema_column_exists(connection, "score_summaries", "warning_count")? {
+        connection
+            .execute(
+                "ALTER TABLE score_summaries
+                 ADD COLUMN warning_count INTEGER",
+                [],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        schema_repaired = true;
+    }
+    if schema_repaired || legacy_score_summary_rows_exist(connection)? {
+        backfill_score_summaries_from_results(connection)?;
+    }
+    if !score_summary_columns_are_not_null(connection)? {
+        rebuild_score_summaries_with_not_null_columns(connection)?;
+    }
+    Ok(())
+}
+
+fn score_summary_columns_are_not_null(connection: &Connection) -> Result<bool, LocalDatabaseError> {
+    let constrained_column_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM pragma_table_info('score_summaries')
+             WHERE name IN (
+               'run_id',
+               'framework_id',
+               'pass_count',
+               'fail_count',
+               'warning_count'
+             )
+               AND \"notnull\" = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(constrained_column_count == 5)
+}
+
+fn rebuild_score_summaries_with_not_null_columns(
+    connection: &Connection,
+) -> Result<(), LocalDatabaseError> {
+    connection
+        .execute_batch(
+            "CREATE TABLE score_summaries_repaired (
+               id TEXT PRIMARY KEY,
+               run_id TEXT NOT NULL,
+               framework_id TEXT NOT NULL,
+               pass_count INTEGER NOT NULL,
+               fail_count INTEGER NOT NULL,
+               warning_count INTEGER NOT NULL
+             );
+             INSERT INTO score_summaries_repaired(
+               id,
+               run_id,
+               framework_id,
+               pass_count,
+               fail_count,
+               warning_count
+             )
+             SELECT id,
+                    run_id,
+                    framework_id,
+                    pass_count,
+                    fail_count,
+                    warning_count
+             FROM score_summaries;
+             DROP TABLE score_summaries;
+             ALTER TABLE score_summaries_repaired RENAME TO score_summaries;",
+        )
+        .map_err(LocalDatabaseError::Sqlite)
+}
+
+fn legacy_score_summary_rows_exist(connection: &Connection) -> Result<bool, LocalDatabaseError> {
+    let row_exists: i64 = connection
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1
+               FROM score_summaries
+               WHERE run_id IS NULL
+                  OR framework_id IS NULL
+                  OR pass_count IS NULL
+                  OR fail_count IS NULL
+                  OR warning_count IS NULL
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(row_exists == 1)
+}
+
+fn backfill_score_summaries_from_results(
+    connection: &Connection,
+) -> Result<(), LocalDatabaseError> {
+    for column_name in ["run_id", "framework_id", "status"] {
+        if !schema_column_exists(connection, "control_results", column_name)? {
+            return Ok(());
+        }
+    }
+
+    let summaries = {
+        let mut statement = connection
+            .prepare(
+                "SELECT run_id,
+                        framework_id,
+                        SUM(CASE WHEN status = 'PASS' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN status = 'FAIL' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN status = 'WARNING' THEN 1 ELSE 0 END)
+                 FROM control_results
+                 WHERE run_id <> '' AND framework_id <> ''
+                 GROUP BY run_id, framework_id
+                 ORDER BY run_id, framework_id",
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u32>(2)?,
+                    row.get::<_, u32>(3)?,
+                    row.get::<_, u32>(4)?,
+                ))
+            })
+            .map_err(LocalDatabaseError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(LocalDatabaseError::Sqlite)?
+    };
+
+    connection
+        .execute(
+            "DELETE FROM score_summaries
+             WHERE run_id IS NULL
+                OR framework_id IS NULL
+                OR pass_count IS NULL
+                OR fail_count IS NULL
+                OR warning_count IS NULL",
+            [],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    for (run_id, framework_id, pass_count, fail_count, warning_count) in summaries {
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO score_summaries(
+                   id,
+                   run_id,
+                   framework_id,
+                   pass_count,
+                   fail_count,
+                   warning_count
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    score_summary_row_id(&run_id, &framework_id),
+                    run_id,
+                    framework_id,
+                    pass_count,
+                    fail_count,
+                    warning_count,
+                ],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+    }
+    Ok(())
 }
 
 fn query_run_scoped_ids(
@@ -2923,6 +3308,7 @@ impl Error for LocalDatabaseError {
 mod tests {
     use super::*;
     use crate::matrix::Classification;
+    use std::collections::BTreeSet;
 
     #[test]
     fn hardcoded_persisted_corpus_tables_match_current_schema() {
