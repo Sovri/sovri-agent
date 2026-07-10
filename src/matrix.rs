@@ -167,6 +167,15 @@ struct Control {
     reference: String,
 }
 
+pub(crate) struct ControlRecord<'a> {
+    pub(crate) framework_id: &'a str,
+    pub(crate) id: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) severity: &'a str,
+    pub(crate) weight: u32,
+    pub(crate) reference: &'a str,
+}
+
 /// The confidentiality classification a persisted evidence record carries.
 ///
 /// The evidence store classified each record when it collected it and dropped the
@@ -174,7 +183,7 @@ struct Control {
 /// record, so that value never reaches the export. The classification decides the
 /// record's redaction status on the Evidence sheet: a classified record renders
 /// `redacted`, an unclassified record `none`.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Classification {
     /// A secret value — a key, token, or credential — the store dropped, so the
     /// record's Evidence row is reduced to metadata and marked `redacted`.
@@ -194,6 +203,15 @@ impl Classification {
             Classification::Secret => "Secret",
             Classification::Sensitive => "Sensitive",
             Classification::Unclassified => "Unclassified",
+        }
+    }
+
+    pub(crate) fn from_persisted(value: &str) -> Option<Self> {
+        match value {
+            "Secret" => Some(Classification::Secret),
+            "Sensitive" => Some(Classification::Sensitive),
+            "Unclassified" => Some(Classification::Unclassified),
+            _ => None,
         }
     }
 }
@@ -340,6 +358,20 @@ impl Corpus {
             .collect()
     }
 
+    pub(crate) fn control_records(&self) -> Vec<ControlRecord<'_>> {
+        self.controls
+            .iter()
+            .map(|control| ControlRecord {
+                framework_id: &control.framework_id,
+                id: &control.id,
+                title: &control.title,
+                severity: &control.severity,
+                weight: control.weight,
+                reference: &control.reference,
+            })
+            .collect()
+    }
+
     /// The stable ids of the evidence records the corpus holds, in the order they
     /// were collected — the evidence the signed JSON export lists, one record per
     /// id.
@@ -444,6 +476,14 @@ impl Corpus {
     ) -> Self {
         self.results.push(ScopedResult {
             framework_id: Some(framework_id.into()),
+            result,
+        });
+        self
+    }
+
+    pub(crate) fn with_unscoped_control_result(mut self, result: ControlResult) -> Self {
+        self.results.push(ScopedResult {
+            framework_id: None,
             result,
         });
         self
@@ -587,6 +627,11 @@ impl Corpus {
 #[must_use]
 pub fn export(corpus: &Corpus) -> String {
     let created = xml_escape(&corpus.executed_at);
+    let run_property = if corpus.run_id.is_empty() {
+        String::new()
+    } else {
+        format!("<Title>{}</Title>\n", xml_escape(&corpus.run_id))
+    };
     let mut worksheets = String::new();
     for name in WORKSHEET_NAMES {
         worksheets.push_str("<Worksheet ss:Name=\"");
@@ -620,6 +665,7 @@ pub fn export(corpus: &Corpus) -> String {
          <Workbook xmlns=\"{SPREADSHEET_NAMESPACE}\" xmlns:ss=\"{SPREADSHEET_NAMESPACE}\">\n\
          <DocumentProperties xmlns=\"{OFFICE_NAMESPACE}\">\n\
          <Created>{created}</Created>\n\
+         {run_property}\
          </DocumentProperties>\n\
          {worksheets}\
          </Workbook>\n"
