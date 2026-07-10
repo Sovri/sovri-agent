@@ -17,9 +17,6 @@ use crate::matrix::{Classification, Corpus};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use sovri_sdk::{ControlResult, EvidenceStore, Status};
 
-#[cfg(test)]
-use std::collections::BTreeSet;
-
 /// The schema version created by the first packaged migration.
 pub const INITIAL_SCHEMA_VERSION: u32 = 1;
 
@@ -853,7 +850,7 @@ impl LocalDatabase {
         )
     }
 
-    /// Retrieves score-summary record ids for a run.
+    /// Retrieves the framework identifiers represented by score summaries for a run.
     ///
     /// # Errors
     ///
@@ -1369,6 +1366,8 @@ fn score_summary_counts(corpus: &Corpus) -> std::collections::BTreeMap<String, S
             Status::Pass => summary.pass += 1,
             Status::Fail => summary.fail += 1,
             Status::Warning => summary.warning += 1,
+            // R-03 defines persisted score summaries in terms of these three
+            // scored outcomes; SKIPPED and ERROR remain in control_results.
             Status::Skipped | Status::Error => {}
         }
     }
@@ -1408,7 +1407,8 @@ fn score_summary_schema_is_current(connection: &Connection) -> Result<bool, Loca
     if column_count != 5 {
         return Ok(false);
     }
-    Ok(!legacy_score_summary_rows_exist(connection)?)
+    Ok(score_summary_columns_are_not_null(connection)?
+        && !legacy_score_summary_rows_exist(connection)?)
 }
 
 fn add_missing_score_summary_columns(connection: &Connection) -> Result<(), LocalDatabaseError> {
@@ -1466,7 +1466,64 @@ fn add_missing_score_summary_columns(connection: &Connection) -> Result<(), Loca
     if schema_repaired || legacy_score_summary_rows_exist(connection)? {
         backfill_score_summaries_from_results(connection)?;
     }
+    if !score_summary_columns_are_not_null(connection)? {
+        rebuild_score_summaries_with_not_null_columns(connection)?;
+    }
     Ok(())
+}
+
+fn score_summary_columns_are_not_null(connection: &Connection) -> Result<bool, LocalDatabaseError> {
+    let constrained_column_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM pragma_table_info('score_summaries')
+             WHERE name IN (
+               'run_id',
+               'framework_id',
+               'pass_count',
+               'fail_count',
+               'warning_count'
+             )
+               AND \"notnull\" = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(constrained_column_count == 5)
+}
+
+fn rebuild_score_summaries_with_not_null_columns(
+    connection: &Connection,
+) -> Result<(), LocalDatabaseError> {
+    connection
+        .execute_batch(
+            "CREATE TABLE score_summaries_repaired (
+               id TEXT PRIMARY KEY,
+               run_id TEXT NOT NULL,
+               framework_id TEXT NOT NULL,
+               pass_count INTEGER NOT NULL,
+               fail_count INTEGER NOT NULL,
+               warning_count INTEGER NOT NULL
+             );
+             INSERT INTO score_summaries_repaired(
+               id,
+               run_id,
+               framework_id,
+               pass_count,
+               fail_count,
+               warning_count
+             )
+             SELECT id,
+                    run_id,
+                    framework_id,
+                    pass_count,
+                    fail_count,
+                    warning_count
+             FROM score_summaries;
+             DROP TABLE score_summaries;
+             ALTER TABLE score_summaries_repaired RENAME TO score_summaries;",
+        )
+        .map_err(LocalDatabaseError::Sqlite)
 }
 
 fn legacy_score_summary_rows_exist(connection: &Connection) -> Result<bool, LocalDatabaseError> {
@@ -3251,6 +3308,7 @@ impl Error for LocalDatabaseError {
 mod tests {
     use super::*;
     use crate::matrix::Classification;
+    use std::collections::BTreeSet;
 
     #[test]
     fn hardcoded_persisted_corpus_tables_match_current_schema() {

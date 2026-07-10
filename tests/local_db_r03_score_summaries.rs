@@ -177,6 +177,50 @@ fn legacy_score_summary_schema_is_repaired_before_querying() {
 }
 
 #[test]
+fn repaired_score_summary_schema_rejects_null_values() {
+    let database = TempDatabase::new();
+    create_legacy_score_summary_database(database.path());
+    let local_database =
+        LocalDatabase::open(database.path()).expect("the legacy local database opens");
+    local_database
+        .score_summaries_for_run(MIXED_RUN)
+        .expect("the legacy score summary schema is repaired");
+    drop(local_database);
+
+    let connection = Connection::open(database.path()).expect("the repaired database opens");
+    for (column, statement) in [
+        (
+            "run_id",
+            "INSERT INTO score_summaries VALUES ('null-run', NULL, 'framework', 0, 0, 0)",
+        ),
+        (
+            "framework_id",
+            "INSERT INTO score_summaries VALUES ('null-framework', 'run', NULL, 0, 0, 0)",
+        ),
+        (
+            "pass_count",
+            "INSERT INTO score_summaries VALUES ('null-pass', 'run', 'framework', NULL, 0, 0)",
+        ),
+        (
+            "fail_count",
+            "INSERT INTO score_summaries VALUES ('null-fail', 'run', 'framework', 0, NULL, 0)",
+        ),
+        (
+            "warning_count",
+            "INSERT INTO score_summaries VALUES ('null-warning', 'run', 'framework', 0, 0, NULL)",
+        ),
+    ] {
+        let error = connection
+            .execute(statement, [])
+            .expect_err("the repaired schema rejects NULL summary values");
+        assert!(
+            error.to_string().contains(column),
+            "unexpected error for {column}: {error}"
+        );
+    }
+}
+
+#[test]
 fn populated_legacy_score_summaries_are_backfilled_from_results() {
     let database = TempDatabase::new();
     let mut local_database =
