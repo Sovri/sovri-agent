@@ -151,6 +151,8 @@ const PERSISTED_CORPUS_TABLES: &[&str] = &[
     "score_summaries",
     "exports",
     "run_evidence_links",
+    "run_framework_links",
+    "run_control_links",
 ];
 
 const GAP_QUERY_FILTERS_SCHEMA_VERSION: u32 = 3;
@@ -1949,28 +1951,43 @@ fn destructive_migration_operation(sql: &str) -> Option<String> {
     let mut index = 0;
 
     while index + 2 < tokens.len() {
-        if !tokens[index].eq_ignore_ascii_case("DROP")
-            || !tokens[index + 1].eq_ignore_ascii_case("TABLE")
+        if tokens[index].eq_ignore_ascii_case("DROP")
+            && tokens[index + 1].eq_ignore_ascii_case("TABLE")
         {
-            index += 1;
-            continue;
-        }
+            let table_index = if tokens
+                .get(index + 2)
+                .is_some_and(|token| token.eq_ignore_ascii_case("IF"))
+                && tokens
+                    .get(index + 3)
+                    .is_some_and(|token| token.eq_ignore_ascii_case("EXISTS"))
+            {
+                index + 4
+            } else {
+                index + 2
+            };
 
-        let table_index = if tokens
-            .get(index + 2)
-            .is_some_and(|token| token.eq_ignore_ascii_case("IF"))
-            && tokens
-                .get(index + 3)
-                .is_some_and(|token| token.eq_ignore_ascii_case("EXISTS"))
+            if let Some((table_name, _)) = sql_table_name(&tokens, table_index) {
+                if PERSISTED_CORPUS_TABLES.contains(&table_name.as_str()) {
+                    return Some(format!("DROP TABLE {table_name}"));
+                }
+            }
+        } else if tokens[index].eq_ignore_ascii_case("ALTER")
+            && tokens[index + 1].eq_ignore_ascii_case("TABLE")
         {
-            index + 4
-        } else {
-            index + 2
-        };
-
-        if let Some(table_name) = dropped_table_name(&tokens, table_index) {
+            let Some((table_name, operation_index)) = sql_table_name(&tokens, index + 2) else {
+                index += 1;
+                continue;
+            };
             if PERSISTED_CORPUS_TABLES.contains(&table_name.as_str()) {
-                return Some(format!("DROP TABLE {table_name}"));
+                let drops_column = tokens
+                    .get(operation_index)
+                    .is_some_and(|token| token.eq_ignore_ascii_case("DROP"))
+                    && tokens
+                        .get(operation_index + 1)
+                        .is_some_and(|token| token.eq_ignore_ascii_case("COLUMN"));
+                if drops_column {
+                    return Some(format!("ALTER TABLE {table_name} DROP COLUMN"));
+                }
             }
         }
 
@@ -1980,7 +1997,7 @@ fn destructive_migration_operation(sql: &str) -> Option<String> {
     None
 }
 
-fn dropped_table_name(tokens: &[String], table_index: usize) -> Option<String> {
+fn sql_table_name(tokens: &[String], table_index: usize) -> Option<(String, usize)> {
     let schema_or_table = tokens.get(table_index)?;
     if tokens
         .get(table_index + 1)
@@ -1988,10 +2005,10 @@ fn dropped_table_name(tokens: &[String], table_index: usize) -> Option<String> {
     {
         return tokens
             .get(table_index + 2)
-            .map(|table_name| canonical_sql_identifier(table_name));
+            .map(|table_name| (canonical_sql_identifier(table_name), table_index + 3));
     }
 
-    Some(canonical_sql_identifier(schema_or_table))
+    Some((canonical_sql_identifier(schema_or_table), table_index + 1))
 }
 
 fn sql_tokens(sql: &str) -> Vec<String> {
@@ -2010,7 +2027,10 @@ fn sql_tokens(sql: &str) -> Vec<String> {
             skip_block_comment(&mut characters);
         } else if character == '\'' {
             push_sql_token(&mut tokens, &mut token);
-            skip_single_quoted_literal(&mut characters);
+            tokens.push(format!(
+                "'{}'",
+                collect_quoted_identifier(&mut characters, '\'')
+            ));
         } else if character == '"' {
             push_sql_token(&mut tokens, &mut token);
             tokens.push(collect_quoted_identifier(&mut characters, '"'));
@@ -2020,6 +2040,9 @@ fn sql_tokens(sql: &str) -> Vec<String> {
         } else if character == '[' {
             push_sql_token(&mut tokens, &mut token);
             tokens.push(collect_quoted_identifier(&mut characters, ']'));
+        } else if character == '.' {
+            push_sql_token(&mut tokens, &mut token);
+            tokens.push(".".to_owned());
         } else if is_sql_token_character(character) {
             token.push(character);
         } else {
@@ -2054,18 +2077,6 @@ fn skip_block_comment(characters: &mut std::iter::Peekable<std::str::Chars<'_>>)
     }
 }
 
-fn skip_single_quoted_literal(characters: &mut std::iter::Peekable<std::str::Chars<'_>>) {
-    while let Some(character) = characters.next() {
-        if character == '\'' {
-            if characters.peek() == Some(&'\'') {
-                characters.next();
-            } else {
-                break;
-            }
-        }
-    }
-}
-
 fn collect_quoted_identifier(
     characters: &mut std::iter::Peekable<std::str::Chars<'_>>,
     terminator: char,
@@ -2074,7 +2085,7 @@ fn collect_quoted_identifier(
 
     while let Some(character) = characters.next() {
         if character == terminator {
-            if matches!(terminator, '"' | '`') && characters.peek() == Some(&terminator) {
+            if matches!(terminator, '\'' | '"' | '`') && characters.peek() == Some(&terminator) {
                 characters.next();
                 identifier.push(terminator);
             } else {
@@ -2089,7 +2100,7 @@ fn collect_quoted_identifier(
 }
 
 fn is_sql_token_character(character: char) -> bool {
-    character.is_ascii_alphanumeric() || matches!(character, '_' | '.')
+    character.is_ascii_alphanumeric() || character == '_'
 }
 
 fn canonical_sql_identifier(identifier: &str) -> String {
@@ -2668,6 +2679,31 @@ impl Error for LocalDatabaseError {
 mod tests {
     use super::*;
     use crate::matrix::Classification;
+
+    #[test]
+    fn persisted_corpus_table_guard_matches_the_current_schema() {
+        let connection = Connection::open_in_memory().expect("open in-memory SQLite");
+        connection
+            .execute_batch(INITIAL_SCHEMA_SQL)
+            .expect("create the current schema");
+        let schema_tables = connection
+            .prepare(
+                "SELECT name
+                 FROM sqlite_schema
+                 WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            )
+            .expect("prepare schema table query")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query current schema tables")
+            .collect::<Result<BTreeSet<_>, _>>()
+            .expect("collect current schema tables");
+        let protected_tables = PERSISTED_CORPUS_TABLES
+            .iter()
+            .map(|table_name| (*table_name).to_owned())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(protected_tables, schema_tables);
+    }
 
     #[test]
     fn legacy_rewrite_preserves_an_integrity_backed_classification() {
