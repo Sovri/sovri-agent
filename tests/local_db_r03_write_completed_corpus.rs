@@ -337,6 +337,70 @@ fn writing_a_completed_corpus_replaces_existing_run_sections() {
     );
 }
 
+#[test]
+fn writing_a_completed_corpus_rejects_an_empty_run_id() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+
+    let error = local_database
+        .write_completed_corpus(&consent_corpus())
+        .expect_err("a completed corpus without a run id is rejected");
+
+    assert_eq!(
+        error.to_string(),
+        "local database schema error: completed corpus run_id cannot be empty"
+    );
+    assert!(
+        local_database
+            .query_runs()
+            .expect("scan runs can be queried after the rejected write")
+            .is_empty(),
+        "the rejected corpus must not create a scan run"
+    );
+}
+
+#[test]
+fn a_failed_completed_corpus_write_rolls_back_partial_rows() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+    let connection = Connection::open(database.path()).expect("the database can be inspected");
+    connection
+        .execute("DROP TABLE control_results", [])
+        .expect("the result table can be removed to force a mid-write failure");
+    drop(connection);
+
+    let error = local_database
+        .write_completed_corpus(&consent_corpus().with_run_id(SHOPFRONT_RUN))
+        .expect_err("the incomplete schema rejects the completed corpus write");
+    assert!(
+        error.to_string().contains("control_results"),
+        "the write should fail on the removed result table: {error}"
+    );
+
+    let connection = Connection::open(database.path()).expect("the database can be inspected");
+    let run_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM scan_runs WHERE id = ?1",
+            [SHOPFRONT_RUN],
+            |row| row.get(0),
+        )
+        .expect("scan runs can be counted after the failed write");
+    let framework_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM frameworks WHERE id = ?1",
+            [FRAMEWORK],
+            |row| row.get(0),
+        )
+        .expect("frameworks can be counted after the failed write");
+    assert_eq!(run_count, 0, "the partial scan run must be rolled back");
+    assert_eq!(
+        framework_count, 0,
+        "the partial framework row must be rolled back"
+    );
+}
+
 fn completed_corpus_examples() -> Vec<CompletedCorpusCase> {
     vec![
         CompletedCorpusCase {

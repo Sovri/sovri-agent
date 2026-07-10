@@ -1130,14 +1130,19 @@ impl LocalDatabase {
     ///
     /// # Errors
     ///
-    /// Returns an error if `SQLite` cannot start, populate, or commit the write
-    /// transaction.
+    /// Returns an error if the corpus has no run id or `SQLite` cannot start,
+    /// populate, or commit the write transaction.
     pub fn write_completed_corpus(&mut self, corpus: &Corpus) -> Result<(), LocalDatabaseError> {
+        let run_id = corpus.run_id();
+        if run_id.trim().is_empty() {
+            return Err(LocalDatabaseError::Schema(
+                "completed corpus run_id cannot be empty".to_owned(),
+            ));
+        }
         let transaction = self
             .connection
             .transaction()
             .map_err(LocalDatabaseError::Sqlite)?;
-        let run_id = corpus.run_id();
         let scoped_results = corpus.scoped_results();
 
         write_run_catalog(&transaction, run_id, corpus)?;
