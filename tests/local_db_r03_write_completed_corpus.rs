@@ -505,6 +505,48 @@ fn concurrent_writes_to_different_runs_are_isolated() {
     }
 }
 
+#[test]
+fn concurrent_first_writes_apply_schema_migrations_once() {
+    let database = TempDatabase::new();
+    let barrier = Arc::new(Barrier::new(2));
+    let writers = [SHOPFRONT_RUN, SHOPFRONT_REPLAY_RUN]
+        .into_iter()
+        .map(|run_id| {
+            let database_path = database.path().to_owned();
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                let mut local_database = LocalDatabase::open(database_path)
+                    .expect("a concurrent first connection applies migrations");
+                local_database
+                    .write_completed_corpus(&consent_corpus().with_run_id(run_id))
+                    .expect("the first corpus write succeeds after migration");
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for writer in writers {
+        writer
+            .join()
+            .expect("the concurrent migration writer completes");
+    }
+
+    let local_database = LocalDatabase::open(database.path()).expect("the database reopens");
+    assert_eq!(
+        local_database
+            .query_runs()
+            .expect("both first runs can be queried"),
+        vec![SHOPFRONT_RUN.to_owned(), SHOPFRONT_REPLAY_RUN.to_owned()]
+    );
+    assert_eq!(
+        local_database
+            .applied_migrations()
+            .expect("the migration ledger can be queried"),
+        vec!["0001-initial".to_owned()],
+        "the consolidated fresh schema migration should be recorded exactly once"
+    );
+}
+
 fn write_corpora_concurrently(database_path: &Path, run_ids: &[&str]) {
     let barrier = Arc::new(Barrier::new(run_ids.len()));
     let writers = run_ids

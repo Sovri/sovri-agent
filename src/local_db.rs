@@ -2111,8 +2111,13 @@ fn apply_packaged_migration(
     }
 
     let transaction = connection
-        .transaction()
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(LocalDatabaseError::Sqlite)?;
+    if migration_is_applied(&transaction, migration.version)? {
+        return transaction
+            .commit()
+            .map_err(|source| migration_error(migration, source));
+    }
     transaction
         .execute_batch(MIGRATION_LEDGER_SQL)
         .map_err(|source| migration_error(migration, source))?;
