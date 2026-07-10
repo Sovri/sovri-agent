@@ -235,7 +235,10 @@ fn completed_corpus_with_evidence_writes_to_upgraded_legacy_run_id_schema() {
     create_version_1_database_with_legacy_run_id(database.path());
     let mut local_database =
         LocalDatabase::open(database.path()).expect("the legacy database upgrades");
-    assert_eq!(local_database.schema_version(), 2);
+    assert!(
+        local_database.schema_version() >= 2,
+        "the legacy database should include the run-evidence migration"
+    );
     let corpus = complete_gdpr_corpus();
 
     local_database
