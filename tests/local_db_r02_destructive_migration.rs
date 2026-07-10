@@ -89,6 +89,13 @@ const DROP_COLUMN_DESTRUCTIVE_PACKAGED_MIGRATIONS: &[PackagedMigration] =
         "ALTER TABLE evidence_metadata DROP COLUMN digest;",
     )];
 
+const DROP_COLUMN_WITHOUT_KEYWORD_DESTRUCTIVE_PACKAGED_MIGRATIONS: &[PackagedMigration] =
+    &[PackagedMigration::new(
+        2,
+        "0002-drop-evidence-digest-without-column-keyword",
+        "ALTER TABLE evidence_metadata DROP digest;",
+    )];
+
 const SQLITE_BLOCK_COMMENT_DESTRUCTIVE_PACKAGED_MIGRATIONS: &[PackagedMigration] =
     &[PackagedMigration::new(
         2,
@@ -419,6 +426,22 @@ fn dropping_a_column_from_a_persisted_table_is_rejected() {
         DROP_COLUMN_DESTRUCTIVE_PACKAGED_MIGRATIONS,
     );
     assert_rejected_as_destructive(&error_message, "0002-drop-evidence-digest");
+    assert_single_run_and_evidence_preserved(database.path());
+}
+
+#[test]
+fn dropping_a_column_without_the_column_keyword_is_rejected() {
+    let database = TempDatabase::new();
+    create_version_1_database_with_single_run_and_evidence(database.path());
+
+    let error_message = destructive_migration_rejection(
+        database.path(),
+        DROP_COLUMN_WITHOUT_KEYWORD_DESTRUCTIVE_PACKAGED_MIGRATIONS,
+    );
+    assert_rejected_as_destructive(
+        &error_message,
+        "0002-drop-evidence-digest-without-column-keyword",
+    );
     assert_single_run_and_evidence_preserved(database.path());
 }
 

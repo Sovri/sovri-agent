@@ -1986,7 +1986,7 @@ fn destructive_migration_operation(sql: &str) -> Option<String> {
                     .is_some_and(|token| token.eq_ignore_ascii_case("DROP"))
                     && tokens
                         .get(operation_index + 1)
-                        .is_some_and(|token| token.eq_ignore_ascii_case("COLUMN"));
+                        .is_some_and(|token| !token.eq_ignore_ascii_case("CONSTRAINT"));
                 if drops_column {
                     return Some(format!("ALTER TABLE {table_name} DROP COLUMN"));
                 }
