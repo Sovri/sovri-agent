@@ -492,6 +492,7 @@ pub struct LocalDatabaseGap {
 /// A persisted control result returned by local database queries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalDatabaseResult {
+    control_id: String,
     rule_id: String,
     run_id: String,
     status: String,
@@ -568,6 +569,12 @@ impl LocalDatabaseGap {
 }
 
 impl LocalDatabaseResult {
+    /// Returns the control id for the control result.
+    #[must_use]
+    pub fn control_id(&self) -> &str {
+        &self.control_id
+    }
+
     /// Returns the rule id for the control result.
     #[must_use]
     pub fn rule_id(&self) -> &str {
@@ -992,7 +999,7 @@ impl LocalDatabase {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT rule_id, run_id, status
+                "SELECT control_id, rule_id, run_id, status
                  FROM control_results
                  WHERE run_id = ?1 AND control_id = ?2 AND status = ?3
                  ORDER BY rule_id",
@@ -1001,9 +1008,46 @@ impl LocalDatabase {
         let rows = statement
             .query_map(params![run_id, control_id, status], |row| {
                 Ok(LocalDatabaseResult {
-                    rule_id: row.get(0)?,
-                    run_id: row.get(1)?,
-                    status: row.get(2)?,
+                    control_id: row.get(0)?,
+                    rule_id: row.get(1)?,
+                    run_id: row.get(2)?,
+                    status: row.get(3)?,
+                })
+            })
+            .map_err(LocalDatabaseError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(LocalDatabaseError::Sqlite)
+    }
+
+    /// Queries all persisted control results for a run in stable order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot prepare or run the result-list query.
+    pub fn query_results_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<LocalDatabaseResult>, LocalDatabaseError> {
+        if run_id.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT control_id, rule_id, run_id, status
+                 FROM control_results
+                 WHERE run_id = ?1
+                 ORDER BY control_id, rule_id, framework_id, id",
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let rows = statement
+            .query_map(params![run_id], |row| {
+                Ok(LocalDatabaseResult {
+                    control_id: row.get(0)?,
+                    rule_id: row.get(1)?,
+                    run_id: row.get(2)?,
+                    status: row.get(3)?,
                 })
             })
             .map_err(LocalDatabaseError::Sqlite)?;
@@ -1279,7 +1323,9 @@ impl LocalDatabase {
                      )
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                      ON CONFLICT(id) DO UPDATE SET
-                       run_id = COALESCE(NULLIF(control_results.run_id, ''), excluded.run_id),
+                       run_id = excluded.run_id,
+                       control_id = excluded.control_id,
+                       rule_id = excluded.rule_id,
                        status = excluded.status,
                        evidence_id = excluded.evidence_id,
                        framework_id = excluded.framework_id,
@@ -3145,7 +3191,7 @@ fn backfill_control_result_identity_fields(
         if let Some((run_id, _, control_id, rule_id)) = control_result_identity(&row_id) {
             transaction.execute(
                 "UPDATE control_results
-                 SET run_id = COALESCE(NULLIF(run_id, ''), ?1),
+                 SET run_id = ?1,
                      control_id = COALESCE(NULLIF(control_id, ''), ?2),
                      rule_id = COALESCE(NULLIF(rule_id, ''), ?3)
                  WHERE id = ?4",
