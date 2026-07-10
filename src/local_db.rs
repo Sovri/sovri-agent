@@ -804,9 +804,11 @@ impl LocalDatabase {
             &self.connection,
             "SELECT score_summaries.id
              FROM score_summaries
-             INNER JOIN run_framework_links
-               ON run_framework_links.framework_id = score_summaries.id
-             WHERE run_framework_links.run_id = ?1
+             INNER JOIN control_results
+               ON control_results.framework_id = score_summaries.id
+             WHERE control_results.run_id = ?1
+               AND control_results.framework_id <> ''
+             GROUP BY score_summaries.id
              ORDER BY score_summaries.id",
             run_id,
         )
@@ -2346,9 +2348,9 @@ fn apply_evidence_locators_migration(
 fn apply_result_query_filters_migration(
     transaction: &rusqlite::Transaction<'_>,
 ) -> rusqlite::Result<()> {
-    // Schema v1 stored only an opaque control-result id and exposed no writer
-    // that could populate structured result fields. Preserve any such row id
-    // with empty metadata; new corpus writes create fully populated rows.
+    // Recover fields encoded by later length-prefixed ids. Schema v1 exposed no
+    // writer, so truly opaque v1 ids are preserved with empty metadata instead
+    // of inventing values; new corpus writes create fully populated rows.
     for (column_name, definition) in [
         ("run_id", "TEXT NOT NULL DEFAULT ''"),
         ("control_id", "TEXT NOT NULL DEFAULT ''"),
@@ -2367,7 +2369,7 @@ fn apply_result_query_filters_migration(
         )?;
     }
 
-    backfill_control_result_run_ids(transaction)?;
+    backfill_control_result_identity_fields(transaction)?;
     transaction.execute(
         "UPDATE control_results
          SET status = COALESCE(
@@ -2668,7 +2670,7 @@ fn add_column_if_missing(
     Ok(())
 }
 
-fn backfill_control_result_run_ids(
+fn backfill_control_result_identity_fields(
     transaction: &rusqlite::Transaction<'_>,
 ) -> rusqlite::Result<()> {
     let mut statement = transaction.prepare("SELECT id FROM control_results")?;
@@ -2677,10 +2679,14 @@ fn backfill_control_result_run_ids(
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     for row_id in row_ids {
-        if let Some(run_id) = control_result_run_id(&row_id) {
+        if let Some((run_id, _, control_id, rule_id)) = control_result_identity(&row_id) {
             transaction.execute(
-                "UPDATE control_results SET run_id = ?1 WHERE id = ?2",
-                params![run_id, row_id],
+                "UPDATE control_results
+                 SET run_id = COALESCE(NULLIF(run_id, ''), ?1),
+                     control_id = COALESCE(NULLIF(control_id, ''), ?2),
+                     rule_id = COALESCE(NULLIF(rule_id, ''), ?3)
+                 WHERE id = ?4",
+                params![run_id, control_id, rule_id, row_id],
             )?;
         }
     }
@@ -2688,6 +2694,7 @@ fn backfill_control_result_run_ids(
     Ok(())
 }
 
+#[cfg(test)]
 fn control_result_run_id(row_id: &str) -> Option<&str> {
     control_result_identity(row_id).map(|(run_id, _, _, _)| run_id)
 }
@@ -3022,6 +3029,67 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(links, vec!["kept-evidence"]);
+    }
+
+    #[test]
+    fn result_filter_migration_backfills_a_parseable_result_identity() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory SQLite");
+        connection
+            .execute_batch(
+                "CREATE TABLE control_results (id TEXT PRIMARY KEY);
+                 CREATE TABLE compliance_gaps (
+                   id TEXT PRIMARY KEY,
+                   run_id TEXT NOT NULL,
+                   status TEXT NOT NULL,
+                   severity TEXT NOT NULL,
+                   control_id TEXT NOT NULL,
+                   rule_id TEXT NOT NULL
+                 );",
+            )
+            .expect("create the legacy result schema");
+        let row_id = control_result_row_id(
+            "legacy-run",
+            "gdpr-eprivacy",
+            "legacy-control",
+            "legacy-rule",
+        );
+        connection
+            .execute("INSERT INTO control_results(id) VALUES (?1)", [&row_id])
+            .expect("insert the legacy result row");
+        connection
+            .execute(
+                "INSERT INTO compliance_gaps(
+                   id, run_id, status, severity, control_id, rule_id
+                 ) VALUES ('legacy-gap', ?1, 'FAIL', 'major', ?2, ?3)",
+                ["legacy-run", "legacy-control", "legacy-rule"],
+            )
+            .expect("insert the matching legacy gap");
+
+        let transaction = connection
+            .transaction()
+            .expect("start migration transaction");
+        apply_result_query_filters_migration(&transaction)
+            .expect("apply the result-filter migration");
+        transaction.commit().expect("commit the migration");
+
+        let migrated: (String, String, String, String) = connection
+            .query_row(
+                "SELECT run_id, control_id, rule_id, status
+                 FROM control_results
+                 WHERE id = ?1",
+                [&row_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read the migrated result row");
+        assert_eq!(
+            migrated,
+            (
+                "legacy-run".to_owned(),
+                "legacy-control".to_owned(),
+                "legacy-rule".to_owned(),
+                "FAIL".to_owned(),
+            )
+        );
     }
 
     #[test]

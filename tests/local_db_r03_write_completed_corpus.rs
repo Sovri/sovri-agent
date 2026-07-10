@@ -451,6 +451,44 @@ fn concurrent_writes_to_the_same_run_are_serialized() {
     );
 }
 
+#[test]
+fn score_summaries_are_scoped_to_runs_with_results() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+    local_database
+        .write_completed_corpus(&consent_corpus().with_run_id(SHOPFRONT_RUN))
+        .expect("the run with results is written");
+    let catalog_only_corpus = Corpus::new(EXECUTED_AT)
+        .with_run_id(SHOPFRONT_REPLAY_RUN)
+        .with_framework(FRAMEWORK, FRAMEWORK_VERSION, FRAMEWORK_URL)
+        .with_control(
+            FRAMEWORK,
+            CONTROL,
+            CONTROL_TITLE,
+            "major",
+            8,
+            CONTROL_REFERENCE,
+        );
+    local_database
+        .write_completed_corpus(&catalog_only_corpus)
+        .expect("the catalog-only run is written");
+
+    assert_eq!(
+        local_database
+            .score_summary_records_for_run(SHOPFRONT_RUN)
+            .expect("the scored run summaries can be retrieved"),
+        vec![FRAMEWORK.to_owned()]
+    );
+    assert!(
+        local_database
+            .score_summary_records_for_run(SHOPFRONT_REPLAY_RUN)
+            .expect("the catalog-only run summaries can be retrieved")
+            .is_empty(),
+        "a catalog entry without results must not inherit another run's score"
+    );
+}
+
 fn completed_corpus_examples() -> Vec<CompletedCorpusCase> {
     vec![
         CompletedCorpusCase {
