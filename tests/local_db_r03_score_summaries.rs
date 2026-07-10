@@ -6,7 +6,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Barrier};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 use sovri_agent::local_db::{LocalDatabase, ScoreSummaryRecord};
@@ -175,6 +177,51 @@ fn legacy_score_summary_schema_is_repaired_before_querying() {
 }
 
 #[test]
+fn concurrent_score_summary_schema_repairs_are_serialized() {
+    let database = TempDatabase::new();
+    create_legacy_score_summary_database(database.path());
+    let local_database =
+        LocalDatabase::open(database.path()).expect("the legacy local database opens");
+    let first_migrator = Connection::open(database.path()).expect("a second connection opens");
+    first_migrator
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE score_summaries ADD COLUMN run_id TEXT;",
+        )
+        .expect("the first schema repair starts");
+
+    let barrier = Arc::new(Barrier::new(2));
+    let reader_barrier = Arc::clone(&barrier);
+    let reader = thread::spawn(move || {
+        reader_barrier.wait();
+        local_database.score_summaries_for_run(MIXED_RUN)
+    });
+
+    barrier.wait();
+    thread::sleep(Duration::from_millis(100));
+    first_migrator
+        .execute_batch("COMMIT")
+        .expect("the first schema repair commits");
+
+    let summaries = reader
+        .join()
+        .expect("the concurrent repair thread completes")
+        .expect("the concurrent score summary repair succeeds");
+    assert!(summaries.is_empty());
+    assert_eq!(
+        score_summary_columns(database.path()),
+        [
+            "id",
+            "run_id",
+            "framework_id",
+            "pass_count",
+            "fail_count",
+            "warning_count"
+        ]
+    );
+}
+
+#[test]
 fn rewriting_run_replaces_stale_score_summaries() {
     let database = TempDatabase::new();
     let mut local_database =
@@ -200,6 +247,42 @@ fn rewriting_run_replaces_stale_score_summaries() {
     assert_eq!(summaries[0].pass_count(), 1, "PASS");
     assert_eq!(summaries[0].fail_count(), 1, "FAIL");
     assert_eq!(summaries[0].warning_count(), 0, "WARNING");
+}
+
+#[test]
+fn colon_delimited_run_and_framework_ids_do_not_collide() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+
+    local_database
+        .write_completed_corpus(&single_framework_completed_corpus("a:b", "c"))
+        .expect("the first completed corpus is written");
+    local_database
+        .write_completed_corpus(&single_framework_completed_corpus("a", "b:c"))
+        .expect("the second completed corpus is written");
+
+    let first_run = local_database
+        .score_summaries_for_run("a:b")
+        .expect("the first run summary can be queried");
+    let second_run = local_database
+        .score_summaries_for_run("a")
+        .expect("the second run summary can be queried");
+
+    assert_eq!(
+        first_run
+            .iter()
+            .map(ScoreSummaryRecord::framework_id)
+            .collect::<Vec<_>>(),
+        ["c"]
+    );
+    assert_eq!(
+        second_run
+            .iter()
+            .map(ScoreSummaryRecord::framework_id)
+            .collect::<Vec<_>>(),
+        ["b:c"]
+    );
 }
 
 #[test]
@@ -283,6 +366,36 @@ fn mixed_completed_corpus() -> Corpus {
             "config/users.yaml:12",
             Classification::Sensitive,
             SENSITIVE_EVIDENCE_DIGEST,
+        )
+}
+
+fn single_framework_completed_corpus(run_id: &str, framework_id: &str) -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_run_id(run_id)
+        .with_framework(framework_id, GDPR_VERSION, GDPR_URL)
+        .with_control(
+            framework_id,
+            CONSENT_CONTROL,
+            CONSENT_TITLE,
+            "major",
+            8,
+            CONSENT_REFERENCE,
+        )
+        .with_control_result(
+            framework_id,
+            control_result(
+                CONSENT_CONTROL,
+                TRACKER_RULE,
+                "major",
+                Status::Pass,
+                PUBLIC_EVIDENCE_ID,
+            ),
+        )
+        .with_evidence_digest(
+            PUBLIC_EVIDENCE_ID,
+            "file",
+            "dist/main.js",
+            PUBLIC_EVIDENCE_DIGEST,
         )
 }
 
