@@ -1405,10 +1405,14 @@ fn score_summary_schema_is_current(connection: &Connection) -> Result<bool, Loca
             |row| row.get(0),
         )
         .map_err(LocalDatabaseError::Sqlite)?;
-    Ok(column_count == 5)
+    if column_count != 5 {
+        return Ok(false);
+    }
+    Ok(!legacy_score_summary_rows_exist(connection)?)
 }
 
 fn add_missing_score_summary_columns(connection: &Connection) -> Result<(), LocalDatabaseError> {
+    let mut schema_repaired = false;
     if !schema_column_exists(connection, "score_summaries", "run_id")? {
         connection
             .execute(
@@ -1417,6 +1421,7 @@ fn add_missing_score_summary_columns(connection: &Connection) -> Result<(), Loca
                 [],
             )
             .map_err(LocalDatabaseError::Sqlite)?;
+        schema_repaired = true;
     }
     if !schema_column_exists(connection, "score_summaries", "framework_id")? {
         connection
@@ -1426,6 +1431,7 @@ fn add_missing_score_summary_columns(connection: &Connection) -> Result<(), Loca
                 [],
             )
             .map_err(LocalDatabaseError::Sqlite)?;
+        schema_repaired = true;
     }
     if !schema_column_exists(connection, "score_summaries", "pass_count")? {
         connection
@@ -1435,6 +1441,7 @@ fn add_missing_score_summary_columns(connection: &Connection) -> Result<(), Loca
                 [],
             )
             .map_err(LocalDatabaseError::Sqlite)?;
+        schema_repaired = true;
     }
     if !schema_column_exists(connection, "score_summaries", "fail_count")? {
         connection
@@ -1444,6 +1451,7 @@ fn add_missing_score_summary_columns(connection: &Connection) -> Result<(), Loca
                 [],
             )
             .map_err(LocalDatabaseError::Sqlite)?;
+        schema_repaired = true;
     }
     if !schema_column_exists(connection, "score_summaries", "warning_count")? {
         connection
@@ -1451,6 +1459,104 @@ fn add_missing_score_summary_columns(connection: &Connection) -> Result<(), Loca
                 "ALTER TABLE score_summaries
                  ADD COLUMN warning_count INTEGER",
                 [],
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        schema_repaired = true;
+    }
+    if schema_repaired || legacy_score_summary_rows_exist(connection)? {
+        backfill_score_summaries_from_results(connection)?;
+    }
+    Ok(())
+}
+
+fn legacy_score_summary_rows_exist(connection: &Connection) -> Result<bool, LocalDatabaseError> {
+    let row_exists: i64 = connection
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1
+               FROM score_summaries
+               WHERE run_id IS NULL
+                  OR framework_id IS NULL
+                  OR pass_count IS NULL
+                  OR fail_count IS NULL
+                  OR warning_count IS NULL
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(row_exists == 1)
+}
+
+fn backfill_score_summaries_from_results(
+    connection: &Connection,
+) -> Result<(), LocalDatabaseError> {
+    for column_name in ["run_id", "framework_id", "status"] {
+        if !schema_column_exists(connection, "control_results", column_name)? {
+            return Ok(());
+        }
+    }
+
+    let summaries = {
+        let mut statement = connection
+            .prepare(
+                "SELECT run_id,
+                        framework_id,
+                        SUM(CASE WHEN status = 'PASS' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN status = 'FAIL' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN status = 'WARNING' THEN 1 ELSE 0 END)
+                 FROM control_results
+                 WHERE run_id <> '' AND framework_id <> ''
+                 GROUP BY run_id, framework_id
+                 ORDER BY run_id, framework_id",
+            )
+            .map_err(LocalDatabaseError::Sqlite)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u32>(2)?,
+                    row.get::<_, u32>(3)?,
+                    row.get::<_, u32>(4)?,
+                ))
+            })
+            .map_err(LocalDatabaseError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(LocalDatabaseError::Sqlite)?
+    };
+
+    connection
+        .execute(
+            "DELETE FROM score_summaries
+             WHERE run_id IS NULL
+                OR framework_id IS NULL
+                OR pass_count IS NULL
+                OR fail_count IS NULL
+                OR warning_count IS NULL",
+            [],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    for (run_id, framework_id, pass_count, fail_count, warning_count) in summaries {
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO score_summaries(
+                   id,
+                   run_id,
+                   framework_id,
+                   pass_count,
+                   fail_count,
+                   warning_count
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    score_summary_row_id(&run_id, &framework_id),
+                    run_id,
+                    framework_id,
+                    pass_count,
+                    fail_count,
+                    warning_count,
+                ],
             )
             .map_err(LocalDatabaseError::Sqlite)?;
     }

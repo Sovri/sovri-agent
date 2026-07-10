@@ -177,6 +177,79 @@ fn legacy_score_summary_schema_is_repaired_before_querying() {
 }
 
 #[test]
+fn populated_legacy_score_summaries_are_backfilled_from_results() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+    local_database
+        .write_completed_corpus(&mixed_completed_corpus())
+        .expect("the completed corpus is written");
+    drop(local_database);
+    replace_score_summary_table_with_legacy_rows(database.path());
+
+    let local_database =
+        LocalDatabase::open(database.path()).expect("the legacy local database reopens");
+    let summaries = local_database
+        .score_summaries_for_run(MIXED_RUN)
+        .expect("legacy score summaries are repaired before querying");
+
+    assert_eq!(
+        summaries
+            .iter()
+            .map(ScoreSummaryRecord::framework_id)
+            .collect::<Vec<_>>(),
+        [GDPR_FRAMEWORK, ISO_FRAMEWORK]
+    );
+    assert_eq!(
+        summaries
+            .iter()
+            .map(ScoreSummaryRecord::pass_count)
+            .sum::<u32>(),
+        1
+    );
+    assert_eq!(
+        summaries
+            .iter()
+            .map(ScoreSummaryRecord::fail_count)
+            .sum::<u32>(),
+        1
+    );
+    assert_eq!(
+        summaries
+            .iter()
+            .map(ScoreSummaryRecord::warning_count)
+            .sum::<u32>(),
+        1
+    );
+}
+
+#[test]
+fn previously_repaired_legacy_score_summaries_are_backfilled_from_results() {
+    let database = TempDatabase::new();
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the local database opens");
+    local_database
+        .write_completed_corpus(&mixed_completed_corpus())
+        .expect("the completed corpus is written");
+    drop(local_database);
+    replace_score_summary_table_with_unbackfilled_rows(database.path());
+
+    let local_database =
+        LocalDatabase::open(database.path()).expect("the repaired legacy database reopens");
+    let summaries = local_database
+        .score_summaries_for_run(MIXED_RUN)
+        .expect("previously repaired score summaries are backfilled before querying");
+
+    assert_eq!(
+        summaries
+            .iter()
+            .map(ScoreSummaryRecord::framework_id)
+            .collect::<Vec<_>>(),
+        [GDPR_FRAMEWORK, ISO_FRAMEWORK]
+    );
+}
+
+#[test]
 fn concurrent_score_summary_schema_repairs_are_serialized() {
     let database = TempDatabase::new();
     create_legacy_score_summary_database(database.path());
@@ -612,6 +685,43 @@ fn replace_score_summary_table_with_view(path: &Path) {
             ",
         )
         .expect("the score_summaries table is replaced by an invalid view");
+}
+
+fn replace_score_summary_table_with_legacy_rows(path: &Path) {
+    let connection = Connection::open(path).expect("the SQLite database opens");
+    connection
+        .execute_batch(
+            "
+            DROP TABLE score_summaries;
+            CREATE TABLE score_summaries (id TEXT PRIMARY KEY);
+            INSERT INTO score_summaries(id) VALUES
+              ('gdpr-eprivacy'),
+              ('iso-27001');
+            ",
+        )
+        .expect("the score_summaries table is replaced by populated legacy rows");
+}
+
+fn replace_score_summary_table_with_unbackfilled_rows(path: &Path) {
+    let connection = Connection::open(path).expect("the SQLite database opens");
+    connection
+        .execute_batch(
+            "
+            DROP TABLE score_summaries;
+            CREATE TABLE score_summaries (
+              id TEXT PRIMARY KEY,
+              run_id TEXT,
+              framework_id TEXT,
+              pass_count INTEGER,
+              fail_count INTEGER,
+              warning_count INTEGER
+            );
+            INSERT INTO score_summaries(id) VALUES
+              ('gdpr-eprivacy'),
+              ('iso-27001');
+            ",
+        )
+        .expect("the score_summaries table is replaced by unbackfilled repaired rows");
 }
 
 fn control_result(
