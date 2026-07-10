@@ -10,8 +10,8 @@
 //! it links no third-party runtime dependency — the XML is emitted by hand.
 
 use sovri_sdk::{
-    Catalog, ControlResult, ControlScore, EnvironmentScore, FrameworkScore, Mapping, Status,
-    StatusCounts,
+    Catalog, Classification as EvidenceClassification, ControlResult, ControlScore,
+    EnvironmentScore, Evidence as StoredEvidence, FrameworkScore, Mapping, Status, StatusCounts,
 };
 
 /// XML declaration that opens the workbook document.
@@ -167,6 +167,15 @@ struct Control {
     reference: String,
 }
 
+pub(crate) struct ControlRecord<'a> {
+    pub(crate) framework_id: &'a str,
+    pub(crate) id: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) severity: &'a str,
+    pub(crate) weight: u32,
+    pub(crate) reference: &'a str,
+}
+
 /// The confidentiality classification a persisted evidence record carries.
 ///
 /// The evidence store classified each record when it collected it and dropped the
@@ -174,7 +183,7 @@ struct Control {
 /// record, so that value never reaches the export. The classification decides the
 /// record's redaction status on the Evidence sheet: a classified record renders
 /// `redacted`, an unclassified record `none`.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Classification {
     /// A secret value — a key, token, or credential — the store dropped, so the
     /// record's Evidence row is reduced to metadata and marked `redacted`.
@@ -186,6 +195,25 @@ pub enum Classification {
     /// An unclassified value the store kept in full, so the record's Evidence row
     /// is not redacted and its redaction status renders `none`.
     Unclassified,
+}
+
+impl Classification {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Classification::Secret => "Secret",
+            Classification::Sensitive => "Sensitive",
+            Classification::Unclassified => "Unclassified",
+        }
+    }
+
+    pub(crate) fn from_persisted(value: &str) -> Option<Self> {
+        match value {
+            "Secret" => Some(Classification::Secret),
+            "Sensitive" => Some(Classification::Sensitive),
+            "Unclassified" => Some(Classification::Unclassified),
+            _ => None,
+        }
+    }
 }
 
 /// A collected evidence record the corpus holds, carrying the stable id it is
@@ -222,6 +250,8 @@ pub struct EvidenceRecord<'a> {
     pub locator: &'a str,
     /// Integrity metadata read from the persisted store.
     pub integrity: &'a str,
+    /// Confidentiality classification recorded by the persisted store.
+    pub classification: &'a str,
     /// Redaction status derived from the record classification.
     pub redaction_status: &'a str,
 }
@@ -328,6 +358,20 @@ impl Corpus {
             .collect()
     }
 
+    pub(crate) fn control_records(&self) -> Vec<ControlRecord<'_>> {
+        self.controls
+            .iter()
+            .map(|control| ControlRecord {
+                framework_id: &control.framework_id,
+                id: &control.id,
+                title: &control.title,
+                severity: &control.severity,
+                weight: control.weight,
+                reference: &control.reference,
+            })
+            .collect()
+    }
+
     /// The stable ids of the evidence records the corpus holds, in the order they
     /// were collected — the evidence the signed JSON export lists, one record per
     /// id.
@@ -350,6 +394,7 @@ impl Corpus {
                 kind: record.kind.as_str(),
                 locator: record.location.as_str(),
                 integrity: record.integrity.as_str(),
+                classification: record.classification.as_str(),
                 redaction_status: redaction_status(record.classification),
             })
             .collect()
@@ -436,6 +481,14 @@ impl Corpus {
         self
     }
 
+    pub(crate) fn with_unscoped_control_result(mut self, result: ControlResult) -> Self {
+        self.results.push(ScopedResult {
+            framework_id: None,
+            result,
+        });
+        self
+    }
+
     /// Adds a collected evidence record the corpus holds, rendered as one row on
     /// the Evidence sheet.
     ///
@@ -486,6 +539,29 @@ impl Corpus {
             location: location.into(),
             integrity: integrity.into(),
             classification: Classification::Unclassified,
+        });
+        self
+    }
+
+    /// Adds the metadata projection of an SDK evidence record.
+    ///
+    /// Classified SDK records have already dropped their raw excerpt. This
+    /// projection copies only their stable id, kind, locator, classification,
+    /// and integrity digest into the corpus, so raw evidence cannot reach a
+    /// database or export through this path.
+    #[must_use]
+    pub fn with_stored_evidence(mut self, evidence: &StoredEvidence) -> Self {
+        let classification = match evidence.classification() {
+            Some(EvidenceClassification::Secret) => Classification::Secret,
+            Some(EvidenceClassification::Sensitive) => Classification::Sensitive,
+            Some(EvidenceClassification::Public) | None => Classification::Unclassified,
+        };
+        self.evidence.push(Evidence {
+            id: evidence.id().to_owned(),
+            kind: evidence.kind().as_str().to_owned(),
+            location: evidence.locator().to_owned(),
+            integrity: evidence.content_hash().to_owned(),
+            classification,
         });
         self
     }
@@ -551,6 +627,11 @@ impl Corpus {
 #[must_use]
 pub fn export(corpus: &Corpus) -> String {
     let created = xml_escape(&corpus.executed_at);
+    let run_property = if corpus.run_id.is_empty() {
+        String::new()
+    } else {
+        format!("<Title>{}</Title>\n", xml_escape(&corpus.run_id))
+    };
     let mut worksheets = String::new();
     for name in WORKSHEET_NAMES {
         worksheets.push_str("<Worksheet ss:Name=\"");
@@ -584,6 +665,7 @@ pub fn export(corpus: &Corpus) -> String {
          <Workbook xmlns=\"{SPREADSHEET_NAMESPACE}\" xmlns:ss=\"{SPREADSHEET_NAMESPACE}\">\n\
          <DocumentProperties xmlns=\"{OFFICE_NAMESPACE}\">\n\
          <Created>{created}</Created>\n\
+         {run_property}\
          </DocumentProperties>\n\
          {worksheets}\
          </Workbook>\n"

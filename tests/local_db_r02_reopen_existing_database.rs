@@ -143,6 +143,50 @@ fn create_database_with_schema_version(
         .expect("legacy version 1 database can be seeded");
 }
 
+fn create_version_3_database_missing_gap_rule_id(path: &Path) {
+    fs::create_dir_all(path.parent().expect("database path has a parent"))
+        .expect("legacy database parent can be created");
+    let connection = Connection::open(path).expect("legacy database can be created");
+    connection
+        .execute_batch(
+            "
+            CREATE TABLE scan_runs (id TEXT PRIMARY KEY);
+            CREATE TABLE frameworks (
+              id TEXT PRIMARY KEY,
+              version TEXT NOT NULL
+            );
+            CREATE TABLE control_results (
+              id TEXT PRIMARY KEY,
+              control_id TEXT NOT NULL,
+              evidence_id TEXT NOT NULL
+            );
+            CREATE TABLE compliance_gaps (
+              id TEXT PRIMARY KEY,
+              run_id TEXT NOT NULL,
+              status TEXT NOT NULL,
+              severity TEXT NOT NULL,
+              control_id TEXT NOT NULL
+            );
+            CREATE TABLE evidence_metadata (
+              id TEXT PRIMARY KEY,
+              digest TEXT NOT NULL
+            );
+            CREATE TABLE schema_migrations (
+              version INTEGER PRIMARY KEY,
+              name TEXT NOT NULL,
+              applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO schema_migrations(version, name)
+            VALUES
+              (1, '0001-initial'),
+              (2, '0002-run-evidence-links'),
+              (3, '0003-gap-query-filters');
+            PRAGMA user_version = 3;
+            ",
+        )
+        .expect("legacy version 3 database can be seeded");
+}
+
 fn run_exists(path: &Path, run_id: &str) -> bool {
     let connection = Connection::open(path).expect("the reopened database can be inspected");
     let count: i64 = connection
@@ -271,6 +315,22 @@ fn reopening_a_version_1_database_missing_framework_version_is_rejected() {
     assert!(
         !error_message.contains("evidence_metadata.digest"),
         "schema validation should not name columns that are present, got {error_message:?}"
+    );
+}
+
+#[test]
+fn reopening_a_version_3_database_missing_gap_query_columns_is_rejected_after_v4_migration() {
+    let database = TempDatabase::new();
+    create_version_3_database_missing_gap_rule_id(database.path());
+
+    let Err(error) = LocalDatabase::open(database.path()) else {
+        panic!("a version 3 database missing a gap query column should not open as current");
+    };
+
+    let error_message = error.to_string();
+    assert!(
+        error_message.contains("compliance_gaps.rule_id"),
+        "schema validation should carry forward v3 required columns, got {error_message:?}"
     );
 }
 
