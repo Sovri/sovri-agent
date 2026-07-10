@@ -8,6 +8,7 @@ use std::io;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sovri_agent::local_db::LocalDatabase;
@@ -15,6 +16,7 @@ use sovri_agent::matrix::Corpus;
 
 const RUN_ID: &str = "shopfront-2026-06-24";
 const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
+static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
 
 struct TempFixture {
     root: PathBuf,
@@ -45,7 +47,29 @@ impl Drop for TempFixture {
         let _ = fs::remove_dir_all(&self.root);
         std::env::remove_var("SOVRI_ENDPOINT");
         std::env::remove_var("SOVRI_TOKEN");
+        std::env::remove_var("HTTPS_PROXY");
     }
+}
+
+fn consent_corpus() -> Corpus {
+    Corpus::new(EXECUTED_AT)
+        .with_run_id(RUN_ID)
+        .with_framework("gdpr-eprivacy", "2016-679", "")
+        .with_control(
+            "gdpr-eprivacy",
+            "consent.tracker.prior-consent",
+            "",
+            "major",
+            8,
+            "",
+        )
+        .with_evidence("ev-0001", "dist/main.js")
+}
+
+fn clear_cloud_environment() {
+    std::env::remove_var("SOVRI_ENDPOINT");
+    std::env::remove_var("SOVRI_TOKEN");
+    std::env::remove_var("HTTPS_PROXY");
 }
 
 fn assert_no_connection(listener: &TcpListener) {
@@ -61,6 +85,10 @@ fn assert_no_connection(listener: &TcpListener) {
 
 #[test]
 fn open_write_and_query_succeed_with_network_denied() {
+    let _environment = ENVIRONMENT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    clear_cloud_environment();
     // Given no network connection is available.
     let listener = TcpListener::bind("127.0.0.1:0").expect("the network sentinel binds");
     let endpoint = format!(
@@ -74,18 +102,7 @@ fn open_write_and_query_succeed_with_network_denied() {
     // And an open local database path "./tmp/sovri-mat-98.db".
     let fixture = TempFixture::new();
     // And the "shopfront-2026-06-24" consent corpus is available locally.
-    let corpus = Corpus::new(EXECUTED_AT)
-        .with_run_id(RUN_ID)
-        .with_framework("gdpr-eprivacy", "2016-679", "")
-        .with_control(
-            "gdpr-eprivacy",
-            "consent.tracker.prior-consent",
-            "",
-            "major",
-            8,
-            "",
-        )
-        .with_evidence("ev-0001", "dist/main.js");
+    let corpus = consent_corpus();
 
     // When the operator opens the local database at "./tmp/sovri-mat-98.db".
     let mut database =
@@ -108,4 +125,49 @@ fn open_write_and_query_succeed_with_network_denied() {
         fixture.database_path().exists() && std::env::var_os("SOVRI_TOKEN").is_none(),
         "local operations complete without a cloud token"
     );
+}
+
+#[test]
+fn cloud_environment_variables_do_not_affect_local_database_operations() {
+    let _environment = ENVIRONMENT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    clear_cloud_environment();
+    let fixture = TempFixture::new();
+    let expected = {
+        let mut database =
+            LocalDatabase::open(fixture.database_path()).expect("the local database opens");
+        database
+            .write_completed_corpus(&consent_corpus())
+            .expect("the local corpus write succeeds");
+        database
+            .query_run(RUN_ID)
+            .expect("the baseline local query succeeds")
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").expect("the network sentinel binds");
+    let proxy = format!(
+        "http://{}",
+        listener
+            .local_addr()
+            .expect("the network sentinel exposes its address")
+    );
+
+    // Given "SOVRI_ENDPOINT" is set to "https://cloud.sovri.example".
+    std::env::set_var("SOVRI_ENDPOINT", "https://cloud.sovri.example");
+    // And "SOVRI_TOKEN" is set to "fake-token-not-used".
+    std::env::set_var("SOVRI_TOKEN", "fake-token-not-used");
+    std::env::set_var("HTTPS_PROXY", proxy);
+
+    // When the operator opens the local database at "./tmp/sovri-mat-98.db".
+    let database =
+        LocalDatabase::open(fixture.database_path()).expect("the configured local database opens");
+    // And the operator queries run "shopfront-2026-06-24".
+    let actual = database
+        .query_run(RUN_ID)
+        .expect("the configured local query succeeds");
+
+    // Then the query result is identical to the result with those environment variables unset.
+    assert_eq!(actual, expected);
+    // And no request is sent to "https://cloud.sovri.example".
+    assert_no_connection(&listener);
 }
