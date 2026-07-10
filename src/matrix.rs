@@ -167,6 +167,15 @@ struct Control {
     reference: String,
 }
 
+pub(crate) struct ControlRecord<'a> {
+    pub(crate) framework_id: &'a str,
+    pub(crate) id: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) severity: &'a str,
+    pub(crate) weight: u32,
+    pub(crate) reference: &'a str,
+}
+
 /// The confidentiality classification a persisted evidence record carries.
 ///
 /// The evidence store classified each record when it collected it and dropped the
@@ -345,6 +354,20 @@ impl Corpus {
                     control.severity.as_str(),
                     control.reference.as_str(),
                 )
+            })
+            .collect()
+    }
+
+    pub(crate) fn control_records(&self) -> Vec<ControlRecord<'_>> {
+        self.controls
+            .iter()
+            .map(|control| ControlRecord {
+                framework_id: &control.framework_id,
+                id: &control.id,
+                title: &control.title,
+                severity: &control.severity,
+                weight: control.weight,
+                reference: &control.reference,
             })
             .collect()
     }

@@ -101,17 +101,27 @@ const INITIAL_SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS run_evidence_links (
       run_id TEXT NOT NULL,
       evidence_id TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT '',
+      digest TEXT NOT NULL DEFAULT '',
+      locator TEXT NOT NULL DEFAULT '',
+      classification TEXT NOT NULL DEFAULT 'Unclassified',
       PRIMARY KEY (run_id, evidence_id)
     );
     CREATE TABLE IF NOT EXISTS run_framework_links (
       run_id TEXT NOT NULL,
       framework_id TEXT NOT NULL,
+      version TEXT NOT NULL DEFAULT '',
+      source_url TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (run_id, framework_id)
     );
     CREATE TABLE IF NOT EXISTS run_control_links (
       run_id TEXT NOT NULL,
       framework_id TEXT NOT NULL,
       control_id TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      severity TEXT NOT NULL DEFAULT '',
+      weight INTEGER NOT NULL DEFAULT 0,
+      reference TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (run_id, framework_id, control_id)
     );
     CREATE TABLE IF NOT EXISTS score_summaries (id TEXT PRIMARY KEY);
@@ -173,6 +183,8 @@ const EVIDENCE_CLASSIFICATIONS_SCHEMA_SQL: &str = "
 
 const EXPORT_RECONSTRUCTION_SCHEMA_VERSION: u32 = 8;
 
+// Version 8 uses conditional ALTERs and data backfills in
+// `apply_export_reconstruction_migration`, matching migrations 3 through 5.
 const EXPORT_RECONSTRUCTION_SCHEMA_SQL: &str = "";
 
 const MIGRATION_LEDGER_SQL: &str = "
@@ -288,11 +300,21 @@ const SCHEMA_VERSION_8_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
     RequiredSchemaColumn::new("compliance_gaps", "rule_id"),
     RequiredSchemaColumn::new("run_evidence_links", "run_id"),
     RequiredSchemaColumn::new("run_evidence_links", "evidence_id"),
+    RequiredSchemaColumn::new("run_evidence_links", "kind"),
+    RequiredSchemaColumn::new("run_evidence_links", "digest"),
+    RequiredSchemaColumn::new("run_evidence_links", "locator"),
+    RequiredSchemaColumn::new("run_evidence_links", "classification"),
     RequiredSchemaColumn::new("run_framework_links", "run_id"),
     RequiredSchemaColumn::new("run_framework_links", "framework_id"),
+    RequiredSchemaColumn::new("run_framework_links", "version"),
+    RequiredSchemaColumn::new("run_framework_links", "source_url"),
     RequiredSchemaColumn::new("run_control_links", "run_id"),
     RequiredSchemaColumn::new("run_control_links", "framework_id"),
     RequiredSchemaColumn::new("run_control_links", "control_id"),
+    RequiredSchemaColumn::new("run_control_links", "title"),
+    RequiredSchemaColumn::new("run_control_links", "severity"),
+    RequiredSchemaColumn::new("run_control_links", "weight"),
+    RequiredSchemaColumn::new("run_control_links", "reference"),
 ];
 
 const NO_REQUIRED_SCHEMA_COLUMNS: &[RequiredSchemaColumn] = &[];
@@ -415,6 +437,15 @@ struct PersistedExportResult {
     reason: Option<String>,
     executed_at: String,
     execution_metadata: String,
+}
+
+struct PersistedExportControl {
+    framework_id: String,
+    control_id: String,
+    title: String,
+    severity: String,
+    weight: u32,
+    reference: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -798,20 +829,22 @@ impl LocalDatabase {
 
         let frameworks = export_framework_rows(&self.connection, run_id)?;
         let mut corpus = Corpus::new(&executed_at).with_run_id(run_id);
-        for (id, version) in frameworks {
-            corpus = corpus.with_framework(id, version, "");
+        for (id, version, source_url) in frameworks {
+            corpus = corpus.with_framework(id, version, source_url);
         }
 
         let results = export_result_rows(&self.connection, run_id)?;
 
         let controls = export_control_rows(&self.connection, run_id)?;
-        for (framework_id, control_id) in controls {
-            let result = results.iter().find(|result| {
-                result.framework_id == framework_id && result.control_id == control_id
-            });
-            let severity = result.map_or("", |result| result.severity.as_str());
-            let weight = result.map_or(0, |result| result.weight);
-            corpus = corpus.with_control(framework_id, control_id, "", severity, weight, "");
+        for control in controls {
+            corpus = corpus.with_control(
+                control.framework_id,
+                control.control_id,
+                control.title,
+                control.severity,
+                control.weight,
+                control.reference,
+            );
         }
 
         for persisted in results {
@@ -824,23 +857,27 @@ impl LocalDatabase {
         }
 
         let evidence = export_evidence_rows(&self.connection, run_id)?;
-        for (id, digest, locator, classification) in evidence {
+        for (id, kind, digest, locator, classification) in evidence {
             corpus = match Classification::from_persisted(&classification)
                 .unwrap_or(Classification::Secret)
             {
                 Classification::Unclassified => {
-                    corpus.with_evidence_digest(id, "", locator, digest)
+                    corpus.with_evidence_digest(id, kind, locator, digest)
                 }
                 Classification::Sensitive => corpus.with_classified_evidence(
                     id,
-                    "",
+                    kind,
                     locator,
                     Classification::Sensitive,
                     digest,
                 ),
-                Classification::Secret => {
-                    corpus.with_classified_evidence(id, "", locator, Classification::Secret, digest)
-                }
+                Classification::Secret => corpus.with_classified_evidence(
+                    id,
+                    kind,
+                    locator,
+                    Classification::Secret,
+                    digest,
+                ),
             };
         }
         Ok(corpus)
@@ -1038,7 +1075,7 @@ fn write_run_catalog(
             .map_err(LocalDatabaseError::Sqlite)?;
     }
 
-    for (framework_id, version, _source_url) in corpus.frameworks() {
+    for (framework_id, version, source_url) in corpus.frameworks() {
         transaction
             .execute(
                 "INSERT INTO frameworks(id, version) VALUES (?1, ?2)
@@ -1048,28 +1085,50 @@ fn write_run_catalog(
             .map_err(LocalDatabaseError::Sqlite)?;
         transaction
             .execute(
-                "INSERT INTO run_framework_links(run_id, framework_id)
-                 VALUES (?1, ?2)
-                 ON CONFLICT(run_id, framework_id) DO NOTHING",
-                params![run_id, framework_id],
+                "INSERT INTO run_framework_links(
+                   run_id, framework_id, version, source_url
+                 ) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(run_id, framework_id) DO UPDATE SET
+                   version = excluded.version,
+                   source_url = excluded.source_url",
+                params![run_id, framework_id, version, source_url],
             )
             .map_err(LocalDatabaseError::Sqlite)?;
     }
 
-    for (framework_id, control_id, _, _) in corpus.controls() {
+    for control in corpus.control_records() {
         transaction
             .execute(
                 "INSERT INTO controls(id) VALUES (?1)
                  ON CONFLICT(id) DO NOTHING",
-                params![control_id],
+                params![control.id],
             )
             .map_err(LocalDatabaseError::Sqlite)?;
         transaction
             .execute(
-                "INSERT INTO run_control_links(run_id, framework_id, control_id)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(run_id, framework_id, control_id) DO NOTHING",
-                params![run_id, framework_id, control_id],
+                "INSERT INTO run_control_links(
+                   run_id,
+                   framework_id,
+                   control_id,
+                   title,
+                   severity,
+                   weight,
+                   reference
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(run_id, framework_id, control_id) DO UPDATE SET
+                   title = excluded.title,
+                   severity = excluded.severity,
+                   weight = excluded.weight,
+                   reference = excluded.reference",
+                params![
+                    run_id,
+                    control.framework_id,
+                    control.id,
+                    control.title,
+                    control.severity,
+                    control.weight,
+                    control.reference
+                ],
             )
             .map_err(LocalDatabaseError::Sqlite)?;
     }
@@ -1079,20 +1138,22 @@ fn write_run_catalog(
 fn export_framework_rows(
     connection: &Connection,
     run_id: &str,
-) -> Result<Vec<(String, String)>, LocalDatabaseError> {
+) -> Result<Vec<(String, String, String)>, LocalDatabaseError> {
     let mut statement = connection
         .prepare(
-            "SELECT frameworks.id, frameworks.version
-             FROM frameworks
-             INNER JOIN run_framework_links
-               ON run_framework_links.framework_id = frameworks.id
-             WHERE run_framework_links.run_id = ?1
-             ORDER BY frameworks.id",
+            "SELECT framework_id, version, source_url
+             FROM run_framework_links
+             WHERE run_id = ?1
+             ORDER BY framework_id",
         )
         .map_err(LocalDatabaseError::Sqlite)?;
     let rows = statement
         .query_map(params![run_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })
         .map_err(LocalDatabaseError::Sqlite)?;
     rows.collect::<Result<Vec<_>, _>>()
@@ -1143,27 +1204,37 @@ fn export_result_rows(
 fn export_control_rows(
     connection: &Connection,
     run_id: &str,
-) -> Result<Vec<(String, String)>, LocalDatabaseError> {
+) -> Result<Vec<PersistedExportControl>, LocalDatabaseError> {
     let mut statement = connection
         .prepare(
-            "SELECT run_control_links.framework_id, controls.id
-             FROM controls
-             INNER JOIN run_control_links
-               ON run_control_links.control_id = controls.id
-             WHERE run_control_links.run_id = ?1
-             ORDER BY run_control_links.framework_id, controls.id",
+            "SELECT framework_id,
+                    control_id,
+                    title,
+                    severity,
+                    weight,
+                    reference
+             FROM run_control_links
+             WHERE run_id = ?1
+             ORDER BY framework_id, control_id",
         )
         .map_err(LocalDatabaseError::Sqlite)?;
     let rows = statement
         .query_map(params![run_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok(PersistedExportControl {
+                framework_id: row.get(0)?,
+                control_id: row.get(1)?,
+                title: row.get(2)?,
+                severity: row.get(3)?,
+                weight: row.get(4)?,
+                reference: row.get(5)?,
+            })
         })
         .map_err(LocalDatabaseError::Sqlite)?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(LocalDatabaseError::Sqlite)
 }
 
-type ExportEvidenceRow = (String, String, String, String);
+type ExportEvidenceRow = (String, String, String, String, String);
 
 fn export_evidence_rows(
     connection: &Connection,
@@ -1171,15 +1242,10 @@ fn export_evidence_rows(
 ) -> Result<Vec<ExportEvidenceRow>, LocalDatabaseError> {
     let mut statement = connection
         .prepare(
-            "SELECT evidence_metadata.id,
-                    evidence_metadata.digest,
-                    evidence_metadata.locator,
-                    evidence_metadata.classification
-             FROM evidence_metadata
-             INNER JOIN run_evidence_links
-               ON run_evidence_links.evidence_id = evidence_metadata.id
-             WHERE run_evidence_links.run_id = ?1
-             ORDER BY evidence_metadata.id",
+            "SELECT evidence_id, kind, digest, locator, classification
+             FROM run_evidence_links
+             WHERE run_id = ?1
+             ORDER BY evidence_id",
         )
         .map_err(LocalDatabaseError::Sqlite)?;
     let rows = statement
@@ -1189,6 +1255,7 @@ fn export_evidence_rows(
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })
         .map_err(LocalDatabaseError::Sqlite)?;
@@ -1206,11 +1273,12 @@ fn reconstruct_control_result(
     } else {
         &persisted.executed_at
     };
-    let executed_at = if executed_at.is_empty() {
-        "1970-01-01T00:00:00Z"
-    } else {
-        executed_at
-    };
+    if executed_at.is_empty() {
+        return Err(LocalDatabaseError::Schema(format!(
+            "persisted result {}:{} execution timestamp is missing",
+            persisted.control_id, persisted.rule_id
+        )));
+    }
     let evidence_refs = if persisted.evidence_id.is_empty() {
         Vec::new()
     } else {
@@ -1287,10 +1355,31 @@ fn write_evidence_rows(
             ],
         )?;
         transaction.execute(
-            "INSERT INTO run_evidence_links(run_id, evidence_id)
-             VALUES (?1, ?2)
-             ON CONFLICT(run_id, evidence_id) DO NOTHING",
-            params![run_id, evidence.id],
+            "INSERT INTO run_evidence_links(
+               run_id, evidence_id, kind, digest, locator, classification
+             )
+             SELECT
+               ?1,
+               ?2,
+               ?3,
+               CASE WHEN ?4 = '' THEN digest ELSE ?4 END,
+               ?5,
+               CASE WHEN ?4 = '' THEN classification ELSE ?6 END
+             FROM evidence_metadata
+             WHERE id = ?2
+             ON CONFLICT(run_id, evidence_id) DO UPDATE SET
+               kind = excluded.kind,
+               digest = excluded.digest,
+               locator = excluded.locator,
+               classification = excluded.classification",
+            params![
+                run_id,
+                evidence.id,
+                evidence.kind,
+                evidence.integrity,
+                evidence.locator,
+                evidence.classification
+            ],
         )?;
     }
     Ok(())
@@ -1806,7 +1895,8 @@ fn apply_export_reconstruction_migration(
 ) -> rusqlite::Result<()> {
     ensure_export_reconstruction_schema(transaction)?;
     backfill_export_catalog_links(transaction)?;
-    backfill_export_result_metadata(transaction)
+    backfill_export_result_metadata(transaction)?;
+    backfill_run_snapshot_metadata(transaction)
 }
 
 fn ensure_export_reconstruction_schema(
@@ -1832,15 +1922,51 @@ fn ensure_export_reconstruction_schema(
         "CREATE TABLE IF NOT EXISTS run_framework_links (
            run_id TEXT NOT NULL,
            framework_id TEXT NOT NULL,
+           version TEXT NOT NULL DEFAULT '',
+           source_url TEXT NOT NULL DEFAULT '',
            PRIMARY KEY (run_id, framework_id)
          );
          CREATE TABLE IF NOT EXISTS run_control_links (
            run_id TEXT NOT NULL,
            framework_id TEXT NOT NULL,
            control_id TEXT NOT NULL,
+           title TEXT NOT NULL DEFAULT '',
+           severity TEXT NOT NULL DEFAULT '',
+           weight INTEGER NOT NULL DEFAULT 0,
+           reference TEXT NOT NULL DEFAULT '',
            PRIMARY KEY (run_id, framework_id, control_id)
          );",
     )?;
+    for (column_name, definition) in [
+        ("kind", "TEXT NOT NULL DEFAULT ''"),
+        ("digest", "TEXT NOT NULL DEFAULT ''"),
+        ("locator", "TEXT NOT NULL DEFAULT ''"),
+        ("classification", "TEXT NOT NULL DEFAULT 'Unclassified'"),
+    ] {
+        add_column_if_missing(transaction, "run_evidence_links", column_name, definition)?;
+    }
+    for (table_name, columns) in [
+        (
+            "run_framework_links",
+            &[
+                ("version", "TEXT NOT NULL DEFAULT ''"),
+                ("source_url", "TEXT NOT NULL DEFAULT ''"),
+            ][..],
+        ),
+        (
+            "run_control_links",
+            &[
+                ("title", "TEXT NOT NULL DEFAULT ''"),
+                ("severity", "TEXT NOT NULL DEFAULT ''"),
+                ("weight", "INTEGER NOT NULL DEFAULT 0"),
+                ("reference", "TEXT NOT NULL DEFAULT ''"),
+            ][..],
+        ),
+    ] {
+        for &(column_name, definition) in columns {
+            add_column_if_missing(transaction, table_name, column_name, definition)?;
+        }
+    }
     Ok(())
 }
 
@@ -1932,6 +2058,67 @@ fn backfill_single_run_catalog_links(
             )?;
         }
     }
+    Ok(())
+}
+
+fn backfill_run_snapshot_metadata(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    transaction.execute(
+        "UPDATE run_framework_links
+         SET version = COALESCE(
+           (SELECT frameworks.version
+            FROM frameworks
+            WHERE frameworks.id = run_framework_links.framework_id),
+           version
+         )",
+        [],
+    )?;
+    transaction.execute(
+        "UPDATE run_control_links
+         SET severity = COALESCE(
+               (SELECT control_results.severity
+                FROM control_results
+                WHERE control_results.run_id = run_control_links.run_id
+                  AND control_results.framework_id = run_control_links.framework_id
+                  AND control_results.control_id = run_control_links.control_id
+                  AND control_results.severity <> ''
+                ORDER BY control_results.rule_id
+                LIMIT 1),
+               severity
+             ),
+             weight = COALESCE(
+               (SELECT control_results.weight
+                FROM control_results
+                WHERE control_results.run_id = run_control_links.run_id
+                  AND control_results.framework_id = run_control_links.framework_id
+                  AND control_results.control_id = run_control_links.control_id
+                ORDER BY control_results.rule_id
+                LIMIT 1),
+               weight
+             )",
+        [],
+    )?;
+    transaction.execute(
+        "UPDATE run_evidence_links
+         SET digest = COALESCE(
+               (SELECT evidence_metadata.digest
+                FROM evidence_metadata
+                WHERE evidence_metadata.id = run_evidence_links.evidence_id),
+               digest
+             ),
+             locator = COALESCE(
+               (SELECT evidence_metadata.locator
+                FROM evidence_metadata
+                WHERE evidence_metadata.id = run_evidence_links.evidence_id),
+               locator
+             ),
+             classification = COALESCE(
+               (SELECT evidence_metadata.classification
+                FROM evidence_metadata
+                WHERE evidence_metadata.id = run_evidence_links.evidence_id),
+               classification
+             )",
+        [],
+    )?;
     Ok(())
 }
 
@@ -2224,6 +2411,20 @@ mod tests {
             )
             .expect("read the preserved classification");
         assert_eq!(classification, "Secret");
+        let snapshot: (String, String) = database
+            .connection
+            .query_row(
+                "SELECT digest, classification
+                 FROM run_evidence_links
+                 WHERE run_id = 'legacy-run' AND evidence_id = 'classified-evidence'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read the legacy run evidence snapshot");
+        assert_eq!(
+            snapshot,
+            ("sha256:classified".to_owned(), "Secret".to_owned())
+        );
     }
 
     #[test]
@@ -2396,6 +2597,27 @@ mod tests {
             )
             .expect("read backfilled catalog links");
         assert_eq!(catalog_links, (1, 1));
+    }
+
+    #[test]
+    fn export_reconstruction_rejects_a_missing_execution_timestamp() {
+        let persisted = PersistedExportResult {
+            framework_id: "framework".to_owned(),
+            control_id: "control".to_owned(),
+            rule_id: "rule".to_owned(),
+            status: "PASS".to_owned(),
+            evidence_id: String::new(),
+            severity: "major".to_owned(),
+            weight: 1,
+            reason: None,
+            executed_at: String::new(),
+            execution_metadata: String::new(),
+        };
+
+        let error = reconstruct_control_result(&persisted, "")
+            .expect_err("missing result and run timestamps are rejected");
+
+        assert!(error.to_string().contains("execution timestamp is missing"));
     }
 
     #[test]

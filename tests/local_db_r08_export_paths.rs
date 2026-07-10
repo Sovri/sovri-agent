@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sovri_agent::local_db::LocalDatabase;
-use sovri_agent::matrix::Corpus;
+use sovri_agent::matrix::{Classification, Corpus};
 use sovri_sdk::{ControlResult, Status};
 
 const RUN_ID: &str = "shopfront-2026-06-24";
@@ -26,6 +26,12 @@ const OTHER_FRAMEWORK_ID: &str = "iso27001";
 const OTHER_CONTROL_ID: &str = "access.mfa";
 const OTHER_RULE_ID: &str = "access.require-mfa";
 const OTHER_EVIDENCE_ID: &str = "ev-9001";
+const HISTORICAL_EVIDENCE_ID: &str = "host.os-release";
+const HISTORICAL_DIGEST: &str = "sha256:historical";
+const CURRENT_DIGEST: &str = "sha256:current";
+const HISTORICAL_SOURCE_URL: &str = "https://catalog.example/2016-679";
+const CURRENT_SOURCE_URL: &str = "https://catalog.example/2026-001";
+const HISTORICAL_REFERENCE: &str = "gdpr-eprivacy:2016-679:Art.7";
 
 struct TempFixture {
     root: PathBuf,
@@ -154,6 +160,103 @@ fn export_rehydrates_results_without_leaking_another_runs_catalog() {
     }
 }
 
+#[test]
+fn export_preserves_run_specific_catalog_and_evidence_metadata() {
+    let fixture = TempFixture::new();
+    let mut database =
+        LocalDatabase::open(fixture.database_path()).expect("the local database opens");
+    let historical = Corpus::new(EXECUTED_AT)
+        .with_run_id(RUN_ID)
+        .with_framework(FRAMEWORK_ID, FRAMEWORK_VERSION, HISTORICAL_SOURCE_URL)
+        .with_control(
+            FRAMEWORK_ID,
+            CONTROL_ID,
+            "Historical consent control",
+            "major",
+            8,
+            HISTORICAL_REFERENCE,
+        )
+        .with_control_result(
+            FRAMEWORK_ID,
+            control_result(CONTROL_ID, RULE_ID, HISTORICAL_EVIDENCE_ID, Status::Fail),
+        )
+        .with_evidence_digest(
+            HISTORICAL_EVIDENCE_ID,
+            "file",
+            "historical/os-release",
+            HISTORICAL_DIGEST,
+        );
+    let current = Corpus::new(EXECUTED_AT)
+        .with_run_id(OTHER_RUN_ID)
+        .with_framework(FRAMEWORK_ID, "2026-001", CURRENT_SOURCE_URL)
+        .with_control(
+            FRAMEWORK_ID,
+            OTHER_CONTROL_ID,
+            "Current access control",
+            "critical",
+            13,
+            "gdpr-eprivacy:2026-001:Art.9",
+        )
+        .with_control_result(
+            FRAMEWORK_ID,
+            control_result(
+                OTHER_CONTROL_ID,
+                OTHER_RULE_ID,
+                HISTORICAL_EVIDENCE_ID,
+                Status::Pass,
+            ),
+        )
+        .with_classified_evidence(
+            HISTORICAL_EVIDENCE_ID,
+            "file",
+            "current/os-release",
+            Classification::Secret,
+            CURRENT_DIGEST,
+        );
+    database
+        .write_completed_corpus(&historical)
+        .expect("the historical corpus write succeeds");
+    database
+        .write_completed_corpus(&current)
+        .expect("the current corpus write succeeds");
+
+    let historical_json = String::from_utf8(
+        database
+            .export_run("signed JSON", RUN_ID, &SIGNING_SEED)
+            .expect("the historical export succeeds"),
+    )
+    .expect("signed JSON is UTF-8");
+    for expected in [
+        FRAMEWORK_VERSION,
+        HISTORICAL_SOURCE_URL,
+        HISTORICAL_REFERENCE,
+        HISTORICAL_DIGEST,
+        "historical/os-release",
+        "\"redaction_status\":\"none\"",
+    ] {
+        assert!(historical_json.contains(expected), "missing {expected}");
+    }
+    assert!(!historical_json.contains(CURRENT_DIGEST));
+
+    let historical_sheet = String::from_utf8(
+        database
+            .export_run("SpreadsheetML", RUN_ID, &SIGNING_SEED)
+            .expect("the historical workbook export succeeds"),
+    )
+    .expect("SpreadsheetML is UTF-8");
+    assert!(historical_sheet.contains("Historical consent control"));
+
+    let current_json = String::from_utf8(
+        database
+            .export_run("signed JSON", OTHER_RUN_ID, &SIGNING_SEED)
+            .expect("the current export succeeds"),
+    )
+    .expect("signed JSON is UTF-8");
+    for expected in ["2026-001", CURRENT_SOURCE_URL, CURRENT_DIGEST] {
+        assert!(current_json.contains(expected), "missing {expected}");
+    }
+}
+
 fn consent_corpus() -> Corpus {
     Corpus::new(EXECUTED_AT)
         .with_run_id(RUN_ID)
@@ -172,6 +275,22 @@ fn result_corpus(
     evidence_id: &str,
     status: Status,
 ) -> Corpus {
+    let result = control_result(control_id, rule_id, evidence_id, status);
+
+    Corpus::new(EXECUTED_AT)
+        .with_run_id(run_id)
+        .with_framework(framework_id, framework_version, "")
+        .with_control(framework_id, control_id, "", "major", 8, "")
+        .with_control_result(framework_id, result)
+        .with_evidence(evidence_id, format!("dist/{run_id}.js"))
+}
+
+fn control_result(
+    control_id: &str,
+    rule_id: &str,
+    evidence_id: &str,
+    status: Status,
+) -> ControlResult {
     let mut builder = ControlResult::builder()
         .control_id(control_id)
         .rule_id(rule_id)
@@ -184,12 +303,5 @@ fn result_corpus(
     if status != Status::Pass {
         builder = builder.reason("Persisted result requires review.");
     }
-    let result = builder.build().expect("the control result validates");
-
-    Corpus::new(EXECUTED_AT)
-        .with_run_id(run_id)
-        .with_framework(framework_id, framework_version, "")
-        .with_control(framework_id, control_id, "", "major", 8, "")
-        .with_control_result(framework_id, result)
-        .with_evidence(evidence_id, format!("dist/{run_id}.js"))
+    builder.build().expect("the control result validates")
 }
