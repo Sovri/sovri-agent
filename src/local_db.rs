@@ -141,6 +141,8 @@ const RUN_EVIDENCE_LINKS_SCHEMA_SQL: &str = "
     FROM evidence_metadata;
 ";
 
+// This domain policy is kept in exact sync with the current application schema
+// by `persisted_corpus_table_guard_matches_the_current_schema`.
 const PERSISTED_CORPUS_TABLES: &[&str] = &[
     "scan_runs",
     "frameworks",

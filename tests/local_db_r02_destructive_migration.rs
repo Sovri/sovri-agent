@@ -55,6 +55,20 @@ const UNQUOTED_SCHEMA_QUALIFIED_DESTRUCTIVE_PACKAGED_MIGRATIONS: &[PackagedMigra
         r#"DROP TABLE main."evidence_metadata";"#,
     )];
 
+const BACKTICK_QUALIFIED_DESTRUCTIVE_PACKAGED_MIGRATIONS: &[PackagedMigration] =
+    &[PackagedMigration::new(
+        2,
+        "0002-backtick-qualified-drop-evidence-metadata",
+        "DROP TABLE `main`.`evidence_metadata`;",
+    )];
+
+const BRACKET_QUALIFIED_DESTRUCTIVE_PACKAGED_MIGRATIONS: &[PackagedMigration] =
+    &[PackagedMigration::new(
+        2,
+        "0002-bracket-qualified-drop-evidence-metadata",
+        "DROP TABLE [main].[evidence_metadata];",
+    )];
+
 const SINGLE_QUOTED_DESTRUCTIVE_PACKAGED_MIGRATIONS: &[PackagedMigration] =
     &[PackagedMigration::new(
         2,
@@ -325,6 +339,27 @@ fn an_unquoted_schema_before_a_quoted_persisted_table_is_rejected() {
         "0002-unquoted-schema-qualified-drop-evidence-metadata",
     );
     assert_single_run_and_evidence_preserved(database.path());
+}
+
+#[test]
+fn alternate_quoted_qualified_persisted_table_drops_are_rejected() {
+    for (migration_name, migrations) in [
+        (
+            "0002-backtick-qualified-drop-evidence-metadata",
+            BACKTICK_QUALIFIED_DESTRUCTIVE_PACKAGED_MIGRATIONS,
+        ),
+        (
+            "0002-bracket-qualified-drop-evidence-metadata",
+            BRACKET_QUALIFIED_DESTRUCTIVE_PACKAGED_MIGRATIONS,
+        ),
+    ] {
+        let database = TempDatabase::new();
+        create_version_1_database_with_single_run_and_evidence(database.path());
+
+        let error_message = destructive_migration_rejection(database.path(), migrations);
+        assert_rejected_as_destructive(&error_message, migration_name);
+        assert_single_run_and_evidence_preserved(database.path());
+    }
 }
 
 #[test]
