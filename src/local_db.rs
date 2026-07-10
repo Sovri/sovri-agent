@@ -2106,7 +2106,6 @@ fn is_sql_token_character(character: char) -> bool {
 }
 
 fn canonical_sql_identifier(identifier: &str) -> String {
-    let identifier = identifier.rsplit('.').next().unwrap_or(identifier);
     identifier
         .trim_matches(|character| matches!(character, '"' | '\'' | '`' | '[' | ']'))
         .to_ascii_lowercase()

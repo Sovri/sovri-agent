@@ -69,6 +69,12 @@ const BRACKET_QUALIFIED_DESTRUCTIVE_PACKAGED_MIGRATIONS: &[PackagedMigration] =
         "DROP TABLE [main].[evidence_metadata];",
     )];
 
+const DOT_NAMED_AUXILIARY_TABLE_MIGRATIONS: &[PackagedMigration] = &[PackagedMigration::new(
+    2,
+    "0002-drop-dot-named-auxiliary-table",
+    r#"DROP TABLE "archive.evidence_metadata";"#,
+)];
+
 const SINGLE_QUOTED_DESTRUCTIVE_PACKAGED_MIGRATIONS: &[PackagedMigration] =
     &[PackagedMigration::new(
         2,
@@ -360,6 +366,34 @@ fn alternate_quoted_qualified_persisted_table_drops_are_rejected() {
         assert_rejected_as_destructive(&error_message, migration_name);
         assert_single_run_and_evidence_preserved(database.path());
     }
+}
+
+#[test]
+fn a_dot_inside_a_quoted_auxiliary_table_name_is_not_a_schema_qualifier() {
+    let database = TempDatabase::new();
+    create_version_1_database_with_single_run_and_evidence(database.path());
+    Connection::open(database.path())
+        .expect("open database to create auxiliary table")
+        .execute(
+            r#"CREATE TABLE "archive.evidence_metadata" (value TEXT)"#,
+            [],
+        )
+        .expect("create dot-named auxiliary table");
+
+    let opened = LocalDatabase::open_with_packaged_migrations(
+        database.path(),
+        DOT_NAMED_AUXILIARY_TABLE_MIGRATIONS,
+    )
+    .expect("a dot inside a quoted identifier is not a schema qualification");
+
+    assert_eq!(opened.schema_version(), 2);
+    assert!(run_exists(database.path(), RUN_ID));
+    assert_eq!(
+        evidence_digest(database.path(), EVIDENCE_ID),
+        EVIDENCE_DIGEST
+    );
+    assert_eq!(run_count(database.path()), 1);
+    assert_eq!(evidence_metadata_count(database.path()), 1);
 }
 
 #[test]
