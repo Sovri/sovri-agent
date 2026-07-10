@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{mpsc, Arc, Barrier};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -219,6 +219,81 @@ fn concurrent_score_summary_schema_repairs_are_serialized() {
             "warning_count"
         ]
     );
+}
+
+#[test]
+fn concurrent_write_waits_for_score_summary_schema_repair() {
+    let database = TempDatabase::new();
+    create_legacy_score_summary_database(database.path());
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the legacy local database opens");
+    let first_migrator = Connection::open(database.path()).expect("a second connection opens");
+    first_migrator
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE score_summaries ADD COLUMN run_id TEXT;",
+        )
+        .expect("the first schema repair starts");
+
+    let barrier = Arc::new(Barrier::new(2));
+    let writer_barrier = Arc::clone(&barrier);
+    let writer = thread::spawn(move || {
+        writer_barrier.wait();
+        local_database.write_completed_corpus(&mixed_completed_corpus())
+    });
+
+    barrier.wait();
+    thread::sleep(Duration::from_millis(100));
+    first_migrator
+        .execute_batch("COMMIT")
+        .expect("the first schema repair commits");
+
+    writer
+        .join()
+        .expect("the concurrent writer thread completes")
+        .expect("the concurrent write succeeds after schema repair");
+    let local_database =
+        LocalDatabase::open(database.path()).expect("the repaired database reopens");
+    assert_eq!(
+        local_database
+            .score_summaries_for_run(MIXED_RUN)
+            .expect("the concurrent write summaries can be queried")
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn querying_current_schema_does_not_wait_for_a_write_lock() {
+    let database = TempDatabase::new();
+    let local_database =
+        LocalDatabase::open(database.path()).expect("the current local database opens");
+    let writer = Connection::open(database.path()).expect("a writer connection opens");
+    writer
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("the independent write transaction starts");
+
+    let barrier = Arc::new(Barrier::new(2));
+    let reader_barrier = Arc::clone(&barrier);
+    let (sender, receiver) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        reader_barrier.wait();
+        sender
+            .send(local_database.score_summaries_for_run(MIXED_RUN))
+            .expect("the query result can be sent");
+    });
+    barrier.wait();
+    let query_result = receiver.recv_timeout(Duration::from_secs(1));
+
+    writer
+        .execute_batch("COMMIT")
+        .expect("the independent write transaction commits");
+    reader.join().expect("the reader thread completes");
+
+    let summaries = query_result
+        .expect("a current-schema query must not wait for an unrelated writer")
+        .expect("the score summary query succeeds");
+    assert!(summaries.is_empty());
 }
 
 #[test]

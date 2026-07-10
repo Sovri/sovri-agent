@@ -1376,6 +1376,9 @@ fn score_summary_counts(corpus: &Corpus) -> std::collections::BTreeMap<String, S
 }
 
 fn ensure_score_summary_schema(connection: &Connection) -> Result<(), LocalDatabaseError> {
+    if score_summary_schema_is_current(connection)? {
+        return Ok(());
+    }
     connection
         .busy_timeout(std::time::Duration::from_secs(5))
         .map_err(LocalDatabaseError::Sqlite)?;
@@ -1384,6 +1387,25 @@ fn ensure_score_summary_schema(connection: &Connection) -> Result<(), LocalDatab
             .map_err(LocalDatabaseError::Sqlite)?;
     add_missing_score_summary_columns(&transaction)?;
     transaction.commit().map_err(LocalDatabaseError::Sqlite)
+}
+
+fn score_summary_schema_is_current(connection: &Connection) -> Result<bool, LocalDatabaseError> {
+    let column_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM pragma_table_info('score_summaries')
+             WHERE name IN (
+               'run_id',
+               'framework_id',
+               'pass_count',
+               'fail_count',
+               'warning_count'
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    Ok(column_count == 5)
 }
 
 fn add_missing_score_summary_columns(connection: &Connection) -> Result<(), LocalDatabaseError> {
