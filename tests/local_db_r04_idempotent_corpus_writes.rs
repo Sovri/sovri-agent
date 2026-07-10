@@ -18,6 +18,7 @@ const RUN_ID: &str = "shopfront-2026-06-24";
 const EXECUTED_AT: &str = "2026-06-24T13:16:28Z";
 const FRAMEWORK_ID: &str = "gdpr-eprivacy";
 const FRAMEWORK_VERSION: &str = "2016-679";
+const UPDATED_FRAMEWORK_VERSION: &str = "2016-679-corrigendum";
 const FRAMEWORK_URL: &str = "https://eur-lex.europa.eu/eli/reg/2016/679/oj";
 const CONTROL_ID: &str = "consent.tracker.prior-consent";
 const CONTROL_TITLE: &str = "Prior consent for tracker access";
@@ -29,6 +30,8 @@ const EVIDENCE_ID: &str = "ev-0001";
 // the Gherkin.
 const EVIDENCE_DIGEST: &str =
     "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+const UPDATED_EVIDENCE_DIGEST: &str =
+    "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
 struct TempDatabase {
     root: PathBuf,
@@ -104,7 +107,7 @@ fn writing_the_same_corpus_twice_leaves_one_logical_run() {
 }
 
 #[test]
-fn writing_a_conflicting_framework_version_fails_without_replacing_the_existing_row() {
+fn rewriting_a_run_with_a_new_framework_version_updates_only_its_snapshot() {
     let database = TempDatabase::new();
     let mut local_database =
         LocalDatabase::open(database.path()).expect("the local database opens");
@@ -112,17 +115,15 @@ fn writing_a_conflicting_framework_version_fails_without_replacing_the_existing_
         .write_completed_corpus(&shopfront_consent_corpus())
         .expect("the first corpus write succeeds");
 
-    let error = local_database
+    local_database
         .write_completed_corpus(&shopfront_consent_corpus_with(
-            "conflicting-framework-version",
+            UPDATED_FRAMEWORK_VERSION,
             EVIDENCE_DIGEST,
         ))
-        .expect_err("the conflicting framework version is rejected");
+        .expect("the run snapshot can be rewritten");
 
-    assert!(
-        error.to_string().contains("conflicting framework version"),
-        "the conflict error names the framework version mismatch, got {error}"
-    );
+    // The shared framework catalogue remains stable while the run-scoped
+    // snapshot records the version supplied by the rewrite.
     assert_eq!(
         framework_version(database.path(), FRAMEWORK_ID),
         FRAMEWORK_VERSION
@@ -131,10 +132,14 @@ fn writing_a_conflicting_framework_version_fails_without_replacing_the_existing_
         framework_row_count(database.path(), FRAMEWORK_ID, FRAMEWORK_VERSION),
         1
     );
+    assert_eq!(
+        run_framework_version(database.path(), RUN_ID, FRAMEWORK_ID),
+        UPDATED_FRAMEWORK_VERSION
+    );
 }
 
 #[test]
-fn writing_a_conflicting_evidence_digest_fails_without_replacing_the_existing_row() {
+fn rewriting_a_run_with_a_new_evidence_digest_updates_the_single_snapshot() {
     let database = TempDatabase::new();
     let mut local_database =
         LocalDatabase::open(database.path()).expect("the local database opens");
@@ -142,20 +147,20 @@ fn writing_a_conflicting_evidence_digest_fails_without_replacing_the_existing_ro
         .write_completed_corpus(&shopfront_consent_corpus())
         .expect("the first corpus write succeeds");
 
-    let error = local_database
+    local_database
         .write_completed_corpus(&shopfront_consent_corpus_with(
             FRAMEWORK_VERSION,
-            "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            UPDATED_EVIDENCE_DIGEST,
         ))
-        .expect_err("the conflicting evidence digest is rejected");
+        .expect("the run snapshot can be rewritten");
 
-    assert!(
-        error.to_string().contains("conflicting evidence digest"),
-        "the conflict error names the evidence digest mismatch, got {error}"
-    );
     assert_eq!(
         evidence_digest(database.path(), EVIDENCE_ID),
-        EVIDENCE_DIGEST
+        UPDATED_EVIDENCE_DIGEST
+    );
+    assert_eq!(
+        run_evidence_digest(database.path(), RUN_ID, EVIDENCE_ID),
+        UPDATED_EVIDENCE_DIGEST
     );
     assert_eq!(evidence_metadata_row_count(database.path(), EVIDENCE_ID), 1);
 }
@@ -266,6 +271,19 @@ fn framework_version(path: &Path, framework_id: &str) -> String {
         .expect("framework version can be inspected")
 }
 
+fn run_framework_version(path: &Path, run_id: &str, framework_id: &str) -> String {
+    let connection = Connection::open(path).expect("the database can be inspected");
+    connection
+        .query_row(
+            "SELECT version
+             FROM run_framework_links
+             WHERE run_id = ?1 AND framework_id = ?2",
+            params![run_id, framework_id],
+            |row| row.get(0),
+        )
+        .expect("run framework version can be inspected")
+}
+
 fn control_row_count(path: &Path, control_id: &str) -> i64 {
     let connection = Connection::open(path).expect("the database can be inspected");
     connection
@@ -281,7 +299,7 @@ fn result_row_count_for_run(path: &Path, run_id: &str) -> i64 {
     let connection = Connection::open(path).expect("the database can be inspected");
     connection
         .query_row(
-            "SELECT COUNT(*) FROM control_results WHERE id LIKE ?1 || ':%'",
+            "SELECT COUNT(*) FROM control_results WHERE run_id = ?1",
             params![run_id],
             |row| row.get(0),
         )
@@ -308,6 +326,19 @@ fn evidence_digest(path: &Path, evidence_id: &str) -> String {
             |row| row.get(0),
         )
         .expect("evidence digest can be inspected")
+}
+
+fn run_evidence_digest(path: &Path, run_id: &str, evidence_id: &str) -> String {
+    let connection = Connection::open(path).expect("the database can be inspected");
+    connection
+        .query_row(
+            "SELECT digest
+             FROM run_evidence_links
+             WHERE run_id = ?1 AND evidence_id = ?2",
+            params![run_id, evidence_id],
+            |row| row.get(0),
+        )
+        .expect("run evidence digest can be inspected")
 }
 
 fn table_row_count(path: &Path, table: &str) -> i64 {
