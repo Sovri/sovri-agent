@@ -492,6 +492,7 @@ pub struct LocalDatabaseGap {
 /// A persisted control result returned by local database queries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalDatabaseResult {
+    rule_id: String,
     run_id: String,
     status: String,
 }
@@ -567,6 +568,12 @@ impl LocalDatabaseGap {
 }
 
 impl LocalDatabaseResult {
+    /// Returns the rule id for the control result.
+    #[must_use]
+    pub fn rule_id(&self) -> &str {
+        &self.rule_id
+    }
+
     /// Returns the scan run that produced the result.
     #[must_use]
     pub fn run_id(&self) -> &str {
@@ -985,7 +992,7 @@ impl LocalDatabase {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT run_id, status
+                "SELECT rule_id, run_id, status
                  FROM control_results
                  WHERE run_id = ?1 AND control_id = ?2 AND status = ?3
                  ORDER BY rule_id",
@@ -994,8 +1001,9 @@ impl LocalDatabase {
         let rows = statement
             .query_map(params![run_id, control_id, status], |row| {
                 Ok(LocalDatabaseResult {
-                    run_id: row.get(0)?,
-                    status: row.get(1)?,
+                    rule_id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    status: row.get(2)?,
                 })
             })
             .map_err(LocalDatabaseError::Sqlite)?;
