@@ -3733,6 +3733,38 @@ mod tests {
     }
 
     #[test]
+    fn control_result_identity_round_trips_colon_bearing_components() {
+        let row_id = control_result_row_id(
+            "run:2026-06-24",
+            "framework:gdpr",
+            "control:prior-consent",
+            "rule:tracker",
+        );
+
+        assert_eq!(
+            control_result_identity(&row_id),
+            Some((
+                "run:2026-06-24",
+                "framework:gdpr",
+                "control:prior-consent",
+                "rule:tracker"
+            ))
+        );
+    }
+
+    #[test]
+    fn control_result_identity_rejects_empty_required_components() {
+        for (run_id, control_id, rule_id) in [
+            ("", "control", "rule"),
+            ("run", "", "rule"),
+            ("run", "control", ""),
+        ] {
+            let row_id = control_result_row_id(run_id, "framework", control_id, rule_id);
+            assert_eq!(control_result_identity(&row_id), None);
+        }
+    }
+
+    #[test]
     fn schema_column_exists_is_false_for_missing_or_untrusted_names() {
         let connection = Connection::open_in_memory().expect("in-memory database opens");
         connection
