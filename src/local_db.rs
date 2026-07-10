@@ -195,6 +195,9 @@ const MIGRATION_LEDGER_SQL: &str = "
     );
 ";
 
+const EMPTY_PACKAGED_MIGRATIONS_MESSAGE: &str =
+    "no packaged migrations supplied; cannot determine current schema version";
+
 const SCHEMA_VERSION_1_REQUIRED_COLUMNS: &[RequiredSchemaColumn] = &[
     RequiredSchemaColumn::new("frameworks", "version"),
     RequiredSchemaColumn::new("evidence_metadata", "digest"),
@@ -575,6 +578,7 @@ impl LocalDatabase {
             fs::create_dir_all(parent).map_err(LocalDatabaseError::Io)?;
         }
         let mut connection = Connection::open(path).map_err(LocalDatabaseError::Sqlite)?;
+        reject_newer_schema_version(&connection, migrations)?;
         apply_packaged_migrations(&mut connection, migrations)?;
         validate_current_schema(&connection, migrations)?;
         Ok(LocalDatabase { connection })
@@ -1535,6 +1539,50 @@ fn apply_packaged_migrations(
         }
     }
     Ok(())
+}
+
+fn reject_newer_schema_version(
+    connection: &Connection,
+    migrations: &[PackagedMigration],
+) -> Result<(), LocalDatabaseError> {
+    let schema_version = connection_schema_version(connection)?;
+    let packaged_schema_version = current_packaged_schema_version(migrations)?;
+    if schema_version > packaged_schema_version {
+        return Err(LocalDatabaseError::Schema(format!(
+            "unsupported newer schema version {schema_version}; packaged current schema version is {packaged_schema_version}"
+        )));
+    }
+
+    Ok(())
+}
+
+fn current_packaged_schema_version(
+    migrations: &[PackagedMigration],
+) -> Result<u32, LocalDatabaseError> {
+    let mut previous_version = None;
+    for migration in migrations {
+        if let Some(version) = previous_version {
+            match migration.version.cmp(&version) {
+                std::cmp::Ordering::Less => {
+                    return Err(LocalDatabaseError::Schema(format!(
+                        "packaged migration version {} appears after version {version}; migrations must be ordered by ascending version",
+                        migration.version
+                    )));
+                }
+                std::cmp::Ordering::Equal => {
+                    return Err(LocalDatabaseError::Schema(format!(
+                        "duplicate packaged migration version {version}"
+                    )));
+                }
+                std::cmp::Ordering::Greater => {}
+            }
+        }
+
+        previous_version = Some(migration.version);
+    }
+
+    previous_version
+        .ok_or_else(|| LocalDatabaseError::Schema(EMPTY_PACKAGED_MIGRATIONS_MESSAGE.to_owned()))
 }
 
 fn validate_current_schema(
@@ -2739,5 +2787,70 @@ mod tests {
         .expect("untrusted table name can be checked"));
         assert!(schema_column_exists(&connection, "frameworks", "version")
             .expect("untrusted table name was not executed as SQL"));
+    }
+
+    #[test]
+    fn current_packaged_schema_version_uses_final_ascending_migration_version() {
+        let migrations = [
+            PackagedMigration::new(1, "0001-initial", ""),
+            PackagedMigration::new(2, "0002-middle", ""),
+            PackagedMigration::new(3, "0003-future", ""),
+        ];
+
+        assert_eq!(
+            current_packaged_schema_version(&migrations)
+                .expect("current packaged schema version can be resolved"),
+            3
+        );
+    }
+
+    #[test]
+    fn current_packaged_schema_version_rejects_empty_migration_stack() {
+        let error =
+            current_packaged_schema_version(&[]).expect_err("empty migrations are rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains(EMPTY_PACKAGED_MIGRATIONS_MESSAGE),
+            "empty migration stacks should be reported explicitly, got {error}"
+        );
+    }
+
+    #[test]
+    fn current_packaged_schema_version_rejects_duplicate_migration_versions() {
+        let migrations = [
+            PackagedMigration::new(1, "0001-initial", ""),
+            PackagedMigration::new(1, "0001-duplicate", ""),
+        ];
+
+        let error = current_packaged_schema_version(&migrations)
+            .expect_err("duplicate migration versions are rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate packaged migration version 1"),
+            "duplicate migration versions should be reported explicitly, got {error}"
+        );
+    }
+
+    #[test]
+    fn current_packaged_schema_version_rejects_out_of_order_migration_versions() {
+        let migrations = [
+            PackagedMigration::new(1, "0001-initial", ""),
+            PackagedMigration::new(3, "0003-future", ""),
+            PackagedMigration::new(2, "0002-middle", ""),
+        ];
+
+        let error = current_packaged_schema_version(&migrations)
+            .expect_err("out-of-order migration versions are rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("migrations must be ordered by ascending version"),
+            "out-of-order migration versions should be reported explicitly, got {error}"
+        );
     }
 }
