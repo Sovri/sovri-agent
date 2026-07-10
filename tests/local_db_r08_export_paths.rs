@@ -158,6 +158,46 @@ fn export_rehydrates_results_without_leaking_another_runs_catalog() {
             "the export excludes unrelated value {unrelated}"
         );
     }
+
+    let pdf = database
+        .export_run("PDF", RUN_ID, &SIGNING_SEED)
+        .expect("the requested PDF export succeeds");
+    let pdf_text = String::from_utf8_lossy(&pdf);
+    for expected in [RULE_ID, "FAIL", "Gap:", "Persisted result requires review."] {
+        assert!(pdf_text.contains(expected), "PDF is missing {expected}");
+    }
+}
+
+#[test]
+fn rewriting_a_run_removes_obsolete_results_and_gaps_from_exports() {
+    let fixture = TempFixture::new();
+    let mut database =
+        LocalDatabase::open(fixture.database_path()).expect("the local database opens");
+    database
+        .write_completed_corpus(&result_corpus(
+            RUN_ID,
+            FRAMEWORK_ID,
+            FRAMEWORK_VERSION,
+            CONTROL_ID,
+            RULE_ID,
+            EVIDENCE_ID,
+            Status::Fail,
+        ))
+        .expect("the original result corpus write succeeds");
+    database
+        .write_completed_corpus(&consent_corpus())
+        .expect("the result-free rewrite succeeds");
+
+    let artifact = database
+        .export_run("signed JSON", RUN_ID, &SIGNING_SEED)
+        .expect("the rewritten corpus export succeeds");
+    let text = String::from_utf8(artifact).expect("signed JSON is UTF-8");
+
+    assert!(!text.contains(RULE_ID));
+    assert!(database
+        .query_gaps(RUN_ID, "FAIL", "major")
+        .expect("the rewritten run gaps can be queried")
+        .is_empty());
 }
 
 #[test]

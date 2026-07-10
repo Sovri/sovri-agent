@@ -898,32 +898,7 @@ impl LocalDatabase {
         let Some(metadata) = self.query_evidence("id", evidence_id)?.into_iter().next() else {
             return Ok(None);
         };
-        let index = store.index();
-        if metadata.digest().is_empty() {
-            return Ok(index
-                .resolve_id(metadata.id())
-                .is_some()
-                .then_some(metadata));
-        }
-        if index
-            .resolve_digest(metadata.digest())
-            .is_some_and(|record| {
-                record.id() == metadata.id() && record.content_hash() == metadata.digest()
-            })
-        {
-            return Ok(Some(metadata));
-        }
-        let Some(record) = index.resolve_id(metadata.id()) else {
-            return Err(LocalDatabaseError::MissingEvidence {
-                evidence_id: metadata.id().to_owned(),
-                expected: metadata.digest().to_owned(),
-            });
-        };
-        Err(LocalDatabaseError::IntegrityMismatch {
-            evidence_id: metadata.id().to_owned(),
-            expected: metadata.digest().to_owned(),
-            actual: record.content_hash().to_owned(),
-        })
+        validate_linked_evidence(store, metadata)
     }
 
     /// Validates all evidence linked to a run before corpus reconstruction.
@@ -940,20 +915,27 @@ impl LocalDatabase {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT evidence_id
+                "SELECT evidence_id, digest, locator, classification
                  FROM run_evidence_links
                  WHERE run_id = ?1
                  ORDER BY evidence_id",
             )
             .map_err(LocalDatabaseError::Sqlite)?;
-        let evidence_ids = statement
-            .query_map(params![run_id], |row| row.get::<_, String>(0))
+        let evidence = statement
+            .query_map(params![run_id], |row| {
+                Ok(LocalDatabaseEvidence {
+                    id: row.get(0)?,
+                    digest: row.get(1)?,
+                    locator: row.get(2)?,
+                    classification: row.get(3)?,
+                })
+            })
             .map_err(LocalDatabaseError::Sqlite)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(LocalDatabaseError::Sqlite)?;
 
-        for evidence_id in evidence_ids {
-            self.read_linked_evidence(store, &evidence_id)?;
+        for metadata in evidence {
+            validate_linked_evidence(store, metadata)?;
         }
         Ok(())
     }
@@ -973,6 +955,7 @@ impl LocalDatabase {
         let scoped_results = corpus.scoped_results();
 
         write_run_catalog(&transaction, run_id, corpus)?;
+        clear_run_outcomes(&transaction, run_id)?;
 
         for framework_id in scoped_results
             .iter()
@@ -1053,6 +1036,38 @@ impl LocalDatabase {
     }
 }
 
+fn validate_linked_evidence(
+    store: &EvidenceStore,
+    metadata: LocalDatabaseEvidence,
+) -> Result<Option<LocalDatabaseEvidence>, LocalDatabaseError> {
+    let index = store.index();
+    if metadata.digest().is_empty() {
+        return Ok(index
+            .resolve_id(metadata.id())
+            .is_some()
+            .then_some(metadata));
+    }
+    if index
+        .resolve_digest(metadata.digest())
+        .is_some_and(|record| {
+            record.id() == metadata.id() && record.content_hash() == metadata.digest()
+        })
+    {
+        return Ok(Some(metadata));
+    }
+    let Some(record) = index.resolve_id(metadata.id()) else {
+        return Err(LocalDatabaseError::MissingEvidence {
+            evidence_id: metadata.id().to_owned(),
+            expected: metadata.digest().to_owned(),
+        });
+    };
+    Err(LocalDatabaseError::IntegrityMismatch {
+        evidence_id: metadata.id().to_owned(),
+        expected: metadata.digest().to_owned(),
+        actual: record.content_hash().to_owned(),
+    })
+}
+
 fn write_run_catalog(
     transaction: &rusqlite::Transaction<'_>,
     run_id: &str,
@@ -1066,14 +1081,18 @@ fn write_run_catalog(
             params![run_id, corpus.executed_at()],
         )
         .map_err(LocalDatabaseError::Sqlite)?;
-    for table in ["run_framework_links", "run_control_links"] {
-        transaction
-            .execute(
-                &format!("DELETE FROM {table} WHERE run_id = ?1"),
-                params![run_id],
-            )
-            .map_err(LocalDatabaseError::Sqlite)?;
-    }
+    transaction
+        .execute(
+            "DELETE FROM run_framework_links WHERE run_id = ?1",
+            params![run_id],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    transaction
+        .execute(
+            "DELETE FROM run_control_links WHERE run_id = ?1",
+            params![run_id],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
 
     for (framework_id, version, source_url) in corpus.frameworks() {
         transaction
@@ -1132,6 +1151,25 @@ fn write_run_catalog(
             )
             .map_err(LocalDatabaseError::Sqlite)?;
     }
+    Ok(())
+}
+
+fn clear_run_outcomes(
+    transaction: &rusqlite::Transaction<'_>,
+    run_id: &str,
+) -> Result<(), LocalDatabaseError> {
+    transaction
+        .execute(
+            "DELETE FROM control_results WHERE run_id = ?1",
+            params![run_id],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
+    transaction
+        .execute(
+            "DELETE FROM compliance_gaps WHERE run_id = ?1",
+            params![run_id],
+        )
+        .map_err(LocalDatabaseError::Sqlite)?;
     Ok(())
 }
 

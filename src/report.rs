@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use crate::evidence::{Evidence, EvidenceKind, EvidenceLog, EvidenceStore, StoreError};
 use crate::matrix::Corpus;
 use crate::scanners::ssh;
-use sovri_sdk::is_valid_execution_timestamp;
+use sovri_sdk::{is_valid_execution_timestamp, Status};
 
 /// Exit code when the report was produced successfully.
 const EXIT_OK: u8 = 0;
@@ -372,6 +372,39 @@ pub fn export(corpus: &Corpus) -> io::Result<Vec<u8>> {
     }
     for evidence_id in corpus.evidence_ids() {
         lines.push(format!("Evidence id: {evidence_id}"));
+    }
+    let mut results = corpus.scoped_results();
+    results.sort_by(|(framework_a, result_a), (framework_b, result_b)| {
+        result_a
+            .control_id()
+            .cmp(result_b.control_id())
+            .then_with(|| result_a.rule_id().cmp(result_b.rule_id()))
+            .then_with(|| framework_a.cmp(framework_b))
+    });
+    lines.push("Results".to_owned());
+    for (framework_id, result) in &results {
+        lines.push(format!(
+            "Result: framework={} control={} rule={} status={}",
+            framework_id.unwrap_or("unscoped"),
+            result.control_id(),
+            result.rule_id(),
+            result.status().label()
+        ));
+        if let Some(reason) = result.reason() {
+            lines.push(format!("Reason: {reason}"));
+        }
+    }
+    lines.push("Gaps".to_owned());
+    for (framework_id, result) in results {
+        if matches!(result.status(), Status::Fail | Status::Warning) {
+            lines.push(format!(
+                "Gap: framework={} control={} rule={} status={}",
+                framework_id.unwrap_or("unscoped"),
+                result.control_id(),
+                result.rule_id(),
+                result.status().label()
+            ));
+        }
     }
 
     let mut artifact = Vec::new();

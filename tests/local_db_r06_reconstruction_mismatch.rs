@@ -89,6 +89,37 @@ fn export_reconstruction_stops_on_a_digest_mismatch() {
     }
 }
 
+#[test]
+fn reconstruction_validates_the_historical_run_evidence_snapshot() {
+    let fixture = TempFixture::new();
+    let mut database =
+        LocalDatabase::open(fixture.database_path()).expect("the local database opens");
+    database
+        .write_completed_corpus(&classified_corpus())
+        .expect("the historical corpus write succeeds");
+    database
+        .write_completed_corpus(
+            &Corpus::new(EXECUTED_AT)
+                .with_run_id("later-run")
+                .with_classified_evidence(
+                    EVIDENCE_ID,
+                    "config",
+                    "later.env:4",
+                    Classification::Secret,
+                    ACTUAL_DIGEST,
+                ),
+        )
+        .expect("the later corpus write succeeds");
+    let store = mismatched_store(&fixture.store_path());
+
+    let error = database
+        .validate_corpus_reconstruction(&store, RUN_ID)
+        .expect_err("the historical digest remains the validation target");
+
+    assert_eq!(error.expected_digest(), Some(EXPECTED_DIGEST));
+    assert_eq!(error.actual_digest(), Some(ACTUAL_DIGEST));
+}
+
 fn classified_corpus() -> Corpus {
     Corpus::new(EXECUTED_AT)
         .with_run_id(RUN_ID)
