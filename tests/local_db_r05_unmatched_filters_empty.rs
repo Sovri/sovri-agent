@@ -1,15 +1,14 @@
 // Copyright 2026 Sovri contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! R-05 -- results can be retrieved by run, control, and status. Covers issue
-//! #349.
+//! R-05 -- unmatched filters return stable empty results. Covers issue #354.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sovri_agent::local_db::LocalDatabase;
+use sovri_agent::local_db::{LocalDatabase, LocalDatabaseError};
 use sovri_agent::matrix::{Classification, Corpus};
 use sovri_sdk::{ControlResult, Status};
 
@@ -53,7 +52,7 @@ impl TempDatabase {
             .unwrap_or_default()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "sovri-agent-mat98-r05-results-query-{}-{now}-{unique}",
+            "sovri-agent-mat98-r05-unmatched-empty-{}-{now}-{unique}",
             std::process::id()
         ));
         TempDatabase {
@@ -74,14 +73,14 @@ impl Drop for TempDatabase {
 }
 
 #[test]
-fn results_can_be_retrieved_by_run_control_and_status() {
+fn unmatched_filters_return_a_stable_empty_result() {
     let database = TempDatabase::new();
 
     // Given an open local database at "./tmp/sovri-mat-98.db".
     let mut local_database =
         LocalDatabase::open(database.path()).expect("the local database opens");
 
-    // And the "mixed-2026-06-24" corpus has been written to SQLite:
+    // And the "mixed-2026-06-24" corpus has been written to SQLite.
     local_database
         .write_completed_corpus(&mixed_corpus())
         .expect("the mixed corpus write succeeds");
@@ -91,71 +90,89 @@ fn results_can_be_retrieved_by_run_control_and_status() {
         .write_completed_corpus(&classified_evidence_corpus())
         .expect("the classified evidence corpus write succeeds");
 
-    for example in result_query_examples() {
-        // When the operator queries results for run "mixed-2026-06-24", control "<control>", and status "<status>".
-        let results = local_database
-            .query_results(MIXED_RUN_ID, example.control, example.status)
-            .expect("the result set can be queried");
+    for example in unmatched_query_examples() {
+        // When the operator queries "<query>" with unmatched value "<value>".
+        let first =
+            query_values(&local_database, &example).expect("the unmatched filter query succeeds");
 
-        // Then exactly <count> result is returned.
-        assert_eq!(results.len(), example.count);
+        // Then an empty result list is returned.
+        assert!(first.is_empty(), "{} returns no rows", example.query);
 
-        // And the result set contains rule "<included_rule>".
-        assert!(
-            results
-                .iter()
-                .any(|result| result.rule_id() == example.included_rule),
-            "{} is included for control {} and status {}",
-            example.included_rule,
-            example.control,
-            example.status
-        );
+        // And no unrelated row from "mixed-2026-06-24" is returned.
+        assert!(first.iter().all(|value| value != MIXED_RUN_ID));
 
-        // And the result set does not contain rule "<excluded_rule>".
-        assert!(
-            results
-                .iter()
-                .all(|result| result.rule_id() != example.excluded_rule),
-            "{} is excluded for control {} and status {}",
-            example.excluded_rule,
-            example.control,
-            example.status
-        );
+        // And repeating the same query returns an empty result list again.
+        let second = query_values(&local_database, &example)
+            .expect("the unmatched filter query can be repeated");
+        assert!(second.is_empty(), "{} stays empty", example.query);
+        assert_eq!(second, first);
     }
 }
 
-struct ResultQueryExample {
-    control: &'static str,
-    status: &'static str,
-    count: usize,
-    included_rule: &'static str,
-    excluded_rule: &'static str,
+#[derive(Clone, Copy)]
+enum QueryKind {
+    Run,
+    ControlResults,
+    ResultStatus,
+    GapSeverity,
+    EvidenceDigest,
 }
 
-fn result_query_examples() -> [ResultQueryExample; 3] {
+struct UnmatchedQuery {
+    kind: QueryKind,
+    query: &'static str,
+    value: &'static str,
+}
+
+fn unmatched_query_examples() -> [UnmatchedQuery; 5] {
     [
-        ResultQueryExample {
-            control: CONSENT_CONTROL_ID,
-            status: "FAIL",
-            count: 1,
-            included_rule: TRACKER_RULE,
-            excluded_rule: CMP_RULE,
+        UnmatchedQuery {
+            kind: QueryKind::Run,
+            query: "run",
+            value: "missing-2026-06-24",
         },
-        ResultQueryExample {
-            control: CONSENT_CONTROL_ID,
-            status: "PASS",
-            count: 1,
-            included_rule: CMP_RULE,
-            excluded_rule: TRACKER_RULE,
+        UnmatchedQuery {
+            kind: QueryKind::ControlResults,
+            query: "control results",
+            value: "host.unknown.control",
         },
-        ResultQueryExample {
-            control: HOST_CONTROL_ID,
-            status: "WARNING",
-            count: 1,
-            included_rule: SSH_RULE,
-            excluded_rule: CMP_RULE,
+        UnmatchedQuery {
+            kind: QueryKind::ResultStatus,
+            query: "result status",
+            value: "ERROR",
+        },
+        UnmatchedQuery {
+            kind: QueryKind::GapSeverity,
+            query: "gap severity",
+            value: "critical",
+        },
+        UnmatchedQuery {
+            kind: QueryKind::EvidenceDigest,
+            query: "evidence digest",
+            value: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         },
     ]
+}
+
+fn query_values(
+    database: &LocalDatabase,
+    example: &UnmatchedQuery,
+) -> Result<Vec<String>, LocalDatabaseError> {
+    match example.kind {
+        QueryKind::Run => database.query_run(example.value),
+        QueryKind::ControlResults => database
+            .query_results(MIXED_RUN_ID, example.value, "FAIL")
+            .map(|rows| rows.iter().map(|row| row.run_id().to_owned()).collect()),
+        QueryKind::ResultStatus => database
+            .query_results(MIXED_RUN_ID, CONSENT_CONTROL_ID, example.value)
+            .map(|rows| rows.iter().map(|row| row.run_id().to_owned()).collect()),
+        QueryKind::GapSeverity => database
+            .query_gaps(MIXED_RUN_ID, "FAIL", example.value)
+            .map(|rows| rows.iter().map(|row| row.control_id().to_owned()).collect()),
+        QueryKind::EvidenceDigest => database
+            .query_evidence("digest", example.value)
+            .map(|rows| rows.iter().map(|row| row.id().to_owned()).collect()),
+    }
 }
 
 fn mixed_corpus() -> Corpus {
@@ -188,7 +205,7 @@ fn mixed_corpus() -> Corpus {
             control_result(
                 CONSENT_CONTROL_ID,
                 TRACKER_RULE,
-                "FAIL",
+                Status::Fail,
                 "major",
                 8,
                 CONSENT_EVIDENCE_ID,
@@ -199,7 +216,7 @@ fn mixed_corpus() -> Corpus {
             control_result(
                 CONSENT_CONTROL_ID,
                 CMP_RULE,
-                "PASS",
+                Status::Pass,
                 "major",
                 8,
                 CONSENT_EVIDENCE_ID,
@@ -210,7 +227,7 @@ fn mixed_corpus() -> Corpus {
             control_result(
                 HOST_CONTROL_ID,
                 SSH_RULE,
-                "WARNING",
+                Status::Warning,
                 "minor",
                 3,
                 SSH_EVIDENCE_ID,
@@ -236,21 +253,20 @@ fn classified_evidence_corpus() -> Corpus {
         .with_classified_evidence(
             CLASSIFIED_EVIDENCE_ID,
             "secret",
-            "classified/evidence.env",
+            ".env.example:3",
             Classification::Secret,
-            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            CONSENT_EVIDENCE_DIGEST,
         )
 }
 
 fn control_result(
     control_id: &str,
     rule_id: &str,
-    status: &str,
+    status: Status,
     severity: &str,
     weight: u32,
     evidence_id: &str,
 ) -> ControlResult {
-    let status = status_from_text(status);
     let mut builder = ControlResult::builder()
         .control_id(control_id)
         .rule_id(rule_id)
@@ -264,13 +280,4 @@ fn control_result(
         builder = builder.reason("Observed during the R-05 query corpus.");
     }
     builder.build().expect("the R-05 result validates")
-}
-
-fn status_from_text(status: &str) -> Status {
-    match status {
-        "FAIL" => Status::Fail,
-        "PASS" => Status::Pass,
-        "WARNING" => Status::Warning,
-        other => panic!("unsupported scenario status {other}"),
-    }
 }

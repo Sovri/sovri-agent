@@ -1,15 +1,15 @@
 // Copyright 2026 Sovri contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! R-05 -- results can be retrieved by run, control, and status. Covers issue
-//! #349.
+//! R-05 -- gaps can be retrieved by run, status, and severity. Covers issue
+//! #350.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sovri_agent::local_db::LocalDatabase;
+use sovri_agent::local_db::{LocalDatabase, LocalDatabaseError};
 use sovri_agent::matrix::{Classification, Corpus};
 use sovri_sdk::{ControlResult, Status};
 
@@ -53,7 +53,7 @@ impl TempDatabase {
             .unwrap_or_default()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "sovri-agent-mat98-r05-results-query-{}-{now}-{unique}",
+            "sovri-agent-mat98-r05-gaps-query-{}-{now}-{unique}",
             std::process::id()
         ));
         TempDatabase {
@@ -73,8 +73,44 @@ impl Drop for TempDatabase {
     }
 }
 
+#[allow(dead_code)]
+struct GapQueryRow {
+    control_id: String,
+    rule_id: String,
+    status: String,
+}
+
+#[allow(dead_code)]
+impl GapQueryRow {
+    fn control_id(&self) -> &str {
+        &self.control_id
+    }
+
+    fn rule_id(&self) -> &str {
+        &self.rule_id
+    }
+
+    fn status(&self) -> &str {
+        &self.status
+    }
+}
+
+#[allow(dead_code)]
+trait LocalDatabaseGapQueries {
+    fn query_gaps(
+        &self,
+        _run_id: &str,
+        _status: &str,
+        _severity: &str,
+    ) -> Result<Vec<GapQueryRow>, LocalDatabaseError> {
+        panic!("LocalDatabase::query_gaps is not implemented")
+    }
+}
+
+impl LocalDatabaseGapQueries for LocalDatabase {}
+
 #[test]
-fn results_can_be_retrieved_by_run_control_and_status() {
+fn gaps_can_be_retrieved_by_run_status_and_severity() {
     let database = TempDatabase::new();
 
     // Given an open local database at "./tmp/sovri-mat-98.db".
@@ -91,69 +127,50 @@ fn results_can_be_retrieved_by_run_control_and_status() {
         .write_completed_corpus(&classified_evidence_corpus())
         .expect("the classified evidence corpus write succeeds");
 
-    for example in result_query_examples() {
-        // When the operator queries results for run "mixed-2026-06-24", control "<control>", and status "<status>".
-        let results = local_database
-            .query_results(MIXED_RUN_ID, example.control, example.status)
-            .expect("the result set can be queried");
+    for example in gap_query_examples() {
+        // When the operator queries gaps for run "mixed-2026-06-24", status "<status>", and severity "<severity>".
+        let gaps = local_database
+            .query_gaps(MIXED_RUN_ID, example.status, example.severity)
+            .expect("the gaps can be queried");
 
-        // Then exactly <count> result is returned.
-        assert_eq!(results.len(), example.count);
+        // Then exactly 1 gap is returned.
+        assert_eq!(gaps.len(), 1);
+        let gap = gaps.first().expect("the single gap is returned");
 
-        // And the result set contains rule "<included_rule>".
+        // And the gap has control "<control>".
+        assert_eq!(gap.control_id(), example.control);
+
+        // And the gap has rule "<rule>".
+        assert_eq!(gap.rule_id(), example.rule);
+
+        // And the gap does not include status "PASS".
         assert!(
-            results
-                .iter()
-                .any(|result| result.rule_id() == example.included_rule),
-            "{} is included for control {} and status {}",
-            example.included_rule,
-            example.control,
-            example.status
-        );
-
-        // And the result set does not contain rule "<excluded_rule>".
-        assert!(
-            results
-                .iter()
-                .all(|result| result.rule_id() != example.excluded_rule),
-            "{} is excluded for control {} and status {}",
-            example.excluded_rule,
-            example.control,
-            example.status
+            gaps.iter().all(|gap| gap.status() != "PASS"),
+            "no returned gap has PASS status"
         );
     }
 }
 
-struct ResultQueryExample {
-    control: &'static str,
+struct GapQueryExample {
     status: &'static str,
-    count: usize,
-    included_rule: &'static str,
-    excluded_rule: &'static str,
+    severity: &'static str,
+    control: &'static str,
+    rule: &'static str,
 }
 
-fn result_query_examples() -> [ResultQueryExample; 3] {
+fn gap_query_examples() -> [GapQueryExample; 2] {
     [
-        ResultQueryExample {
-            control: CONSENT_CONTROL_ID,
+        GapQueryExample {
             status: "FAIL",
-            count: 1,
-            included_rule: TRACKER_RULE,
-            excluded_rule: CMP_RULE,
-        },
-        ResultQueryExample {
+            severity: "major",
             control: CONSENT_CONTROL_ID,
-            status: "PASS",
-            count: 1,
-            included_rule: CMP_RULE,
-            excluded_rule: TRACKER_RULE,
+            rule: TRACKER_RULE,
         },
-        ResultQueryExample {
-            control: HOST_CONTROL_ID,
+        GapQueryExample {
             status: "WARNING",
-            count: 1,
-            included_rule: SSH_RULE,
-            excluded_rule: CMP_RULE,
+            severity: "minor",
+            control: HOST_CONTROL_ID,
+            rule: SSH_RULE,
         },
     ]
 }
@@ -188,7 +205,7 @@ fn mixed_corpus() -> Corpus {
             control_result(
                 CONSENT_CONTROL_ID,
                 TRACKER_RULE,
-                "FAIL",
+                Status::Fail,
                 "major",
                 8,
                 CONSENT_EVIDENCE_ID,
@@ -199,7 +216,7 @@ fn mixed_corpus() -> Corpus {
             control_result(
                 CONSENT_CONTROL_ID,
                 CMP_RULE,
-                "PASS",
+                Status::Pass,
                 "major",
                 8,
                 CONSENT_EVIDENCE_ID,
@@ -210,7 +227,7 @@ fn mixed_corpus() -> Corpus {
             control_result(
                 HOST_CONTROL_ID,
                 SSH_RULE,
-                "WARNING",
+                Status::Warning,
                 "minor",
                 3,
                 SSH_EVIDENCE_ID,
@@ -245,12 +262,11 @@ fn classified_evidence_corpus() -> Corpus {
 fn control_result(
     control_id: &str,
     rule_id: &str,
-    status: &str,
+    status: Status,
     severity: &str,
     weight: u32,
     evidence_id: &str,
 ) -> ControlResult {
-    let status = status_from_text(status);
     let mut builder = ControlResult::builder()
         .control_id(control_id)
         .rule_id(rule_id)
@@ -264,13 +280,4 @@ fn control_result(
         builder = builder.reason("Observed during the R-05 query corpus.");
     }
     builder.build().expect("the R-05 result validates")
-}
-
-fn status_from_text(status: &str) -> Status {
-    match status {
-        "FAIL" => Status::Fail,
-        "PASS" => Status::Pass,
-        "WARNING" => Status::Warning,
-        other => panic!("unsupported scenario status {other}"),
-    }
 }
