@@ -19,6 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 ed25519-dalek = "=2.2.0"
+rusqlite = { version = "=0.40.1", features = ["bundled"] }
 sovri-sdk = { git = "https://github.com/Sovri/sovri-sdk-rust", rev = "7b4873814b326944b54562c121937abf454a19c2", version = "0.3.0" }
 
 [dev-dependencies]

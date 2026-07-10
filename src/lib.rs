@@ -25,6 +25,7 @@
 
 pub mod controls;
 pub mod evidence;
+pub mod local_db;
 pub mod matrix;
 pub mod report;
 pub mod scan;
