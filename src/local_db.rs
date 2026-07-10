@@ -536,6 +536,16 @@ impl LocalDatabaseEvidence {
     }
 }
 
+fn non_local_database_target(path: &Path) -> Option<&str> {
+    let target = path.to_str()?;
+    let (scheme, _) = target.split_once("://")?;
+    let mut bytes = scheme.bytes();
+    let first = bytes.next()?;
+    (first.is_ascii_alphabetic()
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.')))
+    .then_some(target)
+}
+
 impl LocalDatabase {
     /// Opens or creates a local `SQLite` database and applies packaged migrations.
     ///
@@ -558,6 +568,9 @@ impl LocalDatabase {
         migrations: &[PackagedMigration],
     ) -> Result<Self, LocalDatabaseError> {
         let path = path.as_ref();
+        if let Some(target) = non_local_database_target(path) {
+            return Err(LocalDatabaseError::NonLocalTarget(target.to_owned()));
+        }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(LocalDatabaseError::Io)?;
         }
@@ -2305,6 +2318,8 @@ pub enum LocalDatabaseError {
     },
     /// The requested run does not exist in the local database.
     MissingRun(String),
+    /// A URI-shaped database target was supplied where a local path is required.
+    NonLocalTarget(String),
     /// The requested export format is not one of the existing artifact paths.
     UnsupportedExportFormat(String),
     /// A named packaged migration failed and its transaction was rolled back.
@@ -2380,6 +2395,9 @@ impl fmt::Display for LocalDatabaseError {
             LocalDatabaseError::MissingRun(run_id) => {
                 write!(formatter, "local database run {run_id} is missing")
             }
+            LocalDatabaseError::NonLocalTarget(target) => {
+                write!(formatter, "local database target {target} is non-local")
+            }
             LocalDatabaseError::UnsupportedExportFormat(format) => {
                 write!(formatter, "unsupported local database export format: {format}")
             }
@@ -2402,6 +2420,7 @@ impl Error for LocalDatabaseError {
             | LocalDatabaseError::IntegrityMismatch { .. }
             | LocalDatabaseError::MissingEvidence { .. }
             | LocalDatabaseError::MissingRun(_)
+            | LocalDatabaseError::NonLocalTarget(_)
             | LocalDatabaseError::UnsupportedExportFormat(_) => None,
             LocalDatabaseError::Migration { source, .. } => Some(source),
         }
