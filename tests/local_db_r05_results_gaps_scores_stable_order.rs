@@ -89,28 +89,12 @@ impl ResultQueryRow {
 }
 
 #[allow(dead_code)]
-struct ScoreSummaryQueryRow {
-    framework_id: String,
-}
-
-#[allow(dead_code)]
-impl ScoreSummaryQueryRow {
-    fn framework_id(&self) -> &str {
-        &self.framework_id
-    }
-}
-
-#[allow(dead_code)]
 trait LocalDatabaseStableOrderQueries {
-    fn query_results(&self, _run_id: &str) -> Result<Vec<ResultQueryRow>, LocalDatabaseError> {
-        panic!("LocalDatabase::query_results is not implemented")
-    }
-
-    fn query_score_summaries(
+    fn query_results_for_run(
         &self,
         _run_id: &str,
-    ) -> Result<Vec<ScoreSummaryQueryRow>, LocalDatabaseError> {
-        panic!("LocalDatabase::query_score_summaries is not implemented")
+    ) -> Result<Vec<ResultQueryRow>, LocalDatabaseError> {
+        panic!("LocalDatabase::query_results_for_run is not implemented")
     }
 }
 
@@ -129,7 +113,7 @@ fn results_gaps_and_scores_use_stable_ordering() {
 
     // When the operator queries all results for run "mixed-2026-06-24".
     let results = local_database
-        .query_results(MIXED_RUN_ID)
+        .query_results_for_run(MIXED_RUN_ID)
         .expect("the result rows can be queried");
 
     // Then the result order is:
@@ -147,7 +131,7 @@ fn results_gaps_and_scores_use_stable_ordering() {
 
     // When the operator queries score summaries for run "mixed-2026-06-24".
     let score_summaries = local_database
-        .query_score_summaries(MIXED_RUN_ID)
+        .score_summaries_for_run(MIXED_RUN_ID)
         .expect("the score summaries can be queried");
 
     // Then the score summary order is:
@@ -172,14 +156,14 @@ fn unmatched_or_empty_run_queries_return_stable_empty_results() {
     for run_id in ["", "missing-2026-06-24"] {
         assert!(
             local_database
-                .query_results(run_id)
+                .query_results_for_run(run_id)
                 .expect("the result rows can be queried")
                 .is_empty(),
             "no results are returned for run id {run_id:?}"
         );
         assert!(
             local_database
-                .query_score_summaries(run_id)
+                .score_summaries_for_run(run_id)
                 .expect("the score summaries can be queried")
                 .is_empty(),
             "no score summaries are returned for run id {run_id:?}"
@@ -196,7 +180,7 @@ fn migrated_result_and_score_rows_remain_queryable_by_run() {
         LocalDatabase::open(database.path()).expect("the version 4 database reopens");
 
     let results = local_database
-        .query_results(MIXED_RUN_ID)
+        .query_results_for_run(MIXED_RUN_ID)
         .expect("the migrated result rows can be queried");
     assert_eq!(
         results
@@ -211,7 +195,7 @@ fn migrated_result_and_score_rows_remain_queryable_by_run() {
     );
 
     let score_summaries = local_database
-        .query_score_summaries(MIXED_RUN_ID)
+        .score_summaries_for_run(MIXED_RUN_ID)
         .expect("the migrated score summaries can be queried");
     assert_eq!(
         score_summaries
@@ -233,24 +217,76 @@ fn partial_migration_run_ids_are_repaired_from_stable_result_ids() {
 
     assert!(
         local_database
-            .query_results("wrong-run")
+            .query_results_for_run("wrong-run")
             .expect("wrong-run results can be queried")
             .is_empty(),
         "stale partial-migration run ids are repaired"
     );
     assert!(
         local_database
-            .query_results("")
+            .query_results_for_run("")
             .expect("empty-run results can be queried")
             .is_empty(),
         "malformed legacy result ids are not exposed as empty-run results"
     );
     assert_eq!(
         local_database
-            .query_results(MIXED_RUN_ID)
+            .query_results_for_run(MIXED_RUN_ID)
             .expect("the repaired result rows can be queried")
             .len(),
         3
+    );
+}
+
+#[test]
+fn rewriting_repairs_result_identity_from_stable_ids() {
+    let database = TempDatabase::new();
+    {
+        let mut local_database =
+            LocalDatabase::open(database.path()).expect("the local database opens");
+        local_database
+            .write_completed_corpus(&reverse_order_mixed_corpus())
+            .expect("the mixed corpus write succeeds");
+    }
+
+    let connection = Connection::open(database.path()).expect("the database can be reopened");
+    let corrupted_rows = connection
+        .execute(
+            "UPDATE control_results
+             SET run_id = 'wrong-run',
+                 control_id = 'wrong-control',
+                 rule_id = 'wrong-rule'",
+            [],
+        )
+        .expect("the persisted result identities can be corrupted for the regression test");
+    assert_eq!(corrupted_rows, 3);
+    drop(connection);
+
+    let mut local_database =
+        LocalDatabase::open(database.path()).expect("the current database reopens");
+    local_database
+        .write_completed_corpus(&reverse_order_mixed_corpus())
+        .expect("rewriting the mixed corpus succeeds");
+
+    assert!(
+        local_database
+            .query_results_for_run("wrong-run")
+            .expect("wrong-run results can be queried")
+            .is_empty(),
+        "rewriting repairs stale run ids from stable result ids"
+    );
+    assert_eq!(
+        local_database
+            .query_results_for_run(MIXED_RUN_ID)
+            .expect("the repaired result rows can be queried")
+            .iter()
+            .map(|row| (row.control_id(), row.rule_id()))
+            .collect::<Vec<_>>(),
+        vec![
+            (CONSENT_CONTROL_ID, CMP_RULE),
+            (CONSENT_CONTROL_ID, TRACKER_RULE),
+            (HOST_CONTROL_ID, SSH_RULE),
+        ]
     );
 }
 

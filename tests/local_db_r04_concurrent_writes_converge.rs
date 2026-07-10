@@ -1,12 +1,14 @@
 // Copyright 2026 Sovri contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! R-04 -- repeated writes cannot duplicate gaps or scores. Covers issue #347.
+//! R-04 -- concurrent writes of the same corpus converge to one logical run.
+//! Covers issue #346.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Barrier};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
@@ -42,7 +44,7 @@ impl TempDatabase {
             .unwrap_or_default()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "sovri-agent-mat98-r04-no-duplicate-gaps-scores-{}-{now}-{unique}",
+            "sovri-agent-mat98-r04-concurrent-writes-{}-{now}-{unique}",
             std::process::id()
         ));
         TempDatabase {
@@ -63,36 +65,57 @@ impl Drop for TempDatabase {
 }
 
 #[test]
-fn a_repeated_write_cannot_duplicate_gaps_or_scores() {
+fn concurrent_writes_of_the_same_corpus_converge_to_one_logical_run() {
     let database = TempDatabase::new();
-    let mut local_database =
-        LocalDatabase::open(database.path()).expect("the local database opens");
+    LocalDatabase::open(database.path()).expect("the local database schema initializes");
 
-    // When the "shopfront-2026-06-24" corpus is written to SQLite.
-    local_database
-        .write_completed_corpus(&consent_corpus())
-        .expect("the initial corpus write succeeds");
+    // When two operators write the "shopfront-2026-06-24" corpus to SQLite at the same time.
+    let write_results = write_same_corpus_concurrently(database.path());
 
-    // And the "shopfront-2026-06-24" corpus is written to SQLite again.
-    local_database
-        .write_completed_corpus(&consent_corpus())
-        .expect("the repeated corpus write succeeds");
-
-    // Then exactly 1 gap row exists for rule "consent.detect-trackers-without-consent-evidence".
-    assert_eq!(gap_row_count(database.path(), TRACKER_RULE), 1);
-
-    // And exactly 1 score summary exists for framework "gdpr-eprivacy".
+    // Then both write attempts finish without duplicate logical records.
     assert_eq!(
-        score_summary_count(database.path(), RUN_ID, FRAMEWORK_ID),
-        1
+        write_results,
+        [Ok(()), Ok(())],
+        "both concurrent write attempts should finish successfully"
     );
 
-    // And no duplicate logical record is returned by run, evidence, result, gap, or score queries.
-    assert_no_duplicate_logical_records(database.path());
+    // And exactly 1 run row exists for "shopfront-2026-06-24".
+    assert_eq!(run_row_count(database.path(), RUN_ID), 1);
+
+    // And exactly 2 result rows exist for run "shopfront-2026-06-24".
+    assert_eq!(result_row_count_for_run(database.path(), RUN_ID), 2);
+
+    // And evidence digest "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" is stored once.
+    assert_eq!(
+        evidence_digest_row_count(database.path(), EVIDENCE_DIGEST),
+        1
+    );
+}
+
+fn write_same_corpus_concurrently(path: &Path) -> [Result<(), String>; 2] {
+    let barrier = Arc::new(Barrier::new(2));
+    let handles = [0, 1].map(|_| {
+        let path = path.to_path_buf();
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            let mut local_database =
+                LocalDatabase::open(&path).map_err(|error| error.to_string())?;
+            local_database
+                .write_completed_corpus(&consent_corpus())
+                .map_err(|error| error.to_string())
+        })
+    });
+
+    handles.map(|handle| {
+        handle
+            .join()
+            .unwrap_or_else(|panic| Err(format!("writer thread panicked: {panic:?}")))
+    })
 }
 
 fn consent_corpus() -> Corpus {
-    Corpus::new(EXECUTED_AT)
+    let mut corpus = Corpus::new(EXECUTED_AT)
         .with_run_id(RUN_ID)
         .with_framework(FRAMEWORK_ID, FRAMEWORK_VERSION, FRAMEWORK_URL)
         .with_control(
@@ -102,15 +125,19 @@ fn consent_corpus() -> Corpus {
             "major",
             8,
             CONTROL_REFERENCE,
-        )
-        .with_control_result(FRAMEWORK_ID, control_result(TRACKER_RULE, Status::Fail))
-        .with_control_result(FRAMEWORK_ID, control_result(CMP_RULE, Status::Pass))
-        .with_evidence_digest(
-            EVIDENCE_ID,
-            "file",
-            "shopfront/dist/main.js",
-            EVIDENCE_DIGEST,
-        )
+        );
+    for result in [
+        control_result(TRACKER_RULE, Status::Fail),
+        control_result(CMP_RULE, Status::Pass),
+    ] {
+        corpus = corpus.with_control_result(FRAMEWORK_ID, result);
+    }
+    corpus.with_evidence_digest(
+        EVIDENCE_ID,
+        "file",
+        "shopfront/dist/main.js",
+        EVIDENCE_DIGEST,
+    )
 }
 
 fn control_result(rule_id: &str, status: Status) -> ControlResult {
@@ -131,57 +158,35 @@ fn control_result(rule_id: &str, status: Status) -> ControlResult {
         .expect("the shopfront consent result validates")
 }
 
-fn gap_row_count(path: &Path, rule_id: &str) -> i64 {
+fn run_row_count(path: &Path, run_id: &str) -> i64 {
     let connection = Connection::open(path).expect("the database can be inspected");
     connection
         .query_row(
-            "SELECT COUNT(*) FROM compliance_gaps WHERE id LIKE ?1",
-            params![format!("%:{rule_id}")],
+            "SELECT COUNT(*) FROM scan_runs WHERE id = ?1",
+            params![run_id],
             |row| row.get(0),
         )
-        .expect("gap row count can be inspected")
+        .expect("run row count can be inspected")
 }
 
-fn score_summary_count(path: &Path, run_id: &str, framework_id: &str) -> i64 {
+fn result_row_count_for_run(path: &Path, run_id: &str) -> i64 {
     let connection = Connection::open(path).expect("the database can be inspected");
     connection
         .query_row(
-            "SELECT COUNT(*)
-             FROM score_summaries
-             WHERE run_id = ?1 AND framework_id = ?2",
-            params![run_id, framework_id],
+            "SELECT COUNT(*) FROM control_results WHERE run_id = ?1",
+            params![run_id],
             |row| row.get(0),
         )
-        .expect("score summary count can be inspected")
+        .expect("result row count can be inspected")
 }
 
-fn assert_no_duplicate_logical_records(path: &Path) {
+fn evidence_digest_row_count(path: &Path, digest: &str) -> i64 {
     let connection = Connection::open(path).expect("the database can be inspected");
-    for table in [
-        "scan_runs",
-        "evidence_metadata",
-        "control_results",
-        "compliance_gaps",
-        "score_summaries",
-    ] {
-        let ids = logical_record_ids(&connection, table);
-        let unique_ids = ids.iter().collect::<BTreeSet<_>>();
-        assert_eq!(
-            ids.len(),
-            unique_ids.len(),
-            "{table} query returns no duplicate logical records"
-        );
-    }
-}
-
-fn logical_record_ids(connection: &Connection, table: &str) -> Vec<String> {
-    let sql = format!("SELECT id FROM {table} ORDER BY id");
-    let mut statement = connection
-        .prepare(&sql)
-        .expect("logical record query can be prepared");
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .expect("logical record query can run");
-    rows.collect::<Result<Vec<_>, _>>()
-        .expect("logical record ids can be read")
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM evidence_metadata WHERE digest = ?1",
+            params![digest],
+            |row| row.get(0),
+        )
+        .expect("evidence digest row count can be inspected")
 }
