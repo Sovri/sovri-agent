@@ -15,7 +15,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::matrix::{Classification, Corpus};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use sovri_sdk::{ControlResult, EvidenceStore, Status};
 
 /// The schema version created by the first packaged migration.
@@ -669,15 +669,14 @@ impl LocalDatabase {
         &self,
         run_id: &str,
     ) -> Result<Option<String>, LocalDatabaseError> {
-        match self.connection.query_row(
-            "SELECT executed_at FROM scan_runs WHERE id = ?1",
-            params![run_id],
-            |row| row.get(0),
-        ) {
-            Ok(executed_at) => Ok(Some(executed_at)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(error) => Err(LocalDatabaseError::Sqlite(error)),
-        }
+        self.connection
+            .query_row(
+                "SELECT executed_at FROM scan_runs WHERE id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(LocalDatabaseError::Sqlite)
     }
 
     /// Retrieves framework record ids for a run.
@@ -2347,6 +2346,9 @@ fn apply_evidence_locators_migration(
 fn apply_result_query_filters_migration(
     transaction: &rusqlite::Transaction<'_>,
 ) -> rusqlite::Result<()> {
+    // Schema v1 stored only an opaque control-result id and exposed no writer
+    // that could populate structured result fields. Preserve any such row id
+    // with empty metadata; new corpus writes create fully populated rows.
     for (column_name, definition) in [
         ("run_id", "TEXT NOT NULL DEFAULT ''"),
         ("control_id", "TEXT NOT NULL DEFAULT ''"),

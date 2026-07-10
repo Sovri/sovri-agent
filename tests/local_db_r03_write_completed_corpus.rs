@@ -9,6 +9,8 @@ mod matrix_support;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Barrier};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use matrix_support::{
@@ -23,6 +25,7 @@ use sovri_sdk::{ControlResult, Status};
 
 const SHOPFRONT_RUN: &str = "shopfront-2026-06-24";
 const SHOPFRONT_REPLAY_RUN: &str = "shopfront-replay-2026-06-24";
+const CONCURRENT_RUN: &str = "shopfront-concurrent-2026-06-24";
 const MIXED_RUN: &str = "mixed-2026-06-24";
 const CLASSIFIED_EVIDENCE_RUN: &str = "classified-evidence-2026-06-24";
 const STORED_RECORD_RUN: &str = "stored-record-2026-06-24";
@@ -398,6 +401,53 @@ fn a_failed_completed_corpus_write_rolls_back_partial_rows() {
     assert_eq!(
         framework_count, 0,
         "the partial framework row must be rolled back"
+    );
+}
+
+#[test]
+fn concurrent_writes_to_the_same_run_are_serialized() {
+    let database = TempDatabase::new();
+    drop(LocalDatabase::open(database.path()).expect("the local database is initialized"));
+    let barrier = Arc::new(Barrier::new(2));
+    let writers = (0..2)
+        .map(|_| {
+            let database_path = database.path().to_owned();
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                let mut local_database =
+                    LocalDatabase::open(database_path).expect("a concurrent connection opens");
+                barrier.wait();
+                local_database.write_completed_corpus(&consent_corpus().with_run_id(CONCURRENT_RUN))
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for writer in writers {
+        writer
+            .join()
+            .expect("the concurrent writer thread completes")
+            .expect("the concurrent corpus write succeeds");
+    }
+
+    let local_database = LocalDatabase::open(database.path()).expect("the local database reopens");
+    assert_eq!(
+        local_database
+            .query_run(CONCURRENT_RUN)
+            .expect("the concurrent run can be retrieved"),
+        vec![CONCURRENT_RUN.to_owned()]
+    );
+    assert_eq!(
+        local_database
+            .control_result_records_for_run(CONCURRENT_RUN)
+            .expect("the concurrent run results can be retrieved")
+            .len(),
+        2
+    );
+    assert_eq!(
+        local_database
+            .evidence_metadata_records_for_run(CONCURRENT_RUN)
+            .expect("the concurrent run evidence can be retrieved"),
+        vec![PUBLIC_EVIDENCE_ID.to_owned()]
     );
 }
 
