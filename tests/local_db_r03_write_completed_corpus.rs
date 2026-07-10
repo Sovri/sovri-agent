@@ -268,6 +268,7 @@ fn writing_a_completed_corpus_upgrades_legacy_section_tables() {
             .len(),
         1
     );
+    assert_shared_evidence_keeps_both_run_links(database.path());
     assert_legacy_rows_are_preserved(database.path());
 }
 
@@ -408,26 +409,7 @@ fn a_failed_completed_corpus_write_rolls_back_partial_rows() {
 fn concurrent_writes_to_the_same_run_are_serialized() {
     let database = TempDatabase::new();
     drop(LocalDatabase::open(database.path()).expect("the local database is initialized"));
-    let barrier = Arc::new(Barrier::new(2));
-    let writers = (0..2)
-        .map(|_| {
-            let database_path = database.path().to_owned();
-            let barrier = Arc::clone(&barrier);
-            thread::spawn(move || {
-                let mut local_database =
-                    LocalDatabase::open(database_path).expect("a concurrent connection opens");
-                barrier.wait();
-                local_database.write_completed_corpus(&consent_corpus().with_run_id(CONCURRENT_RUN))
-            })
-        })
-        .collect::<Vec<_>>();
-
-    for writer in writers {
-        writer
-            .join()
-            .expect("the concurrent writer thread completes")
-            .expect("the concurrent corpus write succeeds");
-    }
+    write_corpora_concurrently(database.path(), &[CONCURRENT_RUN, CONCURRENT_RUN]);
 
     let local_database = LocalDatabase::open(database.path()).expect("the local database reopens");
     assert_eq!(
@@ -449,6 +431,54 @@ fn concurrent_writes_to_the_same_run_are_serialized() {
             .expect("the concurrent run evidence can be retrieved"),
         vec![PUBLIC_EVIDENCE_ID.to_owned()]
     );
+}
+
+#[test]
+fn concurrent_writes_to_different_runs_are_isolated() {
+    let database = TempDatabase::new();
+    drop(LocalDatabase::open(database.path()).expect("the local database is initialized"));
+    write_corpora_concurrently(database.path(), &[SHOPFRONT_RUN, SHOPFRONT_REPLAY_RUN]);
+
+    let local_database = LocalDatabase::open(database.path()).expect("the local database reopens");
+    assert_eq!(
+        local_database
+            .query_runs()
+            .expect("the concurrent runs can be retrieved"),
+        vec![SHOPFRONT_RUN.to_owned(), SHOPFRONT_REPLAY_RUN.to_owned()]
+    );
+    for run_id in [SHOPFRONT_RUN, SHOPFRONT_REPLAY_RUN] {
+        assert_eq!(
+            local_database
+                .evidence_metadata_records_for_run(run_id)
+                .expect("the concurrent run evidence can be retrieved"),
+            vec![PUBLIC_EVIDENCE_ID.to_owned()]
+        );
+    }
+}
+
+fn write_corpora_concurrently(database_path: &Path, run_ids: &[&str]) {
+    let barrier = Arc::new(Barrier::new(run_ids.len()));
+    let writers = run_ids
+        .iter()
+        .map(|run_id| {
+            let database_path = database_path.to_owned();
+            let run_id = (*run_id).to_owned();
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                let mut local_database =
+                    LocalDatabase::open(database_path).expect("a concurrent connection opens");
+                barrier.wait();
+                local_database.write_completed_corpus(&consent_corpus().with_run_id(run_id))
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for writer in writers {
+        writer
+            .join()
+            .expect("the concurrent writer thread completes")
+            .expect("the concurrent corpus write succeeds");
+    }
 }
 
 #[test]
@@ -760,6 +790,32 @@ fn assert_legacy_rows_are_preserved(path: &Path) {
         legacy_link_count, 1,
         "legacy evidence remains linked to its run"
     );
+}
+
+fn assert_shared_evidence_keeps_both_run_links(path: &Path) {
+    let connection = Connection::open(path).expect("database can be inspected");
+    let legacy_owner: String = connection
+        .query_row(
+            "SELECT run_id FROM evidence_metadata WHERE id = ?1",
+            [PUBLIC_EVIDENCE_ID],
+            |row| row.get(0),
+        )
+        .expect("the legacy evidence owner can be inspected");
+    assert_eq!(
+        legacy_owner, SHOPFRONT_RUN,
+        "a later run must not replace the first legacy owner"
+    );
+    let link_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM run_evidence_links
+             WHERE evidence_id = ?1
+               AND run_id IN (?2, ?3)",
+            [PUBLIC_EVIDENCE_ID, SHOPFRONT_RUN, SHOPFRONT_REPLAY_RUN],
+            |row| row.get(0),
+        )
+        .expect("the shared evidence links can be inspected");
+    assert_eq!(link_count, 2, "both current run links must be preserved");
 }
 
 fn legacy_row_count(connection: &Connection, table_name: &str, id: &str) -> i64 {

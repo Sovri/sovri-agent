@@ -1587,6 +1587,9 @@ fn write_evidence_rows(
                    id, run_id, digest, locator, classification
                  ) VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(id) DO UPDATE SET
+                   -- Keep the first legacy owner; current per-run ownership is
+                   -- represented by run_evidence_links.
+                   run_id = evidence_metadata.run_id,
                    digest = COALESCE(NULLIF(excluded.digest, ''), evidence_metadata.digest),
                    locator = CASE
                      WHEN evidence_metadata.locator = '' THEN excluded.locator
