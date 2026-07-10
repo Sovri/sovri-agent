@@ -190,6 +190,55 @@ fn writing_a_completed_corpus_persists_every_required_section() {
 }
 
 #[test]
+fn query_helpers_return_empty_results_for_unknown_runs() {
+    let database = TempDatabase::new();
+    let local_database = LocalDatabase::open(database.path()).expect("the local database opens");
+
+    for run_id in ["missing-run", "", "' OR 1 = 1 --"] {
+        assert_eq!(
+            local_database
+                .completed_run_executed_at(run_id)
+                .expect("an unknown run can be queried"),
+            None,
+            "executed-at should be absent for {run_id:?}"
+        );
+
+        for (section, records) in [
+            (
+                "frameworks",
+                local_database.framework_records_for_run(run_id),
+            ),
+            ("controls", local_database.control_records_for_run(run_id)),
+            (
+                "control results",
+                local_database.control_result_records_for_run(run_id),
+            ),
+            (
+                "compliance gaps",
+                local_database.compliance_gap_records_for_run(run_id),
+            ),
+            (
+                "evidence metadata",
+                local_database.evidence_metadata_records_for_run(run_id),
+            ),
+            (
+                "score summaries",
+                local_database.score_summary_records_for_run(run_id),
+            ),
+        ] {
+            assert!(
+                records
+                    .unwrap_or_else(|error| panic!(
+                        "{section} query failed for {run_id:?}: {error}"
+                    ))
+                    .is_empty(),
+                "{section} should be empty for {run_id:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn writing_a_completed_corpus_upgrades_legacy_section_tables() {
     let database = TempDatabase::new();
     create_legacy_completed_corpus_schema(database.path());

@@ -170,6 +170,13 @@ const EVIDENCE_LOCATORS_SCHEMA_SQL: &str = "";
 const RESULT_QUERY_FILTERS_SCHEMA_VERSION: u32 = 5;
 
 const RESULT_QUERY_FILTERS_SCHEMA_SQL: &str = "";
+const CONTROL_RESULT_QUERY_FILTER_COLUMNS: &[(&str, &str)] = &[
+    ("run_id", "TEXT NOT NULL DEFAULT ''"),
+    ("control_id", "TEXT NOT NULL DEFAULT ''"),
+    ("rule_id", "TEXT NOT NULL DEFAULT ''"),
+    ("status", "TEXT NOT NULL DEFAULT ''"),
+    ("evidence_id", "TEXT NOT NULL DEFAULT ''"),
+];
 
 const RUN_EVIDENCE_INDEX_SCHEMA_VERSION: u32 = 6;
 
@@ -2354,13 +2361,7 @@ fn apply_result_query_filters_migration(
     // Recover fields encoded by later length-prefixed ids. Schema v1 exposed no
     // writer, so truly opaque v1 ids are preserved with empty metadata instead
     // of inventing values; new corpus writes create fully populated rows.
-    for (column_name, definition) in [
-        ("run_id", "TEXT NOT NULL DEFAULT ''"),
-        ("control_id", "TEXT NOT NULL DEFAULT ''"),
-        ("rule_id", "TEXT NOT NULL DEFAULT ''"),
-        ("status", "TEXT NOT NULL DEFAULT ''"),
-        ("evidence_id", "TEXT NOT NULL DEFAULT ''"),
-    ] {
+    for &(column_name, definition) in CONTROL_RESULT_QUERY_FILTER_COLUMNS {
         add_column_if_missing(transaction, "control_results", column_name, definition)?;
     }
     if transaction_schema_column_exists(transaction, "evidence_metadata", "id")? {
