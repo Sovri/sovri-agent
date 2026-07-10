@@ -142,7 +142,7 @@ const RUN_EVIDENCE_LINKS_SCHEMA_SQL: &str = "
 ";
 
 // This domain policy is kept in exact sync with the current application schema
-// by `persisted_corpus_table_guard_matches_the_current_schema`.
+// by `hardcoded_persisted_corpus_tables_match_current_schema`.
 const PERSISTED_CORPUS_TABLES: &[&str] = &[
     "scan_runs",
     "frameworks",
@@ -2682,7 +2682,7 @@ mod tests {
     use crate::matrix::Classification;
 
     #[test]
-    fn persisted_corpus_table_guard_matches_the_current_schema() {
+    fn hardcoded_persisted_corpus_tables_match_current_schema() {
         let connection = Connection::open_in_memory().expect("open in-memory SQLite");
         connection
             .execute_batch(INITIAL_SCHEMA_SQL)
